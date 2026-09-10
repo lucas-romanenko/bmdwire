@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hyperdeckwire"
+version = "0.1.0.dev0"
+description = "Blackmagic HyperDeck control over the Ethernet Protocol (TCP 9993) plus FTP clip upload"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Lucas Romanenko" }]
+dependencies = []
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["hyperdeckwire", "hyperdeckwire.*"]
+exclude = ["hyperdeckwire.tests"]
