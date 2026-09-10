@@ -1,0 +1,16 @@
+atemwire (public fork of pyatem)
+
+This package is a fork of pyatem by Martijn Braam and the OpenAtem
+contributors, https://git.sr.ht/~martijnbraam/pyatem, licensed under the
+GNU Lesser General Public License version 3 only (LGPL-3.0-only).
+
+Fork point: upstream commit 8f45831 ("Fix timeout detection and
+reconnection logic in the UDP transport code", 2026-03-14, six commits
+after the 0.13.0 tag). Everything in this tree derives from that commit
+or was added afterwards; the additions are released under the same
+LGPL-3.0-only license. See LICENSE (LGPL v3) and LICENSE-gpl3.txt (GPL v3,
+which the LGPL v3 text incorporates by reference), and README.md for what
+differs from upstream.
+
+Copyright 2021 - 2022, Martijn Braam and the OpenAtem contributors
+Copyright 2026, Lucas Romanenko (fork additions)
