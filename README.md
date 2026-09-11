@@ -5,7 +5,7 @@ Ethernet Protocol on TCP 9990: state snapshot, crosspoint routing with
 ACK/NAK handling, port labels, and live application of the router's pushed
 updates.
 
-[![CI](https://github.com/lucas-romanenko/videohubwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/videohubwire/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/videohubwire?label=release&sort=semver)](https://github.com/lucas-romanenko/videohubwire/tags)
+[![CI](https://github.com/lucas-romanenko/videohubwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/videohubwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/videohubwire.svg)](https://pypi.org/project/videohubwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/videohubwire?label=release&sort=semver)](https://github.com/lucas-romanenko/videohubwire/tags)
 
 videohubwire is small, dependency-free and synchronous by design: open, read,
 act, close, in milliseconds on a LAN, which suits per-request use from a web
@@ -21,16 +21,16 @@ backend or a script.
 
 ## Install
 
-Not on PyPI yet; install straight from GitHub (no git needed on the machine):
+From PyPI:
+
+```sh
+pip install videohubwire
+```
+
+Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`videohubwire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (no git needed on the machine):
 
 ```sh
 pip install "videohubwire @ https://github.com/lucas-romanenko/videohubwire/archive/refs/tags/v0.1.0.dev0.tar.gz"
-```
-
-or, with git available:
-
-```sh
-pip install "git+https://github.com/lucas-romanenko/videohubwire.git@v0.1.0.dev0"
 ```
 
 Python 3.10 or newer. No other dependencies.
