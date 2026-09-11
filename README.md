@@ -1,13 +1,40 @@
 # hyperdeckwire
 
-hyperdeckwire is a small, dependency-free Python library for driving
-Blackmagic **HyperDeck Studio** recorders over the network. It speaks the
-HyperDeck Ethernet Protocol (line-oriented text over TCP 9993) for transport
-control, clip listing and timeline editing, and uses the deck's built-in FTP
-server (port 21) to push new clips onto its storage. It targets the
-`9993 + FTP` combination on purpose: the HTTP REST API that arrived in
-firmware 8.x is only available on the Plus/Pro/HDR/Shuttle models, while every
-networked HyperDeck, including the Studio HD Mini, offers these two.
+Python library for Blackmagic **HyperDeck Studio** recorders: transport control,
+clip listing and timeline editing over the HyperDeck Ethernet Protocol (TCP
+9993), plus clip upload over the deck's built-in FTP server.
+
+[![CI](https://github.com/lucas-romanenko/hyperdeckwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/hyperdeckwire/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/hyperdeckwire?label=release&sort=semver)](https://github.com/lucas-romanenko/hyperdeckwire/tags)
+
+hyperdeckwire is small and dependency-free. It targets the `9993 + FTP`
+combination on purpose: the HTTP REST API that arrived in firmware 8.x is only
+available on the Plus/Pro/HDR/Shuttle models, while every networked HyperDeck,
+including the Studio HD Mini, offers these two.
+
+## Status
+
+- **Pre-release** (`0.1.0.dev0`), extracted from a broadcast control
+  application where it drives decks in production: clip push, cue-and-loop
+  as a switcher background source, and a transport modal for operators.
+- Verified on a HyperDeck Studio HD Mini (firmware 8.1.1) through the full
+  probe / clear / upload / cue-and-loop cycle. Other Studio HD models speak
+  the same protocol but were not on the bench.
+
+## Install
+
+Not on PyPI yet; install straight from GitHub (no git needed on the machine):
+
+```sh
+pip install "hyperdeckwire @ https://github.com/lucas-romanenko/hyperdeckwire/archive/refs/tags/v0.1.0.dev0.tar.gz"
+```
+
+or, with git available:
+
+```sh
+pip install "git+https://github.com/lucas-romanenko/hyperdeckwire.git@v0.1.0.dev0"
+```
+
+Python 3.10 or newer. No other dependencies.
 
 ## Features
 
@@ -18,19 +45,6 @@ networked HyperDeck, including the Studio HD Mini, offers these two.
 - Asynchronous 5xx notifications are filtered out of blocking requests and can be read explicitly.
 - `upload_clip` FTP helper with storage-volume auto-detection, anonymous-login fallback, progress callback and throughput reporting.
 - Pure standard library; a `socket_factory` hook and `ftplib` monkeypatching make the whole suite runnable without hardware.
-
-## Install
-
-```sh
-pip install "git+https://github.com/lucas-romanenko/hyperdeckwire.git@v0.1.0.dev0"
-```
-
-Python 3.10 or newer. To run the tests from a checkout:
-
-```sh
-pip install ".[test]"
-python -m pytest
-```
 
 ## Usage
 
@@ -76,6 +90,25 @@ that was established on hardware.
 - **Clip names contain spaces.** `disk list` and `clips get` rows are tokenised from the right (duration, format fields) and everything left over is the name, which is why a name such as `Intro Loop animation.mp4` round-trips.
 - **Client limit.** Beyond a small number of simultaneous 9993 clients the deck answers `120 connection failed` and closes the socket.
 - **Verified hardware.** HyperDeck Studio HD Mini, firmware 8.1.1, full probe / clear / upload / cue-and-loop cycle. Other Studio HD models speak the same protocol but were not on the bench.
+
+## Development
+
+```sh
+git clone https://github.com/lucas-romanenko/hyperdeckwire.git
+cd hyperdeckwire
+pip install -e ".[test]"
+python -m pytest
+```
+
+The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request.
+
+## Related libraries
+
+One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
+
+- [atemwire](https://github.com/lucas-romanenko/atemwire): ATEM switchers (UDP protocol, macros, profiles)
+- [ultimattewire](https://github.com/lucas-romanenko/ultimattewire): Ultimatte keyers (archive and restore)
+- [videohubwire](https://github.com/lucas-romanenko/videohubwire): Videohub routers (routing, labels)
 
 ## License
 
