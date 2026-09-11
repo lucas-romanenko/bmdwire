@@ -1,14 +1,39 @@
 # videohubwire
 
-videohubwire is a small, dependency-free Python client for Blackmagic
-**Videohub** routers speaking the Videohub Ethernet Protocol on TCP 9990. It
-connects, parses the router's state dump into a snapshot (device info, input
-and output labels, output locks, routing), routes a source to a destination
-with ACK/NAK handling, renames ports, and keeps the snapshot current by
-applying the update blocks the router pushes when any client changes
-something. It is synchronous and single-socket by design: open, read, act,
-close, in milliseconds on a LAN, which suits per-request use from a web
+Python client for Blackmagic **Videohub** routers speaking the Videohub
+Ethernet Protocol on TCP 9990: state snapshot, crosspoint routing with
+ACK/NAK handling, port labels, and live application of the router's pushed
+updates.
+
+[![CI](https://github.com/lucas-romanenko/videohubwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/videohubwire/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/videohubwire?label=release&sort=semver)](https://github.com/lucas-romanenko/videohubwire/tags)
+
+videohubwire is small, dependency-free and synchronous by design: open, read,
+act, close, in milliseconds on a LAN, which suits per-request use from a web
 backend or a script.
+
+## Status
+
+- **Pre-release** (`0.1.0.dev0`), extracted from a broadcast control
+  application where it backs a routing page operators use in production
+  against Smart Videohub 40 x 40 and 80 x 80 routers.
+- The canned preamble in the tests has the shape of a Smart Videohub 40 x 40
+  on protocol version 2.7; other models were not exercised on the bench.
+
+## Install
+
+Not on PyPI yet; install straight from GitHub (no git needed on the machine):
+
+```sh
+pip install "videohubwire @ https://github.com/lucas-romanenko/videohubwire/archive/refs/tags/v0.1.0.dev0.tar.gz"
+```
+
+or, with git available:
+
+```sh
+pip install "git+https://github.com/lucas-romanenko/videohubwire.git@v0.1.0.dev0"
+```
+
+Python 3.10 or newer. No other dependencies.
 
 ## Features
 
@@ -21,19 +46,6 @@ backend or a script.
 - Works with and without the `END PRELUDE:` marker, so old and new firmware both connect.
 - One connect retry for cold-ARP first-packet loss; malformed lines are logged and skipped, not fatal.
 - Pure standard library; a `socket_factory` hook lets the whole suite run without hardware.
-
-## Install
-
-```sh
-pip install "git+https://github.com/lucas-romanenko/videohubwire.git@v0.1.0.dev0"
-```
-
-Python 3.10 or newer. To run the tests from a checkout:
-
-```sh
-pip install ".[test]"
-python -m pytest
-```
 
 ## Usage
 
@@ -73,6 +85,25 @@ or what this client does on top of it.
 - **Connect retry.** The first TCP connect to a router the host has not spoken to recently is sometimes lost to ARP resolution. `connect()` retries once after 0.3 s on any `OSError`; a second failure propagates unchanged.
 - **Timeouts.** Connect and read timeouts default to 3 s. A read timeout while waiting for a reply raises `VideohubError`; the router closing the connection raises it too, rather than looping.
 - **What the test fixture reflects.** The canned preamble in the tests has the shape of a Smart Videohub 40 x 40 reporting protocol version 2.7 (device block, labels, locks, routing, optional marker). Other models were not exercised.
+
+## Development
+
+```sh
+git clone https://github.com/lucas-romanenko/videohubwire.git
+cd videohubwire
+pip install -e ".[test]"
+python -m pytest
+```
+
+The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request.
+
+## Related libraries
+
+One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
+
+- [atemwire](https://github.com/lucas-romanenko/atemwire): ATEM switchers (UDP protocol, macros, profiles)
+- [hyperdeckwire](https://github.com/lucas-romanenko/hyperdeckwire): HyperDeck recorders (transport control, clip upload)
+- [ultimattewire](https://github.com/lucas-romanenko/ultimattewire): Ultimatte keyers (archive and restore)
 
 ## License
 
