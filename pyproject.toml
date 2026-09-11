@@ -16,9 +16,19 @@ authors = [
 classifiers = [
     "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Development Status :: 4 - Beta",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
 ]
+
+[project.urls]
+Repository = "https://github.com/lucas-romanenko/atemwire"
+Issues = "https://github.com/lucas-romanenko/atemwire/issues"
 
 [project.optional-dependencies]
 images = ["pillow"]
