@@ -12,6 +12,7 @@ Wire packets (incoming only):
 """
 
 from atemwire.messages._dsl import Recv, boolean, i32, string, u8, u16, u32
+from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
 
 class RecordingDiskField(Recv):
@@ -154,3 +155,83 @@ class RecordingDurationField(Recv):
         drop = ' dropped-frames' if self.has_dropped_frames else ''
         return (f'<recording-duration {self.hours}:{self.minutes}:'
                 f'{self.seconds}:{self.frames}{drop}>')
+
+
+# -----------------------------------------------------------------------------
+# Restored upstream commands (0.15, 2026-09-11)
+#
+# These Send classes existed in upstream pyatem and were dropped from the
+# fork because nothing exercised them. They are back, declared in the DSL
+# with the exact byte layout of upstream's struct.pack strings and pinned
+# byte-for-byte in tests/test_restored_upstream_commands.py. They have NOT
+# been re-verified against a switcher in this fork; treat them as upstream
+# did, and Wireshark-check before relying on a write on your model.
+# -----------------------------------------------------------------------------
+
+
+class RecordingSettingsSetCommand(Send):
+    """``CRMS`` — stream-recorder settings (Record settings of the Output
+    menu).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     Mask (bit 0 filename, 1 disk1, 2 disk2, 3 record in cameras)
+    1      128  str    Filename
+    132    4    u32    Disk 1 id
+    136    4    u32    Disk 2 id
+    140    1    bool   Record in all cameras
+    141    3    ?      padding
+    ====== ==== ====== ===========
+    """
+    CODE = 'CRMS'
+    SIZE = 144
+    MASK_AT = 0
+
+    filename         = string (at=1, size=128)
+    disk1            = u32    (at=132, mask_bit=1)
+    disk2            = u32    (at=136, mask_bit=2)
+    record_in_camera = boolean(at=140, mask_bit=3)
+
+    def __init__(self, filename=None, disk1=None, disk2=None, record_in_camera=None):
+        super().__init__(filename=filename, disk1=disk1, disk2=disk2,
+                         record_in_camera=record_in_camera)
+
+    def get_command(self):
+        # ``string`` fields carry no mask bit in the DSL; filename is bit 0.
+        raw = bytearray(super().get_command())
+        if self.filename is not None:
+            raw[8] |= 1 << 0
+        return bytes(raw)
+
+
+class RecorderStatusCommand(Send):
+    """``RcTM`` — start or stop the stream recorder (REC in the Output menu).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    bool   Recording
+    1      3    ?      unknown
+    ====== ==== ====== ===========
+    """
+    CODE = 'RcTM'
+    SIZE = 4
+
+    recording = boolean(at=0)
+
+    def __init__(self, recording):
+        super().__init__(recording=recording)
+
+
+def set_recording_settings(conn, filename=None, disk1=None, disk2=None, record_in_camera=None):
+    conn.send(RecordingSettingsSetCommand(filename=filename, disk1=disk1, disk2=disk2,
+                                          record_in_camera=record_in_camera))
+
+
+def start_recording(conn):
+    conn.send(RecorderStatusCommand(True))
+
+
+def stop_recording(conn):
+    conn.send(RecorderStatusCommand(False))

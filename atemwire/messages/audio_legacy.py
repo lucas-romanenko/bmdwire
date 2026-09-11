@@ -13,6 +13,7 @@ Wire packets (incoming only):
 import struct
 
 from atemwire.messages._dsl import Recv, boolean, u16
+from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
 
 class AudioMixerMasterPropertiesField(Recv):
@@ -198,3 +199,142 @@ class AudioInputField(Recv):
     def __repr__(self):
         return (f'<audio-input index={self.index} type={self.type} '
                 f'plug={self.plug}>')
+
+
+# -----------------------------------------------------------------------------
+# Restored upstream commands (0.15, 2026-09-11)
+#
+# These Send classes existed in upstream pyatem and were dropped from the
+# fork because nothing exercised them. They are back, declared in the DSL
+# with the exact byte layout of upstream's struct.pack strings and pinned
+# byte-for-byte in tests/test_restored_upstream_commands.py. They have NOT
+# been re-verified against a switcher in this fork; treat them as upstream
+# did, and Wireshark-check before relying on a write on your model.
+# -----------------------------------------------------------------------------
+
+
+class AudioInputCommand(Send):
+    """``CAMI`` — one channel strip of the legacy (pre-Fairlight) audio mixer.
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     Mask (bit 0 mix option, 1 volume, 2 balance)
+    2      2    u16    Source index
+    4      1    u8     Mix option [0 off, 1 on, 2 AFV]
+    6      2    u16    Volume [0 - 65381]
+    8      2    i16    Balance [-10000 - 10000]
+    ====== ==== ====== ===========
+    """
+    CODE = 'CAMI'
+    SIZE = 12
+    MASK_AT = 0
+
+    source     = u16(at=2)
+    mix_option = u8 (at=4, mask_bit=0)
+    volume     = u16(at=6, mask_bit=1)
+    balance    = i16(at=8, mask_bit=2)
+
+    def __init__(self, source, balance=None, volume=None, on=None, afv=None):
+        mix_option = None
+        if on is not None:
+            mix_option = int(bool(on))
+        elif afv is not None:
+            mix_option = int(bool(afv)) * 2
+        super().__init__(source=source, mix_option=mix_option, volume=volume, balance=balance)
+
+
+class AudioMasterPropertiesCommand(Send):
+    """``CAMM`` — master channel of the legacy audio mixer.
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     Mask (bit 0 volume, bit 2 AFV)
+    2      2    u16    Master volume [0 - 65381]
+    6      1    bool   AFV (follow fade-to-black)
+    ====== ==== ====== ===========
+    """
+    CODE = 'CAMM'
+    SIZE = 8
+    MASK_AT = 0
+
+    volume = u16    (at=2, mask_bit=0)
+    afv    = boolean(at=6, mask_bit=2)
+
+    def __init__(self, volume=None, afv=None):
+        super().__init__(volume=volume, afv=afv)
+
+
+class AudioMonitorPropertiesCommand(Send):
+    """``CAMm`` — monitor bus of the legacy audio mixer.
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     Mask
+    1      1    bool   Enabled
+    2      2    u16    Monitor volume [0 - 65381]
+    4      1    bool   Mute
+    5      1    bool   Solo
+    6      2    u16    Solo source
+    8      1    bool   Dim
+    10     2    u16    Dim volume
+    ====== ==== ====== ===========
+
+    Mask bits: 0 enabled, 1 volume, 2 mute, 3 solo, 4 solo source, 5 dim,
+               6 dim volume.
+    """
+    CODE = 'CAMm'
+    SIZE = 12
+    MASK_AT = 0
+
+    enabled     = boolean(at=1, mask_bit=0)
+    volume      = u16    (at=2, mask_bit=1)
+    mute        = boolean(at=4, mask_bit=2)
+    solo        = boolean(at=5, mask_bit=3)
+    solo_source = u16    (at=6, mask_bit=4)
+    dim         = boolean(at=8, mask_bit=5)
+    dim_volume  = u16    (at=10, mask_bit=6)
+
+    def __init__(self, enabled=None, volume=None, mute=None, solo=None, solo_source=None,
+                 dim=None, dim_volume=None):
+        super().__init__(enabled=enabled, volume=volume, mute=mute, solo=solo,
+                         solo_source=solo_source, dim=dim, dim_volume=dim_volume)
+
+
+class SendAudioLevelsCommand(Send):
+    """``SALN`` — opt in to legacy audio level (meter) packets.
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    bool   Enable sending levels
+    1      3    ?      unknown
+    ====== ==== ====== ===========
+    """
+    CODE = 'SALN'
+    SIZE = 4
+
+    enable = boolean(at=0)
+
+    def __init__(self, enable):
+        super().__init__(enable=enable)
+
+
+def set_audio_input(conn, source, balance=None, volume=None, on=None, afv=None):
+    conn.send(AudioInputCommand(source=int(source), balance=balance, volume=volume, on=on, afv=afv))
+
+
+def set_audio_master(conn, volume=None, afv=None):
+    conn.send(AudioMasterPropertiesCommand(volume=volume, afv=afv))
+
+
+def set_audio_monitor(conn, **props):
+    """Set any of enabled / volume / mute / solo / solo_source / dim / dim_volume."""
+    conn.send(AudioMonitorPropertiesCommand(**props))
+
+
+def enable_audio_levels(conn, enable=True):
+    """Ask a legacy-audio switcher to stream level packets."""
+    conn.send(SendAudioLevelsCommand(bool(enable)))

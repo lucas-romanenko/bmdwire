@@ -31,6 +31,7 @@ import struct
 
 from atemwire._state import decode_name
 from atemwire.messages._dsl import Recv, Send, boolean, string, u8, u16
+from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
 
 class FirmwareVersionField(Recv):
@@ -491,3 +492,98 @@ def sdi_3g_level(mx, default='LevelB'):
     if node is None:
         return default
     return 'LevelA' if getattr(node, 'level', 0) == 1 else 'LevelB'
+
+
+# -----------------------------------------------------------------------------
+# Restored upstream commands (0.15, 2026-09-11)
+#
+# These Send classes existed in upstream pyatem and were dropped from the
+# fork because nothing exercised them. They are back, declared in the DSL
+# with the exact byte layout of upstream's struct.pack strings and pinned
+# byte-for-byte in tests/test_restored_upstream_commands.py. They have NOT
+# been re-verified against a switcher in this fork; treat them as upstream
+# did, and Wireshark-check before relying on a write on your model.
+# -----------------------------------------------------------------------------
+
+
+class AutoInputVideoModeCommand(Send):
+    """``AiVM`` — enable or disable automatic video-mode detection.
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    bool   Enable
+    1      3    ?      unknown
+    ====== ==== ====== ===========
+    """
+    CODE = 'AiVM'
+    SIZE = 4
+
+    enable = boolean(at=0)
+
+    def __init__(self, enable):
+        super().__init__(enable=enable)
+
+
+class SaveStartupStateCommand(Send):
+    """``SRsv`` — "Save startup state" (four padding bytes, no fields)."""
+    CODE = 'SRsv'
+    SIZE = 4
+
+    def __init__(self):
+        super().__init__()
+
+
+class ClearStartupStateCommand(Send):
+    """``SRcl`` — "Clear startup state" (four padding bytes, no fields)."""
+    CODE = 'SRcl'
+    SIZE = 4
+
+    def __init__(self):
+        super().__init__()
+
+
+class SetTimeOfDayCommand(Send):
+    """``SToD`` — set the switcher's clock (Software Control does this at
+    startup from the computer's clock).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      4    u32    Unix timestamp (seconds)
+    4      4    ?      padding
+    ====== ==== ====== ===========
+
+    Accepts a ``datetime`` or an integer timestamp. Upstream packed the
+    float ``timestamp()`` straight into a u32, which raises on Python 3;
+    the seconds are truncated to an int here.
+    """
+    CODE = 'SToD'
+    SIZE = 8
+
+    timestamp = u32(at=0)
+
+    def __init__(self, time):
+        import datetime as _dt
+        if isinstance(time, _dt.datetime):
+            time = time.timestamp()
+        super().__init__(timestamp=int(time))
+
+
+def set_auto_video_mode(conn, enable):
+    conn.send(AutoInputVideoModeCommand(bool(enable)))
+
+
+def save_startup_state(conn):
+    """Make the current switcher state the power-on state."""
+    conn.send(SaveStartupStateCommand())
+
+
+def clear_startup_state(conn):
+    conn.send(ClearStartupStateCommand())
+
+
+def set_time_of_day(conn, when=None):
+    """Set the switcher clock; ``when`` defaults to now."""
+    import datetime as _dt
+    conn.send(SetTimeOfDayCommand(when if when is not None else _dt.datetime.now(_dt.timezone.utc)))

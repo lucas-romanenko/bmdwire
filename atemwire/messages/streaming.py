@@ -12,6 +12,7 @@ Wire packets (incoming only):
 """
 
 from atemwire.messages._dsl import Recv, i16, string, u16, u32
+from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
 
 class StreamingAudioBitrateField(Recv):
@@ -107,3 +108,115 @@ class StreamingStatsField(Recv):
 
     def __repr__(self):
         return f'<streaming-stats bitrate={self.bitrate} cache={self.cache}>'
+
+
+# -----------------------------------------------------------------------------
+# Restored upstream commands (0.15, 2026-09-11)
+#
+# These Send classes existed in upstream pyatem and were dropped from the
+# fork because nothing exercised them. They are back, declared in the DSL
+# with the exact byte layout of upstream's struct.pack strings and pinned
+# byte-for-byte in tests/test_restored_upstream_commands.py. They have NOT
+# been re-verified against a switcher in this fork; treat them as upstream
+# did, and Wireshark-check before relying on a write on your model.
+# -----------------------------------------------------------------------------
+
+
+class StreamingServiceSetCommand(Send):
+    """``CRSS`` — live-stream target settings (Live Stream settings of the
+    Output menu).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     Mask (bit 0 name, 1 url, 2 key, 3 min+max bitrate)
+    1      64   str    Service name
+    65     512  str    URL
+    577    512  str    Stream key
+    1089   3    ?      padding
+    1092   4    u32    Minimum bitrate (bps)
+    1096   4    u32    Maximum bitrate (bps)
+    ====== ==== ====== ===========
+
+    The two bitrates share one mask bit and must be given together.
+    """
+    CODE = 'CRSS'
+    SIZE = 1100
+    MASK_AT = 0
+
+    name        = string(at=1, size=64)
+    url         = string(at=65, size=512)
+    key         = string(at=577, size=512)
+    bitrate_min = u32   (at=1092, mask_bit=3)
+    bitrate_max = u32   (at=1096, mask_bit=3)
+
+    def __init__(self, name=None, url=None, key=None, bitrate_min=None, bitrate_max=None):
+        if (bitrate_min is None) != (bitrate_max is None):
+            raise ValueError("bitrate_min and bitrate_max must be given together")
+        super().__init__(name=name, url=url, key=key,
+                         bitrate_min=bitrate_min, bitrate_max=bitrate_max)
+
+    def get_command(self):
+        # ``string`` fields carry no mask bit in the DSL; set bits 0-2 here.
+        raw = bytearray(super().get_command())
+        for bit, value in ((0, self.name), (1, self.url), (2, self.key)):
+            if value is not None:
+                raw[8] |= 1 << bit
+        return bytes(raw)
+
+
+class StreamingAudioBitrateCommand(Send):
+    """``STAB`` — audio bitrate for stream and recording (in practice always
+    128k / 128k).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      4    u32    Minimum bitrate (bps)
+    4      4    u32    Maximum bitrate (bps)
+    ====== ==== ====== ===========
+    """
+    CODE = 'STAB'
+    SIZE = 8
+
+    bitrate_min = u32(at=0)
+    bitrate_max = u32(at=4)
+
+    def __init__(self, bitrate_min, bitrate_max):
+        super().__init__(bitrate_min=bitrate_min, bitrate_max=bitrate_max)
+
+
+class StreamingStatusSetCommand(Send):
+    """``StrR`` — start or stop the live stream (ON AIR in the Output menu).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    bool   Streaming
+    1      3    ?      unknown
+    ====== ==== ====== ===========
+    """
+    CODE = 'StrR'
+    SIZE = 4
+
+    streaming = boolean(at=0)
+
+    def __init__(self, streaming):
+        super().__init__(streaming=streaming)
+
+
+def set_streaming_service(conn, name=None, url=None, key=None, bitrate_min=None, bitrate_max=None):
+    conn.send(StreamingServiceSetCommand(name=name, url=url, key=key,
+                                         bitrate_min=bitrate_min, bitrate_max=bitrate_max))
+
+
+def set_streaming_audio_bitrate(conn, bitrate_min, bitrate_max):
+    conn.send(StreamingAudioBitrateCommand(int(bitrate_min), int(bitrate_max)))
+
+
+def start_streaming(conn):
+    conn.send(StreamingStatusSetCommand(True))
+
+
+def stop_streaming(conn):
+    conn.send(StreamingStatusSetCommand(False))

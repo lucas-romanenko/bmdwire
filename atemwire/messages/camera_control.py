@@ -12,6 +12,7 @@ Wire packets (incoming only):
 import struct
 
 from atemwire.messages._dsl import Recv
+from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
 
 class CameraControlDataPacketField(Recv):
@@ -88,3 +89,83 @@ class CameraControlDataPacketField(Recv):
         return (f'<camera-control-data-packet dest={self.destination} '
                 f'command={self.category}.{self.parameter} '
                 f'type={self.datatype} data={self.data}>')
+
+
+# -----------------------------------------------------------------------------
+# Restored upstream commands (0.15, 2026-09-11)
+#
+# These Send classes existed in upstream pyatem and were dropped from the
+# fork because nothing exercised them. They are back, declared in the DSL
+# with the exact byte layout of upstream's struct.pack strings and pinned
+# byte-for-byte in tests/test_restored_upstream_commands.py. They have NOT
+# been re-verified against a switcher in this fork; treat them as upstream
+# did, and Wireshark-check before relying on a write on your model.
+# -----------------------------------------------------------------------------
+
+
+class CameraControlCommand(Send):
+    """``CCmd`` — send a Blackmagic SDI camera control command through the
+    switcher to an attached camera.
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     Destination (camera index, 255 = broadcast)
+    1      1    u8     Category
+    2      1    u8     Parameter
+    3      1    bool   Relative adjustment
+    4      1    u8     Data type (0 bool, 1 int8, 2 int16, 3 int32, 4 int64, 5 string, 128 fixed16)
+    5      11   ?      element counts (the count lands at the type-dependent offset upstream used)
+    16     ...  ?      data, padded to 8 bytes
+    ====== ==== ====== ===========
+
+    Ported verbatim from upstream, including its count-offset table and the
+    padding rule; upstream drove real cameras with it but this fork has not
+    re-verified it. ``data`` is copied, never mutated.
+    """
+    CODE = 'CCmd'
+    SIZE = 16
+
+    _COUNT_OFFSET = {0: 2, 1: 2, 2: 2, 3: 4, 4: 2, 5: 2, 128: 4}
+    _ELEMENT_FMT = {0: '?', 1: 'b', 2: 'h', 3: 'i', 4: 'q', 5: '', 128: 'h'}
+
+    destination = u8     (at=0)
+    category    = u8     (at=1)
+    parameter   = u8     (at=2)
+    relative    = boolean(at=3)
+    datatype    = u8     (at=4)
+
+    def __init__(self, destination, category, parameter, relative=False, datatype=None, data=None):
+        super().__init__(destination=destination, category=category, parameter=parameter,
+                         relative=bool(relative), datatype=0 if datatype is None else datatype)
+        self.data = None if data is None else list(data)
+
+    def get_command(self):
+        import struct
+        count = len(self.data) if self.data is not None else 0
+        buf = bytearray(self.SIZE)
+        struct.pack_into('>5B', buf, 0, self.destination, self.category, self.parameter,
+                         1 if self.relative else 0, self.datatype)
+        buf[5 + self._COUNT_OFFSET[self.datatype]] = count
+        payload = bytes(buf)
+        if self.data is not None:
+            values = list(self.data)
+            if self.datatype == 128:
+                values = [int(v * (2 ** 11)) for v in values]
+                fmt = f'>{count}h'
+            elif self.datatype == 5:
+                values = [v.encode() if isinstance(v, str) else bytes(v) for v in values]
+                fmt = f'>{len(values[0])}s'
+            else:
+                fmt = f'>{count}{self._ELEMENT_FMT[self.datatype]}'
+            packed = struct.pack(fmt, *values)
+            packed += b'\0' * (8 - len(packed))
+            payload += packed
+        header = struct.pack('>H 2x 4s', len(payload) + 8, self.CODE.encode())
+        return header + payload
+
+
+def camera_control(conn, destination, category, parameter, relative=False, datatype=None, data=None):
+    """Send one camera control command (see CameraControlCommand)."""
+    conn.send(CameraControlCommand(destination, category, parameter, relative=relative,
+                                   datatype=datatype, data=data))
