@@ -144,9 +144,9 @@ class StreamingServiceSetCommand(Send):
     SIZE = 1100
     MASK_AT = 0
 
-    name        = string(at=1, size=64)
-    url         = string(at=65, size=512)
-    key         = string(at=577, size=512)
+    name        = string(at=1, size=64, mask_bit=0)
+    url         = string(at=65, size=512, mask_bit=1)
+    key         = string(at=577, size=512, mask_bit=2)
     bitrate_min = u32   (at=1092, mask_bit=3)
     bitrate_max = u32   (at=1096, mask_bit=3)
 
@@ -155,14 +155,6 @@ class StreamingServiceSetCommand(Send):
             raise ValueError("bitrate_min and bitrate_max must be given together")
         super().__init__(name=name, url=url, key=key,
                          bitrate_min=bitrate_min, bitrate_max=bitrate_max)
-
-    def get_command(self):
-        # ``string`` fields carry no mask bit in the DSL; set bits 0-2 here.
-        raw = bytearray(super().get_command())
-        for bit, value in ((0, self.name), (1, self.url), (2, self.key)):
-            if value is not None:
-                raw[8] |= 1 << bit
-        return bytes(raw)
 
 
 class StreamingAudioBitrateCommand(Send):

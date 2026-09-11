@@ -116,6 +116,7 @@ pip install "atemwire[images] @ https://github.com/lucas-romanenko/atemwire/arch
 - New commands: Fairlight dynamics and master EQ band (CICP, CILP, CIXP, CMCP, CMLP, CMBP), USK mask and pattern (CKMs, CKPt), stinger settings (CTSt), HyperDeck binding (CXMS), fade-to-black enable (FEna), macro sleep (MSlp), clear still (CSTL).
 - New fields: the dynamics echoes (AICP, AILP, AIXP, AMBP, AMLP, MOCP), flying-key state and keyframes (KeFS, KKFP, KePt), macro play status (MRPr), HyperDeck binding (RXMS), 3G-SDI level (V3sl), device identity (WhoI).
 - Every message module also carries the operation wrappers and mixerstate readers for its feature; `atemwire/_state.py` assembles them into one snapshot dict.
+- The DSL covers the whole vocabulary since 0.15: `string` fields take a mask bit, a `tail` field carries a variable-length block (camera control is a plain declaration), and `tests/test_docstring_tables_match_declarations.py` checks every class's docstring offset table against its declarations, so the documented layout and the wire layout cannot drift apart again.
 
 ### Macro and profile work (`atemwire/macrotransfer/`, `atemwire/profile/`)
 

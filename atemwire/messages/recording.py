@@ -188,7 +188,7 @@ class RecordingSettingsSetCommand(Send):
     SIZE = 144
     MASK_AT = 0
 
-    filename         = string (at=1, size=128)
+    filename         = string (at=1, size=128, mask_bit=0)
     disk1            = u32    (at=132, mask_bit=1)
     disk2            = u32    (at=136, mask_bit=2)
     record_in_camera = boolean(at=140, mask_bit=3)
@@ -196,13 +196,6 @@ class RecordingSettingsSetCommand(Send):
     def __init__(self, filename=None, disk1=None, disk2=None, record_in_camera=None):
         super().__init__(filename=filename, disk1=disk1, disk2=disk2,
                          record_in_camera=record_in_camera)
-
-    def get_command(self):
-        # ``string`` fields carry no mask bit in the DSL; filename is bit 0.
-        raw = bytearray(super().get_command())
-        if self.filename is not None:
-            raw[8] |= 1 << 0
-        return bytes(raw)
 
 
 class RecorderStatusCommand(Send):
