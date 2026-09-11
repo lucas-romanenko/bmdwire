@@ -4,7 +4,7 @@ Python library for Blackmagic Design **ATEM** switchers: the native UDP
 protocol, a thread-safe connection pool, a full macro bytecode codec, and
 save/restore of ATEM Software Control's "Save Switcher State" XML.
 
-[![CI](https://github.com/lucas-romanenko/atemwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/atemwire/actions/workflows/ci.yml) [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/atemwire?label=release&sort=semver)](https://github.com/lucas-romanenko/atemwire/tags)
+[![CI](https://github.com/lucas-romanenko/atemwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/atemwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/atemwire.svg)](https://pypi.org/project/atemwire/) [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/atemwire?label=release&sort=semver)](https://github.com/lucas-romanenko/atemwire/tags)
 
 atemwire is a fork of [pyatem](https://git.sr.ht/~martijnbraam/pyatem), Martijn
 Braam's ATEM protocol library, renamed to avoid confusion with upstream. It
@@ -42,22 +42,22 @@ print(probe('192.0.2.10'))   # {'video_format': ..., 'atem_model': ..., ...}
 
 ## Install
 
-Not on PyPI yet; install straight from GitHub (no git needed on the machine):
+From PyPI:
+
+```sh
+pip install atemwire
+```
+
+Only pre-release versions exist so far (0.15.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`atemwire==0.15.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (no git needed on the machine):
 
 ```sh
 pip install "atemwire @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.15.0.dev0.tar.gz"
 ```
 
-or, with git available:
-
-```sh
-pip install "git+https://github.com/lucas-romanenko/atemwire.git@v0.15.0.dev0"
-```
-
 Python 3.10 or newer. A C compiler is required: the `atemwire.mediaconvert` extension (BT.709 conversion and RLE encoding) builds during install. Add the `images` extra for Pillow, used only by the profile media-pool image export:
 
 ```sh
-pip install "atemwire[images] @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.15.0.dev0.tar.gz"
+pip install "atemwire[images]"
 ```
 
 ## What you get
@@ -138,6 +138,17 @@ pip install "atemwire[images] @ https://github.com/lucas-romanenko/atemwire/arch
 - `ATEMInstanceManager` / `acquire_connection` pool one session per switcher IP with reference counting and a teardown grace period.
 - The C extension validates input lengths, clamps every conversion, releases buffers on all paths and raises instead of aborting on a reserved RLE word.
 
+## Restored in 0.15
+
+Every upstream send command is present. The 20 that the fork had dropped as
+unused came back in 0.15: multiviewer routing and layout, SuperSource boxes
+and art, streaming and recording settings and start/stop, legacy audio
+strips, master and monitor, camera control, transition preview and T-bar
+position, auto video mode, startup state, clock. They are declared in the DSL
+with upstream's exact byte layouts and pinned byte-for-byte against upstream's
+output in `tests/test_restored_upstream_commands.py`, but this fork has not
+yet re-verified them against a switcher; see Caveats.
+
 ## Not included
 
 Upstream's OpenSwitcher extras are not part of this package: the TCP-proxy
@@ -147,18 +158,9 @@ them, the camera control *module* (the `CCmd` send command is here), the
 converter / firmware / dissector tooling, the emulator, and the Videohub
 client (see [videohubwire](https://github.com/lucas-romanenko/videohubwire)).
 
-Every upstream send command is otherwise present. The 20 that the fork had
-dropped as unused came back in 0.15 (multiviewer routing and layout,
-SuperSource boxes and art, streaming and recording settings, start/stop,
-legacy audio strips, master and monitor, camera control, transition preview
-and T-bar position, auto video mode, startup state, clock). They are declared
-in the DSL with upstream's exact byte layouts and pinned byte-for-byte
-against upstream's output in `tests/test_restored_upstream_commands.py`,
-but this fork has not yet re-verified them against a switcher; see Caveats.
-
 ## Caveats
 
-- The 20 commands restored in 0.15 (listed under Not included) reproduce
+- The 20 commands restored in 0.15 (listed under Restored in 0.15) reproduce
   upstream's wire layouts exactly and are not yet Wireshark-validated on a
   switcher by this fork. Upstream drove real hardware with them; treat them
   as upstream did and verify a write on your model before relying on it.
