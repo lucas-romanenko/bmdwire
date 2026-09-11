@@ -36,7 +36,7 @@ jobs:
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
           echo "tag=$tag version=$version"
           test "$tag" = "v$version"
-      - name: Build sdist (atemwire ships an sdist only: the C extension builds on install)
+      - name: "Build sdist (atemwire ships an sdist only; the C extension builds on install)"
         run: |
           pip install build
           python -m build --sdist
