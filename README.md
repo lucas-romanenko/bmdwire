@@ -4,7 +4,7 @@ Python library for Blackmagic **HyperDeck Studio** recorders: transport control,
 clip listing and timeline editing over the HyperDeck Ethernet Protocol (TCP
 9993), plus clip upload over the deck's built-in FTP server.
 
-[![CI](https://github.com/lucas-romanenko/hyperdeckwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/hyperdeckwire/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/hyperdeckwire?label=release&sort=semver)](https://github.com/lucas-romanenko/hyperdeckwire/tags)
+[![CI](https://github.com/lucas-romanenko/hyperdeckwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/hyperdeckwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/hyperdeckwire.svg)](https://pypi.org/project/hyperdeckwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/hyperdeckwire?label=release&sort=semver)](https://github.com/lucas-romanenko/hyperdeckwire/tags)
 
 hyperdeckwire is small and dependency-free. It targets the `9993 + FTP`
 combination on purpose: the HTTP REST API that arrived in firmware 8.x is only
@@ -22,16 +22,16 @@ including the Studio HD Mini, offers these two.
 
 ## Install
 
-Not on PyPI yet; install straight from GitHub (no git needed on the machine):
+From PyPI:
+
+```sh
+pip install hyperdeckwire
+```
+
+Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`hyperdeckwire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (no git needed on the machine):
 
 ```sh
 pip install "hyperdeckwire @ https://github.com/lucas-romanenko/hyperdeckwire/archive/refs/tags/v0.1.0.dev0.tar.gz"
-```
-
-or, with git available:
-
-```sh
-pip install "git+https://github.com/lucas-romanenko/hyperdeckwire.git@v0.1.0.dev0"
 ```
 
 Python 3.10 or newer. No other dependencies.
