@@ -1,15 +1,43 @@
 # ultimattewire
 
-ultimattewire is a small, dependency-free Python library that archives and
-restores the configuration of a Blackmagic **Ultimatte 12** or **Ultimatte
-12 4K** keyer over its native TCP protocol. It produces and consumes the same
-zip archives that Blackmagic's Ultimatte Smart Remote 4 (also shipped as
-"Ultimatte Software Control") writes with **Archive All** and reads with
-**Restore**, so an archive taken with this library restores from the vendor
-app and vice versa. Blackmagic does not document the protocol; everything here
-was reverse-engineered from packet captures of the vendor app talking to real
-hardware, which is why the wire details in the code are marked as not to be
-changed without re-validating against a unit.
+Python library that archives and restores the configuration of a Blackmagic
+**Ultimatte 12** or **Ultimatte 12 4K** keyer over its native TCP protocol,
+producing and consuming the same zip archives the vendor's Smart Remote 4
+writes with **Archive All** and reads with **Restore**.
+
+[![CI](https://github.com/lucas-romanenko/ultimattewire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/ultimattewire/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/ultimattewire?label=release&sort=semver)](https://github.com/lucas-romanenko/ultimattewire/tags)
+
+Blackmagic does not document the protocol. Everything here was
+reverse-engineered from packet captures of the vendor app talking to real
+hardware, then validated by round-tripping archives through the vendor app in
+both directions. The wire details in the code are marked as not to be changed
+without re-validating against a unit; the Protocol notes below record what is
+established and what is still a guess.
+
+## Status
+
+- **Pre-release** (`0.1.0.dev0`), extracted from a broadcast control
+  application where operators archive and restore keyer configurations from a
+  web page.
+- Verified against an Ultimatte 12 4K (the unit the captures came from). The
+  Ultimatte 12 (HD) speaks the same protocol by the vendor's own docstrings;
+  the HD Mini and other models were not tested.
+
+## Install
+
+Not on PyPI yet; install straight from GitHub (no git needed on the machine):
+
+```sh
+pip install "ultimattewire @ https://github.com/lucas-romanenko/ultimattewire/archive/refs/tags/v0.1.0.dev0.tar.gz"
+```
+
+or, with git available:
+
+```sh
+pip install "git+https://github.com/lucas-romanenko/ultimattewire.git@v0.1.0.dev0"
+```
+
+Python 3.10 or newer. No other dependencies.
 
 ## Features
 
@@ -21,19 +49,6 @@ changed without re-validating against a unit.
 - One-retry connects to survive cold-ARP and first-packet hiccups.
 - Per-parameter display ranges for about 150 control values, used to annotate the state dump (raw `0..10000` to percent, frames, pixels).
 - Pure standard library. No logging; results and warnings are returned to the caller.
-
-## Install
-
-```sh
-pip install "git+https://github.com/lucas-romanenko/ultimattewire.git@v0.1.0.dev0"
-```
-
-Python 3.10 or newer. To run the tests from a checkout:
-
-```sh
-pip install ".[test]"
-python -m pytest
-```
 
 ## Usage
 
@@ -215,6 +230,25 @@ the second.
 - Ultimatte 12 HD Mini and other models were not tested.
 - The display-range table is an interpretation of the manual and the panel
   UI, not wire data. It affects only the readable text dump.
+
+## Development
+
+```sh
+git clone https://github.com/lucas-romanenko/ultimattewire.git
+cd ultimattewire
+pip install -e ".[test]"
+python -m pytest
+```
+
+The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request.
+
+## Related libraries
+
+One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
+
+- [atemwire](https://github.com/lucas-romanenko/atemwire): ATEM switchers (UDP protocol, macros, profiles)
+- [hyperdeckwire](https://github.com/lucas-romanenko/hyperdeckwire): HyperDeck recorders (transport control, clip upload)
+- [videohubwire](https://github.com/lucas-romanenko/videohubwire): Videohub routers (routing, labels)
 
 ## License
 
