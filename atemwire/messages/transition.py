@@ -31,6 +31,7 @@ from atemwire._state import (
 )
 from atemwire.helpers import parse_rate, transition_mask_from_selection
 from atemwire.messages._dsl import Recv, Send, boolean, u8, u16
+from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
 
 # -----------------------------------------------------------------------------
@@ -1124,3 +1125,68 @@ def stinger_pre_multiplied(mx, me=0):
 def stinger_invert_key(mx, me=0):
     return safe_bool(
         _kv(mx, 'transition-stinger', me, attr='key_invert'), False)
+
+
+# -----------------------------------------------------------------------------
+# Restored upstream commands (0.15, 2026-09-11)
+#
+# These Send classes existed in upstream pyatem and were dropped from the
+# fork because nothing exercised them. They are back, declared in the DSL
+# with the exact byte layout of upstream's struct.pack strings and pinned
+# byte-for-byte in tests/test_restored_upstream_commands.py. They have NOT
+# been re-verified against a switcher in this fork; treat them as upstream
+# did, and Wireshark-check before relying on a write on your model.
+# -----------------------------------------------------------------------------
+
+
+class TransitionPreviewCommand(Send):
+    """``CTPr`` — enable or disable Transition Preview on an M/E (the Prev
+    Trans button).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     M/E index
+    1      1    bool   Preview enabled
+    2      2    ?      unknown
+    ====== ==== ====== ===========
+    """
+    CODE = 'CTPr'
+    SIZE = 4
+
+    index   = u8     (at=0)
+    enabled = boolean(at=1)
+
+    def __init__(self, index, enabled):
+        super().__init__(index=index, enabled=enabled)
+
+
+class TransitionPositionCommand(Send):
+    """``CTPs`` — set the T-bar position of an M/E.
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     M/E index
+    1      1    ?      unknown
+    2      2    u16    Position [0-10000]
+    ====== ==== ====== ===========
+    """
+    CODE = 'CTPs'
+    SIZE = 4
+
+    index    = u8 (at=0)
+    position = u16(at=2)
+
+    def __init__(self, index, position):
+        super().__init__(index=index, position=position)
+
+
+def set_transition_preview(conn, enabled, me=0):
+    """Enable/disable Transition Preview on M/E ``me``."""
+    conn.send(TransitionPreviewCommand(index=me, enabled=bool(enabled)))
+
+
+def set_transition_position(conn, position, me=0):
+    """Move the T-bar of M/E ``me`` to ``position`` in 0..10000."""
+    conn.send(TransitionPositionCommand(index=me, position=max(0, min(10000, int(position)))))

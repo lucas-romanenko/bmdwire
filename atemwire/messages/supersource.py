@@ -13,6 +13,7 @@ Wire packets (incoming only):
 import struct
 
 from atemwire.messages._dsl import Recv
+from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
 
 class SupersourcePropertiesField(Recv):
@@ -102,3 +103,116 @@ class SupersourceBoxPropertiesField(Recv):
                 f'box={self.box}, source={self.source}, x={self.x}, '
                 f'y={self.y}, size={self.size}>')
 
+
+# -----------------------------------------------------------------------------
+# Restored upstream commands (0.15, 2026-09-11)
+#
+# These Send classes existed in upstream pyatem and were dropped from the
+# fork because nothing exercised them. They are back, declared in the DSL
+# with the exact byte layout of upstream's struct.pack strings and pinned
+# byte-for-byte in tests/test_restored_upstream_commands.py. They have NOT
+# been re-verified against a switcher in this fork; treat them as upstream
+# did, and Wireshark-check before relying on a write on your model.
+# -----------------------------------------------------------------------------
+
+
+class SupersourceBoxPropertiesCommand(Send):
+    """``CSBP`` — properties of one of the four boxes of a SuperSource.
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      2    u16    Mask
+    2      1    u8     SuperSource index
+    3      1    u8     Box index
+    4      1    bool   Enabled
+    5      1    ?      padding
+    6      2    u16    Source index
+    8      2    i16    Position X [-4800 - 4800]
+    10     2    i16    Position Y [-3400 - 3400]
+    12     2    u16    Size [70 - 1000]
+    14     1    bool   Crop enable
+    15     1    ?      padding
+    16     2    u16    Crop top [0 - 18000]
+    18     2    u16    Crop bottom [0 - 18000]
+    20     2    u16    Crop left [0 - 32000]
+    22     2    u16    Crop right [0 - 32000]
+    ====== ==== ====== ===========
+
+    Mask bits: 0 enabled, 1 source, 2 x, 3 y, 4 size, 5 crop enable,
+               6 top, 7 bottom, 8 left, 9 right.
+    """
+    CODE = 'CSBP'
+    SIZE = 24
+    MASK_AT = 0
+    MASK_TYPE = u16
+
+    index   = u8     (at=2)
+    box     = u8     (at=3)
+    enabled = boolean(at=4, mask_bit=0)
+    source  = u16    (at=6, mask_bit=1)
+    x       = i16    (at=8, mask_bit=2)
+    y       = i16    (at=10, mask_bit=3)
+    size    = u16    (at=12, mask_bit=4)
+    masked  = boolean(at=14, mask_bit=5)
+    top     = u16    (at=16, mask_bit=6)
+    bottom  = u16    (at=18, mask_bit=7)
+    left    = u16    (at=20, mask_bit=8)
+    right   = u16    (at=22, mask_bit=9)
+
+    def __init__(self, index, box, enabled=None, source=None, x=None, y=None, size=None,
+                 masked=None, top=None, bottom=None, left=None, right=None):
+        super().__init__(index=index, box=box, enabled=enabled, source=source, x=x, y=y,
+                         size=size, masked=masked, top=top, bottom=bottom, left=left, right=right)
+
+
+class SupersourcePropertiesCommand(Send):
+    """``CSSc`` — global SuperSource options (the Art sources and keyer).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     Mask
+    1      1    u8     SuperSource index
+    2      2    u16    Artwork fill source
+    4      2    u16    Artwork key source
+    6      1    u8     Artwork layer [0 background, 1 foreground]
+    7      1    bool   Premultiplied
+    8      2    u16    Keyer clip [0-1000]
+    10     2    u16    Keyer gain [0-1000]
+    12     1    bool   Keyer invert
+    13     3    ?      padding
+    ====== ==== ====== ===========
+
+    Mask bits: 0 fill, 1 key, 2 layer, 3 premultiplied, 4 clip, 5 gain,
+               6 invert.
+    """
+    CODE = 'CSSc'
+    SIZE = 16
+    MASK_AT = 0
+
+    index         = u8     (at=1)
+    fill_source   = u16    (at=2, mask_bit=0)
+    key_source    = u16    (at=4, mask_bit=1)
+    layer         = u8     (at=6, mask_bit=2)
+    premultiplied = boolean(at=7, mask_bit=3)
+    clip          = u16    (at=8, mask_bit=4)
+    gain          = u16    (at=10, mask_bit=5)
+    invert        = boolean(at=12, mask_bit=6)
+
+    def __init__(self, index, fill_source=None, key_source=None, layer=None, premultiplied=None,
+                 clip=None, gain=None, invert=None):
+        super().__init__(index=index, fill_source=fill_source, key_source=key_source, layer=layer,
+                         premultiplied=premultiplied, clip=clip, gain=gain, invert=invert)
+
+
+def set_supersource_box(conn, box, index=0, **props):
+    """Set any of enabled / source / x / y / size / masked / top / bottom /
+    left / right on box ``box`` of SuperSource ``index``."""
+    conn.send(SupersourceBoxPropertiesCommand(index=index, box=int(box), **props))
+
+
+def set_supersource_properties(conn, index=0, **props):
+    """Set any of fill_source / key_source / layer / premultiplied / clip /
+    gain / invert on SuperSource ``index``."""
+    conn.send(SupersourcePropertiesCommand(index=index, **props))

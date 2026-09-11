@@ -30,7 +30,7 @@ print(probe('192.0.2.10'))   # {'video_format': ..., 'atem_model': ..., ...}
 
 ## Status
 
-- **Pre-release** (`0.14.0.dev0`): the API is the one a production application
+- **Pre-release** (`0.15.0.dev0`): the API is the one a production application
   uses every day, but names may still move before 1.0.
 - Runs in production with a fleet of ATEM switchers: live switching, media-pool uploads, still capture, profile save and
   restore, HyperDeck bindings.
@@ -45,19 +45,19 @@ print(probe('192.0.2.10'))   # {'video_format': ..., 'atem_model': ..., ...}
 Not on PyPI yet; install straight from GitHub (no git needed on the machine):
 
 ```sh
-pip install "atemwire @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.14.0.dev0.tar.gz"
+pip install "atemwire @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.15.0.dev0.tar.gz"
 ```
 
 or, with git available:
 
 ```sh
-pip install "git+https://github.com/lucas-romanenko/atemwire.git@v0.14.0.dev0"
+pip install "git+https://github.com/lucas-romanenko/atemwire.git@v0.15.0.dev0"
 ```
 
 Python 3.10 or newer. A C compiler is required: the `atemwire.mediaconvert` extension (BT.709 conversion and RLE encoding) builds during install. Add the `images` extra for Pillow, used only by the profile media-pool image export:
 
 ```sh
-pip install "atemwire[images] @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.14.0.dev0.tar.gz"
+pip install "atemwire[images] @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.15.0.dev0.tar.gz"
 ```
 
 ## What you get
@@ -71,6 +71,9 @@ pip install "atemwire[images] @ https://github.com/lucas-romanenko/atemwire/arch
   upstream was wrong and coverage for Fairlight dynamics and master EQ, USK
   mask and pattern, stinger settings, HyperDeck bindings, flying keys, macro
   play status and device identity.
+- **Every upstream send command**, including the multiviewer, SuperSource,
+  streaming, recording, legacy-audio, camera-control and startup-state
+  commands upstream had, restored in 0.15 with upstream's byte layouts.
 - **Macros, both directions.** A bytecode decoder and encoder covering 146
   op codes, macro download and upload over the file-transfer channel, and
   ATEM Software Control compatible `<MacroPool>` XML.
@@ -136,42 +139,28 @@ pip install "atemwire[images] @ https://github.com/lucas-romanenko/atemwire/arch
 
 ## Not included
 
-These upstream send commands were removed because nothing in the fork
-exercised them. Their receive-side fields are still parsed where upstream
-had them. Restoring one means adding a `Send` subclass in the matching
-`atemwire/messages/` module.
+Upstream's OpenSwitcher extras are not part of this package: the TCP-proxy
+and USB transports (`AtemProtocol` raises `NotImplementedError` for
+`tcp://` URLs and USB devices) and the `*XFC` proxy message that went with
+them, the camera control *module* (the `CCmd` send command is here), the
+converter / firmware / dissector tooling, the emulator, and the Videohub
+client (see [videohubwire](https://github.com/lucas-romanenko/videohubwire)).
 
-| Code | Upstream class | Area |
-|---|---|---|
-| `*XFC` | TransferCompleteCommand | TCP-proxy transfer |
-| `AiVM` | AutoInputVideoModeCommand | Video mode |
-| `CAMI` | AudioInputCommand | Legacy (pre-Fairlight) audio |
-| `CAMM` | AudioMasterPropertiesCommand | Legacy audio |
-| `CAMm` | AudioMonitorPropertiesCommand | Legacy audio |
-| `CCmd` | CameraControlCommand | Camera control |
-| `CMvI` | MultiviewInputCommand | Multiviewer |
-| `CMvP` | MultiviewPropertiesCommand | Multiviewer |
-| `CRMS` | RecordingSettingsSetCommand | Recording |
-| `CRSS` | StreamingServiceSetCommand | Streaming |
-| `CSBP` | SupersourceBoxPropertiesCommand | SuperSource |
-| `CSSc` | SupersourcePropertiesCommand | SuperSource |
-| `CTPr` | TransitionPreviewCommand | Transition preview |
-| `CTPs` | TransitionPositionCommand | Manual T-bar position |
-| `RcTM` | RecorderStatusCommand | Recording start/stop |
-| `SALN` | SendAudioLevelsCommand | Legacy audio meters |
-| `SRcl` | ClearStartupStateCommand | Startup state |
-| `SRsv` | SaveStartupStateCommand | Startup state |
-| `STAB` | StreamingAudioBitrateCommand | Streaming |
-| `SToD` | SetTimeOfDayCommand | Clock |
-| `StrR` | StreamingStatusSetCommand | Streaming start/stop |
-
-Also not included: the TCP-proxy and USB transports (`AtemProtocol` raises
-`NotImplementedError` for `tcp://` URLs and USB devices), the camera control
-module, the converter/firmware/dissector tooling, the emulator, and the
-Videohub client.
+Every upstream send command is otherwise present. The 20 that the fork had
+dropped as unused came back in 0.15 (multiviewer routing and layout,
+SuperSource boxes and art, streaming and recording settings, start/stop,
+legacy audio strips, master and monitor, camera control, transition preview
+and T-bar position, auto video mode, startup state, clock). They are declared
+in the DSL with upstream's exact byte layouts and pinned byte-for-byte
+against upstream's output in `tests/test_restored_upstream_commands.py`,
+but this fork has not yet re-verified them against a switcher; see Caveats.
 
 ## Caveats
 
+- The 20 commands restored in 0.15 (listed under Not included) reproduce
+  upstream's wire layouts exactly and are not yet Wireshark-validated on a
+  switcher by this fork. Upstream drove real hardware with them; treat them
+  as upstream did and verify a write on your model before relying on it.
 - `CKMs` (upstream keyer rectangular mask write, `atemwire/messages/upstream_keyer.py`) was drafted from the DSK mask command and the KeBP field layout and is not yet Wireshark-validated against a switcher. It is a write command, so verify it on your model before relying on it.
 - `FEna` (fade-to-black enable) is reverse-engineered and is only sent in its ME1 form.
 - The profile format is pinned to the version 2.1 XML emitted by a 1 M/E Constellation HD; other models may expose sections it does not model.

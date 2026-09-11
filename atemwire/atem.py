@@ -36,6 +36,8 @@ from atemwire._state import build_full_state, display_fps
 from atemwire.connection import ATEMConnection, ConnectionDeadError
 from atemwire.helpers import format_rate
 from atemwire.messages import (
+    audio_legacy as _m_audio_legacy,
+    camera_control as _m_camera_control,
     color_generator as _m_color_generator,
     downstream_keyer as _m_downstream_keyer,
     fade_to_black as _m_fade_to_black,
@@ -43,6 +45,10 @@ from atemwire.messages import (
     input_video as _m_input_video,
     macros as _m_macros,
     media as _m_media,
+    multiviewer as _m_multiviewer,
+    recording as _m_recording,
+    streaming as _m_streaming,
+    supersource as _m_supersource,
     switching as _m_switching,
     system_info as _m_system_info,
     transition as _m_transition,
@@ -60,7 +66,7 @@ from atemwire.pool import acquire_connection
 
 # Build the operation namespace once at module load. Each
 # ``atemwire.messages.<feature>`` module exports its operation wrappers as
-# top-level functions; we walk the 10 feature modules with ops and
+# top-level functions; we walk the feature modules with ops and
 # collect every public callable whose ``__module__`` matches the feature
 # (filtering out re-exported helpers like ``safe_int`` that were
 # imported into the module's namespace).
@@ -68,6 +74,9 @@ _OPERATION_MODULES = (
     _m_switching, _m_color_generator, _m_fade_to_black, _m_media,
     _m_input_video, _m_upstream_keyer, _m_macros, _m_downstream_keyer,
     _m_transition, _m_fairlight,
+    # 0.15: the restored upstream commands live in these (readers included)
+    _m_multiviewer, _m_recording, _m_streaming, _m_supersource,
+    _m_audio_legacy, _m_camera_control, _m_system_info,
 )
 
 _OPERATIONS: dict = {}
