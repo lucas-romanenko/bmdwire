@@ -1,18 +1,21 @@
 # atemwire
 
-This is a fork of [pyatem](https://git.sr.ht/~martijnbraam/pyatem), Martijn
-Braam's Python library for the Blackmagic Design ATEM switcher protocol. The
-package was renamed from pyatem to atemwire to avoid confusion with upstream. It
+Python library for Blackmagic Design **ATEM** switchers: the native UDP
+protocol, a thread-safe connection pool, a full macro bytecode codec, and
+save/restore of ATEM Software Control's "Save Switcher State" XML.
+
+[![CI](https://github.com/lucas-romanenko/atemwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/atemwire/actions/workflows/ci.yml) [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/atemwire?label=release&sort=semver)](https://github.com/lucas-romanenko/atemwire/tags)
+
+atemwire is a fork of [pyatem](https://git.sr.ht/~martijnbraam/pyatem), Martijn
+Braam's ATEM protocol library, renamed to avoid confusion with upstream. It
 branched from upstream commit `8f45831` (2026-03-14, six commits after the
-0.13.0 tag) and was then developed inside a broadcast control application for
-several months against live 1 M/E and Constellation switchers. This tree is
-the library part of that work, extracted and cleaned up: the UDP transport
-and protocol core with a series of reliability fixes, a declarative
-wire-format layer with corrected and extended message coverage, a full macro
-bytecode codec with macro upload, a save/restore implementation of ATEM
-Software Control's "Save Switcher State" XML format, and a thread-safe
-connection wrapper with a per-IP connection pool. The license is unchanged:
-LGPL-3.0-only (see `LICENSE`, `LICENSE-gpl3.txt` and `NOTICE`).
+0.13.0 tag) and was then developed for months inside a broadcast control
+application against live 1 M/E and Constellation switchers. This repository is
+the library part of that work, extracted and cleaned up: the transport and
+protocol core with a series of reliability fixes, a declarative wire-format
+layer with corrected and extended message coverage, the macro codec with macro
+upload, the profile save/restore, and a connection wrapper with a per-IP pool.
+The license is unchanged: LGPL-3.0-only.
 
 ```python
 from atemwire import ATEM, probe
@@ -24,6 +27,62 @@ with ATEM('192.0.2.10') as atem:
 
 print(probe('192.0.2.10'))   # {'video_format': ..., 'atem_model': ..., ...}
 ```
+
+## Status
+
+- **Pre-release** (`0.14.0.dev0`): the API is the one a production application
+  uses every day, but names may still move before 1.0.
+- Runs in production with a fleet of ATEM switchers: live switching, media-pool uploads, still capture, profile save and
+  restore, HyperDeck bindings.
+- Developed and verified against 1 M/E and Constellation switchers; the
+  profile format is pinned to the version 2.1 XML a 1 M/E Constellation HD
+  emits. Other models are expected to work for switching and media, and each
+  new write command is Wireshark-checked against a real switcher before it is
+  trusted (see Caveats for the two that are not yet).
+
+## Install
+
+Not on PyPI yet; install straight from GitHub (no git needed on the machine):
+
+```sh
+pip install "atemwire @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.14.0.dev0.tar.gz"
+```
+
+or, with git available:
+
+```sh
+pip install "git+https://github.com/lucas-romanenko/atemwire.git@v0.14.0.dev0"
+```
+
+Python 3.10 or newer. A C compiler is required: the `atemwire.mediaconvert` extension (BT.709 conversion and RLE encoding) builds during install. Add the `images` extra for Pillow, used only by the profile media-pool image export:
+
+```sh
+pip install "atemwire[images] @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.14.0.dev0.tar.gz"
+```
+
+## What you get
+
+- **Transport that survives real networks.** Correct 15-bit sequence space,
+  gap-free ACKs, go-back-N retransmission serving, in-order delivery, a
+  clean session goodbye, connect timeouts, and a transport thread that cannot
+  die silently. Optional per-packet tracing with `ATEMWIRE_PACKET_TRACE=1`.
+- **A declarative message layer.** Every command and field is a small DSL
+  class dispatched by its 4-char wire code, with corrected offsets where
+  upstream was wrong and coverage for Fairlight dynamics and master EQ, USK
+  mask and pattern, stinger settings, HyperDeck bindings, flying keys, macro
+  play status and device identity.
+- **Macros, both directions.** A bytecode decoder and encoder covering 146
+  op codes, macro download and upload over the file-transfer channel, and
+  ATEM Software Control compatible `<MacroPool>` XML.
+- **Profiles.** `Profile` saves and applies the "Save Switcher State" XML with
+  per-section options, including media-pool images.
+- **A pool you can share.** `ATEMConnection` runs the protocol on a worker
+  thread with a command queue; `acquire_connection` gives many callers one
+  session per switcher with reference counting, so a web app, an uploader and
+  a thumbnail watcher can ride the same connection without freezing each other.
+- **Fast media transfers.** Per-frame store locking that interleaves with
+  other clients, roughly tenfold upload throughput over upstream, and a
+  hardened C extension for colour conversion.
 
 ## What's different from upstream
 
@@ -111,26 +170,34 @@ Also not included: the TCP-proxy and USB transports (`AtemProtocol` raises
 module, the converter/firmware/dissector tooling, the emulator, and the
 Videohub client.
 
-## Install
-
-Requires Python 3.10 or newer and a C compiler for the `atemwire.mediaconvert`
-extension (BT.709 conversion and RLE encoding).
-
-```sh
-pip install .
-# with Pillow, needed only by Profile media-pool image export:
-pip install ".[images]"
-```
-
-To run the tests:
-
-```sh
-pip install ".[test]"
-python -m pytest
-```
-
 ## Caveats
 
 - `CKMs` (upstream keyer rectangular mask write, `atemwire/messages/upstream_keyer.py`) was drafted from the DSK mask command and the KeBP field layout and is not yet Wireshark-validated against a switcher. It is a write command, so verify it on your model before relying on it.
 - `FEna` (fade-to-black enable) is reverse-engineered and is only sent in its ME1 form.
 - The profile format is pinned to the version 2.1 XML emitted by a 1 M/E Constellation HD; other models may expose sections it does not model.
+
+## Development
+
+```sh
+git clone https://github.com/lucas-romanenko/atemwire.git
+cd atemwire
+pip install -e ".[test]"
+python -m pytest
+```
+
+The editable install matters: it builds the C extension in place. A plain `pip install .` puts the extension in site-packages, and `python -m pytest` run from the checkout then imports the source tree without it and fails on `atemwire.mediaconvert`.
+
+The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request.
+
+## Related libraries
+
+One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
+
+- [hyperdeckwire](https://github.com/lucas-romanenko/hyperdeckwire): HyperDeck recorders (transport control, clip upload)
+- [ultimattewire](https://github.com/lucas-romanenko/ultimattewire): Ultimatte keyers (archive and restore)
+- [videohubwire](https://github.com/lucas-romanenko/videohubwire): Videohub routers (routing, labels)
+
+## License
+
+LGPL-3.0-only, unchanged from upstream. See `LICENSE`, `LICENSE-gpl3.txt` and
+`NOTICE`.
