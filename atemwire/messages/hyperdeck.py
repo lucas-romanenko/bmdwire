@@ -37,6 +37,7 @@ class HyperdeckSettingsField(Recv):
     CODE = 'RXMS'
     PRETTY = 'hyperdeck-settings'
     KEY_FORMAT = struct.Struct('>H')   # index by slot id (u16 @ offset 0)
+    HAND_PARSED_OFFSETS = (4,)         # the IPv4 address below is decoded by hand
 
     index = u16(at=0)
     input = u16(at=8)

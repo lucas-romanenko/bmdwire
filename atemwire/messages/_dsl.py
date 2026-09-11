@@ -51,6 +51,12 @@ Field options:
                   (display → wire). e.g. ``scale=10`` means display value
                   ``180.0`` packs as wire ``1800`` and unpacks back to
                   ``180.0``. Default 1 (no scaling).
+- ``tail(pad_to=N)`` — one variable-length bytes field appended after
+                  ``SIZE`` (declare it last); ``string`` takes ``mask_bit``
+                  like the numeric fields. Both added in 0.15.
+
+The docstring offset tables on every Send / Recv class are checked against
+these declarations by ``tests/test_docstring_tables_match_declarations.py``.
 """
 
 import struct
@@ -139,10 +145,11 @@ class boolean(Field):
 class string(Field):
     """Fixed-length NUL-terminated UTF-8 string. ``size`` is the number of
     raw bytes occupied by the field; on unpack, anything from the first
-    NUL byte onward is dropped."""
+    NUL byte onward is dropped. Takes ``mask_bit`` like the numeric fields
+    (added 0.15 so CRMS / CRSS need no hand-written mask handling)."""
 
-    def __init__(self, at: int, size: int):
-        super().__init__(at)
+    def __init__(self, at: int, size: int, mask_bit: Optional[int] = None):
+        super().__init__(at, mask_bit=mask_bit)
         self.size = size
         self.fmt = f'>{size}s'
 
@@ -153,6 +160,31 @@ class string(Field):
     def unpack(self, raw: bytes) -> str:
         raw_bytes = struct.unpack_from(self.fmt, raw, self.at)[0]
         return raw_bytes.split(b'\x00')[0].decode('utf-8', errors='replace')
+
+
+class tail(Field):
+    """Variable-length bytes appended after the fixed ``SIZE`` bytes of the
+    payload (0.15). Declare it last. The value is ``bytes``; ``pad_to``
+    zero-pads a shorter value up to that many bytes, which is how the
+    camera-control command pads its data block to 8. On Recv the field
+    unpacks as everything from ``SIZE`` to the end of the packet.
+
+    ``at`` is filled in by the metaclass from the class's ``SIZE``, so a
+    tail always starts exactly where the fixed layout ends."""
+    size = 0
+
+    def __init__(self, pad_to: Optional[int] = None):
+        super().__init__(at=-1)
+        self.pad_to = pad_to
+
+    def pack(self, buf: bytearray, value) -> None:
+        data = bytes(value)
+        if self.pad_to and len(data) < self.pad_to:
+            data += b'\0' * (self.pad_to - len(data))
+        buf.extend(data)
+
+    def unpack(self, raw: bytes) -> bytes:
+        return bytes(raw[self.at:])
 
 
 class _MessageMeta(type):
@@ -169,12 +201,24 @@ class _MessageMeta(type):
         fields = {}
         for base in bases:
             fields.update(getattr(base, '_fields', {}))
+        size = attrs.get('SIZE')
+        tails = 0
         for k, v in list(attrs.items()):
             if isinstance(v, Field):
+                if isinstance(v, tail):
+                    tails += 1
+                    if size is None:
+                        raise TypeError(f'{name}: a tail field needs SIZE on the class')
+                    v.at = size
                 fields[k] = v
                 del attrs[k]
+        if tails > 1:
+            raise TypeError(f'{name}: at most one tail field')
         attrs['_fields'] = fields
-        return super().__new__(mcs, name, bases, attrs)
+        cls = super().__new__(mcs, name, bases, attrs)
+        if tails and list(fields.values())[-1] is not [v for v in fields.values() if isinstance(v, tail)][0]:
+            raise TypeError(f'{name}: the tail field must be declared last')
+        return cls
 
 
 class _Message(metaclass=_MessageMeta):

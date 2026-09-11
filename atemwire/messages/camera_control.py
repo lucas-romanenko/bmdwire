@@ -12,7 +12,7 @@ Wire packets (incoming only):
 import struct
 
 from atemwire.messages._dsl import Recv
-from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
+from atemwire.messages._dsl import Send, boolean, tail, u8  # noqa: F401  (restored upstream commands)
 
 
 class CameraControlDataPacketField(Recv):
@@ -115,54 +115,55 @@ class CameraControlCommand(Send):
     2      1    u8     Parameter
     3      1    bool   Relative adjustment
     4      1    u8     Data type (0 bool, 1 int8, 2 int16, 3 int32, 4 int64, 5 string, 128 fixed16)
-    5      11   ?      element counts (the count lands at the type-dependent offset upstream used)
-    16     ...  ?      data, padded to 8 bytes
+    5      2    ?      unknown
+    7      1    u8     Element count for bool / int8 / int16 / int64 / string
+    8      1    ?      unknown
+    9      1    u8     Element count for int32 / fixed16
+    10     6    ?      unknown
+    16     ...  bytes  Data, packed per type, zero-padded to 8 bytes
     ====== ==== ====== ===========
 
-    Ported verbatim from upstream, including its count-offset table and the
-    padding rule; upstream drove real cameras with it but this fork has not
-    re-verified it. ``data`` is copied, never mutated.
+    The layout, the two count positions and the padding rule are upstream's
+    (it drove real cameras with them; this fork has not re-verified them).
+    ``__init__`` turns the Python values into wire bytes: fixed16 is
+    ``int(v * 2**11)`` as i16, strings are UTF-8, everything else is the
+    big-endian struct type. The caller's list is never mutated.
     """
     CODE = 'CCmd'
     SIZE = 16
 
-    _COUNT_OFFSET = {0: 2, 1: 2, 2: 2, 3: 4, 4: 2, 5: 2, 128: 4}
-    _ELEMENT_FMT = {0: '?', 1: 'b', 2: 'h', 3: 'i', 4: 'q', 5: '', 128: 'h'}
+    _COUNT_AT_9 = {3, 128}
+    _ELEMENT_FMT = {0: '?', 1: 'b', 2: 'h', 3: 'i', 4: 'q', 128: 'h'}
 
     destination = u8     (at=0)
     category    = u8     (at=1)
     parameter   = u8     (at=2)
     relative    = boolean(at=3)
     datatype    = u8     (at=4)
+    count_at_7  = u8     (at=7)
+    count_at_9  = u8     (at=9)
+    data        = tail   (pad_to=8)
 
     def __init__(self, destination, category, parameter, relative=False, datatype=None, data=None):
-        super().__init__(destination=destination, category=category, parameter=parameter,
-                         relative=bool(relative), datatype=0 if datatype is None else datatype)
-        self.data = None if data is None else list(data)
+        datatype = 0 if datatype is None else datatype
+        count = len(data) if data is not None else 0
+        super().__init__(
+            destination=destination, category=category, parameter=parameter,
+            relative=bool(relative), datatype=datatype,
+            count_at_9=count if datatype in self._COUNT_AT_9 else None,
+            count_at_7=None if datatype in self._COUNT_AT_9 else count,
+            data=None if data is None else self._encode(datatype, list(data)),
+        )
 
-    def get_command(self):
+    @classmethod
+    def _encode(cls, datatype, values):
         import struct
-        count = len(self.data) if self.data is not None else 0
-        buf = bytearray(self.SIZE)
-        struct.pack_into('>5B', buf, 0, self.destination, self.category, self.parameter,
-                         1 if self.relative else 0, self.datatype)
-        buf[5 + self._COUNT_OFFSET[self.datatype]] = count
-        payload = bytes(buf)
-        if self.data is not None:
-            values = list(self.data)
-            if self.datatype == 128:
-                values = [int(v * (2 ** 11)) for v in values]
-                fmt = f'>{count}h'
-            elif self.datatype == 5:
-                values = [v.encode() if isinstance(v, str) else bytes(v) for v in values]
-                fmt = f'>{len(values[0])}s'
-            else:
-                fmt = f'>{count}{self._ELEMENT_FMT[self.datatype]}'
-            packed = struct.pack(fmt, *values)
-            packed += b'\0' * (8 - len(packed))
-            payload += packed
-        header = struct.pack('>H 2x 4s', len(payload) + 8, self.CODE.encode())
-        return header + payload
+        if datatype == 5:
+            parts = [v.encode() if isinstance(v, str) else bytes(v) for v in values]
+            return b''.join(struct.pack(f'>{len(p)}s', p) for p in parts)
+        if datatype == 128:
+            values = [int(v * (2 ** 11)) for v in values]
+        return struct.pack(f'>{len(values)}{cls._ELEMENT_FMT[datatype]}', *values)
 
 
 def camera_control(conn, destination, category, parameter, relative=False, datatype=None, data=None):
