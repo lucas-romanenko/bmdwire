@@ -97,3 +97,9 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A manual "Run workflow" on a tag that is already on PyPI is a
+          # no-op (the way to prove the publisher is wired without a new
+          # version). A release-triggered run keeps failing on a duplicate,
+          # so a tag made without a version bump is caught loudly.
+          skip-existing: ${{ github.event_name == 'workflow_dispatch' }}
