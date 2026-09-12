@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atemwire"
+version = "0.15.0.dev0"
+description = "Blackmagic Design ATEM switcher protocol library, a fork of Martijn Braam's upstream library"
+readme = "README.md"
+license = { text = "LGPL-3.0-only" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Martijn Braam and the OpenAtem contributors" },
+    { name = "Lucas Romanenko" },
+]
+classifiers = [
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Development Status :: 4 - Beta",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+[project.urls]
+Repository = "https://github.com/lucas-romanenko/atemwire"
+Issues = "https://github.com/lucas-romanenko/atemwire/issues"
+
+[project.optional-dependencies]
+images = ["pillow"]
+test = ["pytest", "pytest-timeout", "pillow"]
+
+[tool.setuptools.packages.find]
+include = ["atemwire", "atemwire.*"]
+exclude = ["atemwire.tests"]
+
+[tool.setuptools.package-data]
+atemwire = ["py.typed", "docs/*.md"]
