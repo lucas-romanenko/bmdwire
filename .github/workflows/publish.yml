@@ -10,9 +10,10 @@
 # Tags are <package>-v<version>: atemwire-v0.15.0.dev0, hyperdeckwire-v0.1.0.dev0,
 # ultimattewire-v0.1.0.dev0, videohubwire-v0.1.0.dev0. The workflow parses the
 # tag, refuses anything else, checks the version against that package's
-# pyproject.toml, builds only that package (atemwire ships an sdist only —
-# its C extension builds on install; the others ship sdist + wheel) and
-# publishes it. Re-publish an existing tag with "Run workflow" and the tag
+# pyproject.toml, builds only that package and publishes it. atemwire ships
+# an sdist plus prebuilt wheels (cibuildwheel: Linux x86_64 and aarch64,
+# macOS arm64 and x86_64, Windows x86_64, CPython 3.10–3.14) so a pip
+# install never needs a C compiler; the others ship sdist + wheel. Re-publish an existing tag with "Run workflow" and the tag
 # name. A GitHub release for the tag triggers it too.
 name: Publish to PyPI
 
@@ -32,6 +33,8 @@ jobs:
   build:
     name: Build ${{ github.event.inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.parse.outputs.package }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,9 +87,41 @@ jobs:
           name: dist
           path: ${{ steps.parse.outputs.package }}/dist/
 
+  # atemwire only: binary wheels for the C extension, one runner per
+  # platform (the macOS runner cross-compiles the x86_64 wheel as well).
+  wheels:
+    name: atemwire wheels on ${{ matrix.os }}
+    needs: build
+    if: needs.build.outputs.package == 'atemwire'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: pypa/cibuildwheel@v4
+        with:
+          package-dir: atemwire
+          output-dir: wheelhouse
+        env:
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
+          CIBW_SKIP: "pp* *-musllinux_*"
+          CIBW_ARCHS_MACOS: "arm64 x86_64"
+          CIBW_TEST_COMMAND: python -c "import atemwire.mediaconvert"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [build, wheels]
+    # Runs after the sdist and, for atemwire, the wheels; the wheels job is
+    # skipped for the other packages and that must not block them.
+    if: always() && needs.build.result == 'success' && (needs.wheels.result == 'success' || needs.wheels.result == 'skipped')
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -96,6 +131,14 @@ jobs:
         with:
           name: dist
           path: dist/
+      - uses: actions/download-artifact@v4
+        if: needs.wheels.result == 'success'
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/
+      - name: What is being published
+        run: ls -l dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           # A manual "Run workflow" on a tag that is already on PyPI is a
