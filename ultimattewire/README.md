@@ -16,7 +16,7 @@ established and what is still a guess.
 
 ## Status
 
-- **Pre-release** (`0.1.0.dev0`), extracted from a broadcast control
+- **Pre-release** (`0.1.0.dev1`), extracted from a broadcast control
   application where operators archive and restore keyer configurations from a
   web page.
 - Verified against an Ultimatte 12 4K (the unit the captures came from). The
@@ -31,10 +31,10 @@ From PyPI:
 pip install ultimattewire
 ```
 
-Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`ultimattewire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Only pre-release versions exist so far (0.1.0.dev1). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`ultimattewire==0.1.0.dev1`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "ultimattewire @ git+https://github.com/lucas-romanenko/bmdwire.git@ultimattewire-v0.1.0.dev0#subdirectory=ultimattewire"
+pip install "ultimattewire @ git+https://github.com/lucas-romanenko/bmdwire.git@ultimattewire-v0.1.0.dev1#subdirectory=ultimattewire"
 ```
 
 Python 3.10 or newer. No other dependencies.

@@ -13,7 +13,7 @@ including the Studio HD Mini, offers these two.
 
 ## Status
 
-- **Pre-release** (`0.1.0.dev0`), extracted from a broadcast control
+- **Pre-release** (`0.1.0.dev1`), extracted from a broadcast control
   application where it drives decks in production: clip push, cue-and-loop
   as a switcher background source, and a transport modal for operators.
 - Verified on a HyperDeck Studio HD Mini (firmware 8.1.1) through the full
@@ -28,10 +28,10 @@ From PyPI:
 pip install hyperdeckwire
 ```
 
-Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`hyperdeckwire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Only pre-release versions exist so far (0.1.0.dev1). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`hyperdeckwire==0.1.0.dev1`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "hyperdeckwire @ git+https://github.com/lucas-romanenko/bmdwire.git@hyperdeckwire-v0.1.0.dev0#subdirectory=hyperdeckwire"
+pip install "hyperdeckwire @ git+https://github.com/lucas-romanenko/bmdwire.git@hyperdeckwire-v0.1.0.dev1#subdirectory=hyperdeckwire"
 ```
 
 Python 3.10 or newer. No other dependencies.
