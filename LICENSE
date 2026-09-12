@@ -1,0 +1,12 @@
+bmdwire is four independently licensed packages in one repository. Each
+package directory carries its own license file, which governs everything
+under it:
+
+    atemwire/        LGPL-3.0-only   atemwire/LICENSE, atemwire/LICENSE-gpl3.txt
+                                     and atemwire/NOTICE (a fork of pyatem)
+    hyperdeckwire/   MIT             hyperdeckwire/LICENSE
+    ultimattewire/   MIT             ultimattewire/LICENSE
+    videohubwire/    MIT             videohubwire/LICENSE
+
+Everything outside those four directories (this file, README.md, the
+workflows) is MIT, under the same terms as hyperdeckwire/LICENSE.
