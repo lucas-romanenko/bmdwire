@@ -1,0 +1,63 @@
+# Publish to PyPI on a GitHub release, via trusted publishing (OIDC): no API
+# token lives in this repo. PyPI must know this workflow first: on pypi.org,
+# add a publisher for project "atemwire" with owner lucas-romanenko, repository
+# atemwire, workflow publish.yml, environment pypi.
+#
+# Versions come from pyproject.toml; the tag must be "v" + that version, and
+# the job refuses to build otherwise so a tag can never publish the wrong
+# version. Re-publish an existing tag with "Run workflow" and the tag name.
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.1.0.dev0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag matches pyproject version
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          echo "tag=$tag version=$version"
+          test "$tag" = "v$version"
+      - name: "Build sdist (atemwire ships an sdist only; the C extension builds on install)"
+        run: |
+          pip install build
+          python -m build --sdist
+      - name: Check the distributions
+        run: |
+          pip install twine
+          twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
