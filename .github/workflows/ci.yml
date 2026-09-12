@@ -74,3 +74,19 @@ jobs:
       - name: Test
         working-directory: ${{ matrix.package }}
         run: python -m pytest -q
+
+  # One check with a fixed name for branch protection to require: the matrix
+  # job names vary with the path filter, this one is always there and is
+  # green only when the change detection and every selected test job passed.
+  result:
+    name: CI result
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          TESTS: ${{ needs.test.result }}
+        run: |
+          echo "changes=$CHANGES tests=$TESTS"
+          test "$CHANGES" = "success" && test "$TESTS" = "success"
