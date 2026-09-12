@@ -5,7 +5,7 @@ Ethernet Protocol on TCP 9990: state snapshot, crosspoint routing with
 ACK/NAK handling, port labels, and live application of the router's pushed
 updates.
 
-[![CI](https://github.com/lucas-romanenko/videohubwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/videohubwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/videohubwire.svg)](https://pypi.org/project/videohubwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/videohubwire?label=release&sort=semver)](https://github.com/lucas-romanenko/videohubwire/tags)
+[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/videohubwire.svg)](https://pypi.org/project/videohubwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=videohubwire-v*&label=release)](https://github.com/lucas-romanenko/bmdwire/tags)
 
 videohubwire is small, dependency-free and synchronous by design: open, read,
 act, close, in milliseconds on a LAN, which suits per-request use from a web
@@ -27,10 +27,10 @@ From PyPI:
 pip install videohubwire
 ```
 
-Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`videohubwire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (no git needed on the machine):
+Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`videohubwire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "videohubwire @ https://github.com/lucas-romanenko/videohubwire/archive/refs/tags/v0.1.0.dev0.tar.gz"
+pip install "videohubwire @ git+https://github.com/lucas-romanenko/bmdwire.git@videohubwire-v0.1.0.dev0#subdirectory=videohubwire"
 ```
 
 Python 3.10 or newer. No other dependencies.
@@ -89,8 +89,8 @@ or what this client does on top of it.
 ## Development
 
 ```sh
-git clone https://github.com/lucas-romanenko/videohubwire.git
-cd videohubwire
+git clone https://github.com/lucas-romanenko/bmdwire.git
+cd bmdwire/videohubwire
 pip install -e ".[test]"
 python -m pytest
 ```
@@ -101,9 +101,9 @@ The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every 
 
 One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
 
-- [atemwire](https://github.com/lucas-romanenko/atemwire): ATEM switchers (UDP protocol, macros, profiles)
-- [hyperdeckwire](https://github.com/lucas-romanenko/hyperdeckwire): HyperDeck recorders (transport control, clip upload)
-- [ultimattewire](https://github.com/lucas-romanenko/ultimattewire): Ultimatte keyers (archive and restore)
+- [atemwire](../atemwire/): ATEM switchers (UDP protocol, macros, profiles)
+- [hyperdeckwire](../hyperdeckwire/): HyperDeck recorders (transport control, clip upload)
+- [ultimattewire](../ultimattewire/): Ultimatte keyers (archive and restore)
 
 ## License
 

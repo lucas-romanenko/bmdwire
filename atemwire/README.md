@@ -4,7 +4,7 @@ Python library for Blackmagic Design **ATEM** switchers: the native UDP
 protocol, a thread-safe connection pool, a full macro bytecode codec, and
 save/restore of ATEM Software Control's "Save Switcher State" XML.
 
-[![CI](https://github.com/lucas-romanenko/atemwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/atemwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/atemwire.svg)](https://pypi.org/project/atemwire/) [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/atemwire?label=release&sort=semver)](https://github.com/lucas-romanenko/atemwire/tags)
+[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/atemwire.svg)](https://pypi.org/project/atemwire/) [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=atemwire-v*&label=release)](https://github.com/lucas-romanenko/bmdwire/tags)
 
 atemwire is a fork of [pyatem](https://git.sr.ht/~martijnbraam/pyatem), Martijn
 Braam's ATEM protocol library, renamed to avoid confusion with upstream. It
@@ -49,10 +49,10 @@ From PyPI:
 pip install atemwire
 ```
 
-Only pre-release versions exist so far (0.15.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`atemwire==0.15.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (no git needed on the machine):
+Only pre-release versions exist so far (0.15.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`atemwire==0.15.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "atemwire @ https://github.com/lucas-romanenko/atemwire/archive/refs/tags/v0.15.0.dev0.tar.gz"
+pip install "atemwire @ git+https://github.com/lucas-romanenko/bmdwire.git@atemwire-v0.15.0.dev0#subdirectory=atemwire"
 ```
 
 Python 3.10 or newer. A C compiler is required: the `atemwire.mediaconvert` extension (BT.709 conversion and RLE encoding) builds during install. Add the `images` extra for Pillow, used only by the profile media-pool image export:
@@ -157,7 +157,7 @@ and USB transports (`AtemProtocol` raises `NotImplementedError` for
 `tcp://` URLs and USB devices) and the `*XFC` proxy message that went with
 them, the camera control *module* (the `CCmd` send command is here), the
 converter / firmware / dissector tooling, the emulator, and the Videohub
-client (see [videohubwire](https://github.com/lucas-romanenko/videohubwire)).
+client (see [videohubwire](../videohubwire/)).
 
 ## Caveats
 
@@ -172,8 +172,8 @@ client (see [videohubwire](https://github.com/lucas-romanenko/videohubwire)).
 ## Development
 
 ```sh
-git clone https://github.com/lucas-romanenko/atemwire.git
-cd atemwire
+git clone https://github.com/lucas-romanenko/bmdwire.git
+cd bmdwire/atemwire
 pip install -e ".[test]"
 python -m pytest
 ```
@@ -186,9 +186,9 @@ The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every 
 
 One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
 
-- [hyperdeckwire](https://github.com/lucas-romanenko/hyperdeckwire): HyperDeck recorders (transport control, clip upload)
-- [ultimattewire](https://github.com/lucas-romanenko/ultimattewire): Ultimatte keyers (archive and restore)
-- [videohubwire](https://github.com/lucas-romanenko/videohubwire): Videohub routers (routing, labels)
+- [hyperdeckwire](../hyperdeckwire/): HyperDeck recorders (transport control, clip upload)
+- [ultimattewire](../ultimattewire/): Ultimatte keyers (archive and restore)
+- [videohubwire](../videohubwire/): Videohub routers (routing, labels)
 
 ## License
 

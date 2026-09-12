@@ -5,7 +5,7 @@ Python library that archives and restores the configuration of a Blackmagic
 producing and consuming the same zip archives the vendor's Smart Remote 4
 writes with **Archive All** and reads with **Restore**.
 
-[![CI](https://github.com/lucas-romanenko/ultimattewire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/ultimattewire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/ultimattewire.svg)](https://pypi.org/project/ultimattewire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/ultimattewire?label=release&sort=semver)](https://github.com/lucas-romanenko/ultimattewire/tags)
+[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/ultimattewire.svg)](https://pypi.org/project/ultimattewire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=ultimattewire-v*&label=release)](https://github.com/lucas-romanenko/bmdwire/tags)
 
 Blackmagic does not document the protocol. Everything here was
 reverse-engineered from packet captures of the vendor app talking to real
@@ -31,10 +31,10 @@ From PyPI:
 pip install ultimattewire
 ```
 
-Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`ultimattewire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (no git needed on the machine):
+Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`ultimattewire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "ultimattewire @ https://github.com/lucas-romanenko/ultimattewire/archive/refs/tags/v0.1.0.dev0.tar.gz"
+pip install "ultimattewire @ git+https://github.com/lucas-romanenko/bmdwire.git@ultimattewire-v0.1.0.dev0#subdirectory=ultimattewire"
 ```
 
 Python 3.10 or newer. No other dependencies.
@@ -234,8 +234,8 @@ the second.
 ## Development
 
 ```sh
-git clone https://github.com/lucas-romanenko/ultimattewire.git
-cd ultimattewire
+git clone https://github.com/lucas-romanenko/bmdwire.git
+cd bmdwire/ultimattewire
 pip install -e ".[test]"
 python -m pytest
 ```
@@ -246,9 +246,9 @@ The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every 
 
 One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
 
-- [atemwire](https://github.com/lucas-romanenko/atemwire): ATEM switchers (UDP protocol, macros, profiles)
-- [hyperdeckwire](https://github.com/lucas-romanenko/hyperdeckwire): HyperDeck recorders (transport control, clip upload)
-- [videohubwire](https://github.com/lucas-romanenko/videohubwire): Videohub routers (routing, labels)
+- [atemwire](../atemwire/): ATEM switchers (UDP protocol, macros, profiles)
+- [hyperdeckwire](../hyperdeckwire/): HyperDeck recorders (transport control, clip upload)
+- [videohubwire](../videohubwire/): Videohub routers (routing, labels)
 
 ## License
 

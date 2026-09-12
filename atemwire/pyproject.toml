@@ -27,8 +27,8 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/lucas-romanenko/atemwire"
-Issues = "https://github.com/lucas-romanenko/atemwire/issues"
+Repository = "https://github.com/lucas-romanenko/bmdwire/tree/main/atemwire"
+Issues = "https://github.com/lucas-romanenko/bmdwire/issues"
 
 [project.optional-dependencies]
 images = ["pillow"]
