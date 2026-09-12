@@ -24,8 +24,8 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/lucas-romanenko/videohubwire"
-Issues = "https://github.com/lucas-romanenko/videohubwire/issues"
+Repository = "https://github.com/lucas-romanenko/bmdwire/tree/main/videohubwire"
+Issues = "https://github.com/lucas-romanenko/bmdwire/issues"
 
 [project.optional-dependencies]
 test = ["pytest"]

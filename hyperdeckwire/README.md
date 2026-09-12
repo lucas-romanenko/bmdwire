@@ -4,7 +4,7 @@ Python library for Blackmagic **HyperDeck Studio** recorders: transport control,
 clip listing and timeline editing over the HyperDeck Ethernet Protocol (TCP
 9993), plus clip upload over the deck's built-in FTP server.
 
-[![CI](https://github.com/lucas-romanenko/hyperdeckwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/hyperdeckwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/hyperdeckwire.svg)](https://pypi.org/project/hyperdeckwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/hyperdeckwire?label=release&sort=semver)](https://github.com/lucas-romanenko/hyperdeckwire/tags)
+[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/hyperdeckwire.svg)](https://pypi.org/project/hyperdeckwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=hyperdeckwire-v*&label=release)](https://github.com/lucas-romanenko/bmdwire/tags)
 
 hyperdeckwire is small and dependency-free. It targets the `9993 + FTP`
 combination on purpose: the HTTP REST API that arrived in firmware 8.x is only
@@ -28,10 +28,10 @@ From PyPI:
 pip install hyperdeckwire
 ```
 
-Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`hyperdeckwire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (no git needed on the machine):
+Only pre-release versions exist so far (0.1.0.dev0). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`hyperdeckwire==0.1.0.dev0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "hyperdeckwire @ https://github.com/lucas-romanenko/hyperdeckwire/archive/refs/tags/v0.1.0.dev0.tar.gz"
+pip install "hyperdeckwire @ git+https://github.com/lucas-romanenko/bmdwire.git@hyperdeckwire-v0.1.0.dev0#subdirectory=hyperdeckwire"
 ```
 
 Python 3.10 or newer. No other dependencies.
@@ -94,8 +94,8 @@ that was established on hardware.
 ## Development
 
 ```sh
-git clone https://github.com/lucas-romanenko/hyperdeckwire.git
-cd hyperdeckwire
+git clone https://github.com/lucas-romanenko/bmdwire.git
+cd bmdwire/hyperdeckwire
 pip install -e ".[test]"
 python -m pytest
 ```
@@ -106,9 +106,9 @@ The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every 
 
 One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
 
-- [atemwire](https://github.com/lucas-romanenko/atemwire): ATEM switchers (UDP protocol, macros, profiles)
-- [ultimattewire](https://github.com/lucas-romanenko/ultimattewire): Ultimatte keyers (archive and restore)
-- [videohubwire](https://github.com/lucas-romanenko/videohubwire): Videohub routers (routing, labels)
+- [atemwire](../atemwire/): ATEM switchers (UDP protocol, macros, profiles)
+- [ultimattewire](../ultimattewire/): Ultimatte keyers (archive and restore)
+- [videohubwire](../videohubwire/): Videohub routers (routing, labels)
 
 ## License
 
