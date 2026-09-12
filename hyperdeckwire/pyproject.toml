@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hyperdeckwire"
-version = "0.1.0.dev0"
+version = "0.1.0.dev1"
 description = "Blackmagic HyperDeck control over the Ethernet Protocol (TCP 9993) plus FTP clip upload"
 readme = "README.md"
 license = { text = "MIT" }
