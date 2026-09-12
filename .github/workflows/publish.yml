@@ -1,0 +1,99 @@
+# Publish ONE package to PyPI per tag, via trusted publishing (OIDC): no API
+# token lives in this repository.
+#
+# ON PYPI.ORG, ONCE PER PROJECT (manual): each of the four projects —
+# atemwire, hyperdeckwire, ultimattewire, videohubwire — has a trusted
+# publisher that still points at its old repository. Update (or add) each
+# one to owner lucas-romanenko, repository bmdwire, workflow publish.yml,
+# environment pypi. Until that is done PyPI refuses uploads from here.
+#
+# Tags are <package>-v<version>: atemwire-v0.15.0.dev0, hyperdeckwire-v0.1.0.dev0,
+# ultimattewire-v0.1.0.dev0, videohubwire-v0.1.0.dev0. The workflow parses the
+# tag, refuses anything else, checks the version against that package's
+# pyproject.toml, builds only that package (atemwire ships an sdist only —
+# its C extension builds on install; the others ship sdist + wheel) and
+# publishes it. Re-publish an existing tag with "Run workflow" and the tag
+# name. A GitHub release for the tag triggers it too.
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, <package>-v<version> (e.g. atemwire-v0.15.0.dev0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ github.event.inputs.tag || github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Parse the tag into package and version
+        id: parse
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          case "$TAG" in
+            atemwire-v?*|hyperdeckwire-v?*|ultimattewire-v?*|videohubwire-v?*) ;;
+            *) echo "::error::tag '$TAG' is not <package>-v<version> for one of the four packages"; exit 1 ;;
+          esac
+          package="${TAG%%-v*}"
+          version="${TAG#*-v}"
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG package=$package version=$version"
+      - name: Tag version matches the package's pyproject version
+        working-directory: ${{ steps.parse.outputs.package }}
+        env:
+          TAG_VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          echo "tag version=$TAG_VERSION pyproject version=$version"
+          test "$TAG_VERSION" = "$version"
+      - name: Build the distribution
+        working-directory: ${{ steps.parse.outputs.package }}
+        env:
+          PACKAGE: ${{ steps.parse.outputs.package }}
+        run: |
+          pip install build
+          if [ "$PACKAGE" = "atemwire" ]; then
+            python -m build --sdist
+          else
+            python -m build
+          fi
+          ls -l dist/
+      - name: Check the distributions
+        working-directory: ${{ steps.parse.outputs.package }}
+        run: |
+          pip install twine
+          twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: ${{ steps.parse.outputs.package }}/dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
