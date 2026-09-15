@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ultimattewire"
-version = "0.2.0.dev0"
+version = "1.0.0"
 description = "Blackmagic Ultimatte 12 archive and restore over its native TCP protocol (Smart Remote 4 compatible zips)"
 readme = "README.md"
 license = { text = "MIT" }
