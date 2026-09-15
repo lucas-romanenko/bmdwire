@@ -30,8 +30,10 @@ print(probe('192.0.2.10'))   # {'video_format': ..., 'atem_model': ..., ...}
 
 ## Status
 
-- **Pre-release** (`0.15.0.dev1`): the API is the one a production application
-  uses every day, but names may still move before 1.0.
+- **1.0.0**: the API is the one a production application uses every day, and
+  it is now covered by the version number. `atemwire.state`, `messages`,
+  `pool`, `profile` and `ready` are public; protocol and transport are the
+  wire and may change in a minor release.
 - Runs in production driving a fleet of ATEM switchers from a Django/Channels
   app: live switching, media-pool uploads, still capture, profile save and
   restore, HyperDeck bindings.
@@ -49,13 +51,13 @@ From PyPI:
 pip install atemwire
 ```
 
-Only pre-release versions exist so far (0.15.0.dev1). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`atemwire==0.15.0.dev1`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Pin the version in a requirements file (`atemwire==1.0.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "atemwire @ git+https://github.com/lucas-romanenko/bmdwire.git@atemwire-v0.15.0.dev1#subdirectory=atemwire"
+pip install "atemwire @ git+https://github.com/lucas-romanenko/bmdwire.git@atemwire-v1.0.0#subdirectory=atemwire"
 ```
 
-Python 3.10 or newer. A C compiler is required: the `atemwire.mediaconvert` extension (BT.709 conversion and RLE encoding) builds during install. Add the `images` extra for Pillow, used only by the profile media-pool image export:
+Python 3.10 or newer. The `atemwire.mediaconvert` extension (BT.709 conversion and RLE encoding) ships as a prebuilt wheel for Linux, macOS and Windows on CPython 3.10 to 3.14, so the usual install needs no compiler. On anything outside that set pip falls back to the sdist and builds it, which does need one. Add the `images` extra for Pillow, used only by the profile media-pool image export:
 
 ```sh
 pip install "atemwire[images]"

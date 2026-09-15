@@ -13,7 +13,7 @@ backend or a script.
 
 ## Status
 
-- **Pre-release** (`0.1.0.dev1`), extracted from a broadcast control
+- **1.0.0**, extracted from a broadcast control
   application where it backs a routing page operators use in production
   against Smart Videohub 40 x 40 and 80 x 80 routers.
 - The canned preamble in the tests has the shape of a Smart Videohub 40 x 40
@@ -27,10 +27,10 @@ From PyPI:
 pip install videohubwire
 ```
 
-Only pre-release versions exist so far (0.1.0.dev1). pip installs a pre-release when it is the only release there is, so no `--pre` is needed; pin the version in a requirements file (`videohubwire==0.1.0.dev1`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Pin the version in a requirements file (`videohubwire==1.0.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "videohubwire @ git+https://github.com/lucas-romanenko/bmdwire.git@videohubwire-v0.1.0.dev1#subdirectory=videohubwire"
+pip install "videohubwire @ git+https://github.com/lucas-romanenko/bmdwire.git@videohubwire-v1.0.0#subdirectory=videohubwire"
 ```
 
 Python 3.10 or newer. No other dependencies.
