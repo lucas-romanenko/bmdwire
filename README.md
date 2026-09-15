@@ -1,4 +1,4 @@
-# bmdwire
+<p align="center"><img src=".github/banner.png" alt="bmdwire: Python libraries for Blackmagic Design broadcast devices. One package per device family, four independent PyPI distributions in one repository." width="100%"></p>
 
 Python libraries for Blackmagic Design broadcast devices: one package per device family, four independent PyPI distributions in one repository.
 

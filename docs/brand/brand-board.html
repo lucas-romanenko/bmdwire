@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  body { margin: 0; background: #0E0F10; }
+  a { color: #E2A05C; text-decoration: none; }
+  a:hover { color: #EFBB86; }
+</style>
+</helmet>
+
+<div style="background:#0E0F10;color:#EDEDEA;font-family:Archivo,Helvetica,sans-serif;padding:56px 32px 120px;display:flex;flex-direction:column;align-items:center;gap:88px">
+  <div style="width:100%;max-width:1120px;display:flex;flex-direction:column;gap:88px">
+
+    <div style="display:flex;flex-direction:column;gap:18px;border-bottom:1px solid #26292C;padding-bottom:40px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:0.18em;text-transform:uppercase;color:#7E8386">Identity system — v1 · sibling to webATEM</div>
+      <div style="font-size:clamp(34px,5vw,56px);font-weight:800;letter-spacing:-0.03em;line-height:1">
+        <span style="font-weight:400;color:#9A9E9F">bmd</span>wire
+      </div>
+      <div style="font-size:17px;color:#9A9E9F;max-width:56ch;text-wrap:pretty;line-height:1.55">Python libraries for Blackmagic Design broadcast devices. One package per device family.</div>
+    </div>
+
+    <!-- 01 logo -->
+    <div style="display:flex;flex-direction:column;gap:24px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#7E8386">01 — Logo</div>
+
+      <div style="color:#9A9E9F;font-size:15px;line-height:1.6;max-width:68ch;text-wrap:pretty">webATEM is an operator's panel, so its mark is a panel. bmdwire is the layer underneath — one protocol library feeding four device families — so its mark is a bus with four taps. Same tile, same type, different idea: they read as siblings without one wearing the other's clothes.</div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:20px">
+        <div style="background:#141618;border:1px solid #26292C;border-radius:14px;padding:48px 40px;display:flex;align-items:center;gap:20px;min-height:190px">
+          <div style="width:56px;height:56px;border-radius:13px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;padding:11px;display:flex;gap:5px;flex:none">
+            <div style="width:6px;border-radius:2px;background:#D98A3D"></div>
+            <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+              <div style="width:100%;height:5px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:72%;height:5px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:88%;height:5px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:58%;height:5px;border-radius:2px;background:#8A9094"></div>
+            </div>
+          </div>
+          <div style="font-size:34px;font-weight:800;letter-spacing:-0.03em;line-height:1"><span style="font-weight:400;color:#9A9E9F">bmd</span>wire</div>
+        </div>
+
+        <div style="background:#F2F1EE;border:1px solid #26292C;border-radius:14px;padding:48px 40px;display:flex;align-items:center;gap:20px;min-height:190px">
+          <div style="width:56px;height:56px;border-radius:13px;background:#D3D2CD;border:1px solid #CFCEC9;box-sizing:border-box;padding:11px;display:flex;gap:5px;flex:none">
+            <div style="width:6px;border-radius:2px;background:#A0611F"></div>
+            <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+              <div style="width:100%;height:5px;border-radius:2px;background:#6E706C"></div>
+              <div style="width:72%;height:5px;border-radius:2px;background:#6E706C"></div>
+              <div style="width:88%;height:5px;border-radius:2px;background:#6E706C"></div>
+              <div style="width:58%;height:5px;border-radius:2px;background:#6E706C"></div>
+            </div>
+          </div>
+          <div style="font-size:34px;font-weight:800;letter-spacing:-0.03em;line-height:1;color:#111312"><span style="font-weight:400;color:#6E706C">bmd</span>wire</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:20px;margin-top:8px">
+        <div style="background:#141618;border:1px solid #26292C;border-radius:14px;padding:32px;display:flex;flex-direction:column;gap:22px;align-items:flex-start">
+          <div style="font-size:26px;font-weight:800;letter-spacing:-0.03em;line-height:1"><span style="font-weight:400;color:#9A9E9F">bmd</span>wire</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386;letter-spacing:0.08em">PRIMARY — weight contrast</div>
+        </div>
+        <div style="background:#141618;border:1px solid #26292C;border-radius:14px;padding:32px;display:flex;flex-direction:column;gap:22px;align-items:flex-start">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;letter-spacing:-0.02em;line-height:1">bmd<span style="color:#D98A3D">/</span>wire</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386;letter-spacing:0.08em">TECHNICAL — pip, CLI, docs</div>
+        </div>
+        <div style="background:#141618;border:1px solid #26292C;border-radius:14px;padding:32px;display:flex;flex-direction:column;gap:22px;align-items:flex-start">
+          <div style="font-size:20px;font-weight:600;letter-spacing:0.16em;line-height:1">BMDWIRE</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386;letter-spacing:0.08em">SPACED — small labels</div>
+        </div>
+      </div>
+
+      <!-- study -->
+      <div style="background:#141618;border:1px solid #26292C;border-radius:14px;padding:32px;display:flex;flex-direction:column;gap:26px;margin-top:8px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386;letter-spacing:0.08em">MARK STUDY — A recommended</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:18px">
+
+          <div style="display:flex;flex-direction:column;gap:16px;align-items:flex-start">
+            <div style="width:76px;height:76px;border-radius:18px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;padding:15px;display:flex;gap:7px;flex:none">
+              <div style="width:8px;border-radius:3px;background:#D98A3D"></div>
+              <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+                <div style="width:100%;height:7px;border-radius:3px;background:#8A9094"></div>
+                <div style="width:72%;height:7px;border-radius:3px;background:#8A9094"></div>
+                <div style="width:88%;height:7px;border-radius:3px;background:#8A9094"></div>
+                <div style="width:58%;height:7px;border-radius:3px;background:#8A9094"></div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="width:16px;height:16px;border-radius:4px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;padding:3px;display:flex;gap:2px;flex:none">
+                <div style="width:2px;border-radius:1px;background:#D98A3D"></div>
+                <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+                  <div style="width:100%;height:2px;background:#8A9094"></div>
+                  <div style="width:65%;height:2px;background:#8A9094"></div>
+                  <div style="width:85%;height:2px;background:#8A9094"></div>
+                </div>
+              </div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#EDEDEA">A — bus &amp; taps ★</div>
+            </div>
+            <div style="font-size:13px;color:#7E8386;line-height:1.55;text-wrap:pretty">One wire, four devices. Says what the repo is and holds at 16px on three taps.</div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:16px;align-items:flex-start">
+            <div style="width:76px;height:76px;border-radius:18px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;position:relative;flex:none">
+              <div style="position:absolute;left:14px;top:24px;width:30px;height:8px;border-radius:3px;background:#D98A3D"></div>
+              <div style="position:absolute;left:36px;top:24px;width:8px;height:28px;border-radius:3px;background:#D98A3D"></div>
+              <div style="position:absolute;left:36px;top:44px;width:26px;height:8px;border-radius:3px;background:#D98A3D"></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="width:16px;height:16px;border-radius:4px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;position:relative;flex:none">
+                <div style="position:absolute;left:3px;top:5px;width:6px;height:2px;background:#D98A3D"></div>
+                <div style="position:absolute;left:7px;top:5px;width:2px;height:6px;background:#D98A3D"></div>
+                <div style="position:absolute;left:7px;top:9px;width:6px;height:2px;background:#D98A3D"></div>
+              </div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#EDEDEA">B — trace</div>
+            </div>
+            <div style="font-size:13px;color:#7E8386;line-height:1.55;text-wrap:pretty">A routed PCB jog. Cleanest at tiny sizes, but says nothing about four families.</div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:16px;align-items:flex-start">
+            <div style="width:76px;height:76px;border-radius:18px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:34px;font-weight:600;color:#D98A3D;flex:none">[&#8226;]</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="width:16px;height:16px;border-radius:4px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:600;color:#D98A3D;flex:none">[&#8226;]</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#EDEDEA">C — brackets</div>
+            </div>
+            <div style="font-size:13px;color:#7E8386;line-height:1.55;text-wrap:pretty">Code-native and honest for a Python package. Generic — could be any library.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 02 icon -->
+    <div style="display:flex;flex-direction:column;gap:24px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#7E8386">02 — Icon sizes</div>
+      <div style="background:#141618;border:1px solid #26292C;border-radius:14px;padding:40px;display:flex;align-items:flex-end;gap:40px;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;gap:12px;align-items:center">
+          <div style="width:112px;height:112px;border-radius:26px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;padding:21px;display:flex;gap:10px">
+            <div style="width:12px;border-radius:4px;background:#D98A3D"></div>
+            <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+              <div style="width:100%;height:10px;border-radius:4px;background:#8A9094"></div>
+              <div style="width:72%;height:10px;border-radius:4px;background:#8A9094"></div>
+              <div style="width:88%;height:10px;border-radius:4px;background:#8A9094"></div>
+              <div style="width:58%;height:10px;border-radius:4px;background:#8A9094"></div>
+            </div>
+          </div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7E8386">112 · 4 taps</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;align-items:center">
+          <div style="width:56px;height:56px;border-radius:13px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;padding:11px;display:flex;gap:5px">
+            <div style="width:6px;border-radius:2px;background:#D98A3D"></div>
+            <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+              <div style="width:100%;height:5px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:72%;height:5px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:88%;height:5px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:58%;height:5px;border-radius:2px;background:#8A9094"></div>
+            </div>
+          </div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7E8386">56 · 4 taps</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;align-items:center">
+          <div style="width:32px;height:32px;border-radius:8px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;padding:6px;display:flex;gap:3px">
+            <div style="width:4px;border-radius:1px;background:#D98A3D"></div>
+            <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+              <div style="width:100%;height:4px;border-radius:1px;background:#8A9094"></div>
+              <div style="width:68%;height:4px;border-radius:1px;background:#8A9094"></div>
+              <div style="width:86%;height:4px;border-radius:1px;background:#8A9094"></div>
+            </div>
+          </div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7E8386">32 · 3 taps</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;align-items:center">
+          <div style="width:16px;height:16px;border-radius:4px;background:#0A0B0C;border:1px solid #34383C;box-sizing:border-box;padding:3px;display:flex;gap:2px">
+            <div style="width:2px;border-radius:1px;background:#D98A3D"></div>
+            <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+              <div style="width:100%;height:2px;background:#8A9094"></div>
+              <div style="width:65%;height:2px;background:#8A9094"></div>
+              <div style="width:85%;height:2px;background:#8A9094"></div>
+            </div>
+          </div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7E8386">16 · 3 taps</div>
+        </div>
+        <div style="max-width:30ch;color:#9A9E9F;font-size:14px;line-height:1.6;text-wrap:pretty">Four taps down to 56px, three at 32 and below. The spine never drops.</div>
+      </div>
+    </div>
+
+    <!-- 03 color -->
+    <div style="display:flex;flex-direction:column;gap:24px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#7E8386">03 — Color</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:14px">
+        <div style="border:1px solid #26292C;border-radius:12px;overflow:hidden">
+          <div style="height:92px;background:#0E0F10"></div>
+          <div style="padding:14px;background:#141618;display:flex;flex-direction:column;gap:4px">
+            <div style="font-size:13px;font-weight:600">Ink</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386">#0E0F10</div>
+          </div>
+        </div>
+        <div style="border:1px solid #26292C;border-radius:12px;overflow:hidden">
+          <div style="height:92px;background:#141618"></div>
+          <div style="padding:14px;background:#141618;border-top:1px solid #26292C;display:flex;flex-direction:column;gap:4px">
+            <div style="font-size:13px;font-weight:600">Surface</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386">#141618</div>
+          </div>
+        </div>
+        <div style="border:1px solid #26292C;border-radius:12px;overflow:hidden">
+          <div style="height:92px;background:#D98A3D"></div>
+          <div style="padding:14px;background:#141618;display:flex;flex-direction:column;gap:4px">
+            <div style="font-size:13px;font-weight:600">Copper</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386">#D98A3D</div>
+          </div>
+        </div>
+        <div style="border:1px solid #26292C;border-radius:12px;overflow:hidden">
+          <div style="height:92px;background:#8A9094"></div>
+          <div style="padding:14px;background:#141618;display:flex;flex-direction:column;gap:4px">
+            <div style="font-size:13px;font-weight:600">Tap grey</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386">#8A9094</div>
+          </div>
+        </div>
+        <div style="border:1px solid #26292C;border-radius:12px;overflow:hidden">
+          <div style="height:92px;background:#F2F1EE"></div>
+          <div style="padding:14px;background:#141618;display:flex;flex-direction:column;gap:4px">
+            <div style="font-size:13px;font-weight:600">Paper</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386">#F2F1EE</div>
+          </div>
+        </div>
+      </div>
+      <div style="background:#141618;border:1px solid #26292C;border-radius:14px;padding:32px;display:flex;flex-direction:column;gap:14px">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#7E8386;letter-spacing:0.08em">WHY COPPER, NOT RED AND GREEN</div>
+        <div style="color:#9A9E9F;font-size:15px;line-height:1.6;max-width:66ch;text-wrap:pretty">Red and green mean program and preview. They belong to the operator-facing app, and a library that never renders a bus should not borrow them. Copper is the wire. Ink, greys, radii and both typefaces are shared with webATEM, so the two still sit together.</div>
+        <div style="color:#9A9E9F;font-size:15px;line-height:1.6;max-width:66ch;text-wrap:pretty">Copper on ink is 7.4:1, so it is safe for link and heading text as well as fills. On copper fills use ink <span style="font-family:'IBM Plex Mono',monospace;color:#EDEDEA">#0E0F10</span>, never white.</div>
+      </div>
+    </div>
+
+    <!-- 04 social preview -->
+    <div style="display:flex;flex-direction:column;gap:24px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#7E8386">04 — GitHub social preview · 1280×640</div>
+      <div style="overflow-x:auto;border:1px solid #26292C;border-radius:14px">
+        <div style="width:1280px;height:640px;background:#0A0B0C;box-sizing:border-box;padding:96px 104px;display:flex;flex-direction:column;justify-content:center;gap:34px;position:relative">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:10px;background:#D98A3D"></div>
+          <div style="display:flex;align-items:center;gap:26px">
+            <div style="width:84px;height:84px;border-radius:20px;background:#0E0F10;border:1px solid #34383C;box-sizing:border-box;padding:16px;display:flex;gap:8px;flex:none">
+              <div style="width:9px;border-radius:3px;background:#D98A3D"></div>
+              <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+                <div style="width:100%;height:8px;border-radius:3px;background:#8A9094"></div>
+                <div style="width:72%;height:8px;border-radius:3px;background:#8A9094"></div>
+                <div style="width:88%;height:8px;border-radius:3px;background:#8A9094"></div>
+                <div style="width:58%;height:8px;border-radius:3px;background:#8A9094"></div>
+              </div>
+            </div>
+            <div style="font-size:82px;font-weight:800;letter-spacing:-0.035em;line-height:1"><span style="font-weight:400;color:#9A9E9F">bmd</span>wire</div>
+          </div>
+          <div style="font-size:30px;color:#C8CCCD;max-width:30ch;line-height:1.35;text-wrap:pretty">Python libraries for Blackmagic Design broadcast devices.</div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:19px;color:#EDEDEA;background:#141618;border:1px solid #34383C;border-radius:8px;padding:12px 20px">atemwire</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:19px;color:#EDEDEA;background:#141618;border:1px solid #34383C;border-radius:8px;padding:12px 20px">hyperdeckwire</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:19px;color:#EDEDEA;background:#141618;border:1px solid #34383C;border-radius:8px;padding:12px 20px">ultimattewire</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:19px;color:#EDEDEA;background:#141618;border:1px solid #34383C;border-radius:8px;padding:12px 20px">videohubwire</div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:13px;color:#7E8386;line-height:1.6;max-width:64ch;text-wrap:pretty">GitHub crops the preview to roughly 2:1 in most placements and scales it down hard in link unfurls, so nothing sits in the outer 40px and the smallest type here is 19px.</div>
+    </div>
+
+    <!-- 05 readme banner -->
+    <div style="display:flex;flex-direction:column;gap:24px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#7E8386">05 — README banner</div>
+      <div style="border:1px solid #26292C;border-radius:14px;background:#0A0B0C;padding:clamp(40px,7vw,80px) clamp(28px,6vw,72px);display:flex;flex-direction:column;gap:22px;position:relative;overflow:hidden">
+        <div style="position:absolute;left:0;top:0;bottom:0;width:6px;background:#D98A3D"></div>
+        <div style="display:flex;align-items:center;gap:18px">
+          <div style="width:46px;height:46px;border-radius:11px;background:#0E0F10;border:1px solid #34383C;box-sizing:border-box;padding:9px;display:flex;gap:4px;flex:none">
+            <div style="width:5px;border-radius:2px;background:#D98A3D"></div>
+            <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between">
+              <div style="width:100%;height:4px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:72%;height:4px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:88%;height:4px;border-radius:2px;background:#8A9094"></div>
+              <div style="width:58%;height:4px;border-radius:2px;background:#8A9094"></div>
+            </div>
+          </div>
+          <div style="font-size:clamp(28px,4.5vw,44px);font-weight:800;letter-spacing:-0.03em;line-height:1"><span style="font-weight:400;color:#9A9E9F">bmd</span>wire</div>
+        </div>
+        <div style="font-size:clamp(15px,2vw,19px);color:#9A9E9F;max-width:48ch;line-height:1.55;text-wrap:pretty">Python libraries for Blackmagic Design broadcast devices. One package per device family, four independent PyPI distributions in one repository.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#EDEDEA;background:#141618;border:1px solid #34383C;border-radius:6px;padding:8px 14px">pure stdlib</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#EDEDEA;background:#141618;border:1px solid #34383C;border-radius:6px;padding:8px 14px">prebuilt wheels</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#EDEDEA;background:#141618;border:1px solid #34383C;border-radius:6px;padding:8px 14px">CPython 3.10–3.14</div>
+        </div>
+      </div>
+      <div style="font-size:13px;color:#7E8386;line-height:1.6;max-width:66ch;text-wrap:pretty">Not affiliated with or endorsed by Blackmagic Design Pty Ltd. ATEM, HyperDeck, Ultimatte and Videohub are trademarks of Blackmagic Design — already stated in the README, and worth keeping under any banner.</div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{}"></script>
+</body>
+</html>
