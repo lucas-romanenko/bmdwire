@@ -11,7 +11,24 @@ Python libraries for Blackmagic Design broadcast devices: one package per device
 | **ultimattewire** | `pip install ultimattewire` | Ultimatte 12 keyers: archive and restore over the native TCP protocol, Smart Remote 4 compatible zips | MIT | [![ultimattewire tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=ultimattewire-v*&label=tag)](https://github.com/lucas-romanenko/bmdwire/tags) | [ultimattewire/README.md](ultimattewire/README.md) |
 | **videohubwire** | `pip install videohubwire` | Videohub routers: state snapshot, crosspoint routing, labels over TCP 9990 | MIT | [![videohubwire tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=videohubwire-v*&label=tag)](https://github.com/lucas-romanenko/bmdwire/tags) | [videohubwire/README.md](videohubwire/README.md) |
 
-Only pre-release versions exist so far; pip installs a pre-release when it is the only release there is, so no `--pre` is needed. All four are pure standard library except atemwire's small C extension, which builds during `pip install` (a C compiler is required for that one).
+All four are at 1.0.0. They are pure standard library except atemwire, whose small C extension ships as a prebuilt wheel for Linux, macOS and Windows on CPython 3.10 to 3.14, so installing it needs no compiler.
+
+## atemwire stands on pyatem
+
+**atemwire is a fork of [pyatem](https://git.sr.ht/~martijnbraam/pyatem) by
+Martijn Braam and the OpenAtem contributors.** Years of reverse engineering
+the ATEM protocol came before any of this, and that work is what made the
+rest possible. It branched at upstream commit `8f45831` (2026-03-14) and was
+then developed for months against live switchers: transport reliability
+fixes, a declarative wire-format layer, corrected and extended message
+coverage, macro upload, and profile save and restore.
+
+The licence is unchanged and not negotiable: **LGPL-3.0-only**, the same as
+upstream. Improvements to atemwire stay open, as they should. The other three
+libraries here were written from scratch and are MIT.
+
+If you want the original rather than this fork, it is at
+<https://git.sr.ht/~martijnbraam/pyatem> and it is still maintained.
 
 ## Why one repo
 
@@ -26,6 +43,6 @@ pip install -e ".[test]"
 python -m pytest
 ```
 
-Each package is developed from its own directory exactly as before. CI runs the changed package's suite on Python 3.10, 3.12 and 3.14 for every push and pull request. A release is a tag named `<package>-v<version>` (`atemwire-v0.15.0.dev0`) whose version matches that package's `pyproject.toml`; the publish workflow builds and uploads that one package.
+Each package is developed from its own directory exactly as before. CI runs the changed package's suite on Python 3.10, 3.12 and 3.14 for every push and pull request. A release is a tag named `<package>-v<version>` (`atemwire-v1.0.0`) whose version matches that package's `pyproject.toml`; the publish workflow builds and uploads that one package.
 
 Not affiliated with or endorsed by Blackmagic Design Pty Ltd. ATEM, HyperDeck, Ultimatte and Videohub are trademarks of Blackmagic Design.
