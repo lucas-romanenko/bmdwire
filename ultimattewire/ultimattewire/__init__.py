@@ -9,9 +9,15 @@ Remote-compatible Archive/Restore feature (the first public
 implementation of it outside BMD's own tools).
 """
 
+from ultimattewire.network import (NetworkInterface, UltimatteNetworkError,
+                                   read_network, set_network)
 from ultimattewire.profile import archive_unit_to_bytes, restore_unit_from_bytes
 
 __all__ = [
     "archive_unit_to_bytes",
     "restore_unit_from_bytes",
+    "read_network",
+    "set_network",
+    "NetworkInterface",
+    "UltimatteNetworkError",
 ]
