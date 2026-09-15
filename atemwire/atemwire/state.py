@@ -1,9 +1,10 @@
 # Copyright 2021 - 2022, Martijn Braam and the OpenAtem contributors
 # SPDX-License-Identifier: LGPL-3.0-only
-"""Private state-helper primitives + full-state assembler.
+"""State-helper primitives + the full-state assembler.
 
-Canonical home for everything that used to live in the deleted
-``atemwire.state`` shim. Holds the bytes/scale/coerce helpers and the
+Public since 1.0.0 (it was ``atemwire._state``): a frontend that builds
+its own UI needs the assembler, so the underscore was a lie about who
+this is for. Holds the bytes/scale/coerce helpers and the
 mixerstate navigation primitives that bucket-B readers across
 ``atemwire.messages.*`` rely on, plus the ``ATEMStateMixin`` /
 ``build_full_state`` assembler that composes per-feature readers
@@ -286,7 +287,7 @@ def display_fps(mx, default: int = 25) -> int:
 
     Falls back to ``default`` (25) if video-mode hasn't been received yet.
 
-    Lives in ``_state`` rather than ``messages/system_info.py`` (where
+    Lives in ``state`` rather than ``messages/system_info.py`` (where
     the rest of the system_info readers live) because every rate-
     resolving operation needs it — FtB, all transition rates, DSK rate,
     USK DVE rate. Co-locating it with the cross-cutting primitives
@@ -321,7 +322,7 @@ def _bare(mx: dict, key: str, attr: Optional[str] = None, default: Any = None):
     return getattr(node, attr, default)
 
 
-def _me_count(mx: dict) -> int:
+def me_count(mx: dict) -> int:
     """How many M/Es the connected switcher has. ``_top.me_units`` when
     the topology packet has arrived, falling back to the ``_MeC`` entry
     count (same derivation as topology['meCount']), falling back to 1
@@ -338,7 +339,7 @@ def _me_count(mx: dict) -> int:
     return count if count > 0 else 1
 
 
-def _me_keyer_count(mx: dict, me: int) -> int:
+def me_keyer_count(mx: dict, me: int) -> int:
     """Keyer count for one M/E from its ``_MeC.keyers`` entry, falling
     back to 4 during the handshake window (pre-``_MeC``). Same
     derivation the state assembler uses to size ``mes[me].usk``."""
@@ -354,7 +355,7 @@ def _dsk_count(mx: dict) -> int:
     during the handshake window — every model has at least one DSK.
 
     Shared by the state assembler (``dsks[]`` sizing) and the profile
-    save loop (mirrors ``_me_count``)."""
+    save loop (mirrors ``me_count``)."""
     top = mx.get('topology')
     count = safe_int(getattr(top, 'downstream_keyers', 0), 0) if top is not None else 0
     if count <= 0:
@@ -653,7 +654,7 @@ class ATEMStateMixin:
             'transition': self._build_transition(mx, me),
             'usk': self._build_usk(mx, me),
             'ftb': self._build_ftb(mx, me),
-        } for me in range(_me_count(mx))]
+        } for me in range(me_count(mx))]
         state['dsks'] = self._build_dsks(mx)
         state['colorGenerators'] = self._build_color_generators(mx)
         state['macros'] = self._build_macros(mx)
@@ -768,7 +769,7 @@ class ATEMStateMixin:
         falls back to 4 during the handshake window before ``_MeC``
         arrives (the pre-4A hardcoded count, correct for every 1-M/E
         model in production)."""
-        keyers = _me_keyer_count(mx, me)
+        keyers = me_keyer_count(mx, me)
         states = [usk_on_air(mx, me, k) for k in range(keyers)]
         types = [usk_type(mx, me, k) for k in range(keyers)]
         data = []

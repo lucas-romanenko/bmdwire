@@ -15,7 +15,7 @@ The ATEM emits all 10 slots regardless; slots with network address
 import socket
 import struct
 
-from atemwire._state import safe_int
+from atemwire.state import safe_int
 from atemwire.messages._dsl import Recv, Send, u16
 
 

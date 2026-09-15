@@ -731,7 +731,7 @@ def test_save_emits_all_dsks_from_topology_count():
 
 def test_save_dsk_count_falls_back_to_dkey_state_entries():
     """No topology packet in mixerstate → DSK count falls back to the
-    dkey-state entry count (mirrors _me_count's _MeC fallback)."""
+    dkey-state entry count (mirrors me_count's _MeC fallback)."""
     extra = {
         'dkey-state': {i: _S(on_air=False) for i in range(3)},
     }

@@ -23,7 +23,7 @@ Wire packets:
 
 import struct
 
-from atemwire._state import (
+from atemwire.state import (
     _kv, display_fps, percent_from_thousandths,
     percent_to_tenths, percent_to_thousandths, safe_bool, safe_float,
     safe_int, unit_from_thousandths, unit_to_thousandths,
@@ -602,7 +602,7 @@ class TransitionStingerField(Recv):
 
 # Helper: parse a 'seconds:frames' rate string against the ATEM's current
 # display fps. Reads ``video-mode`` from mixerstate via ``display_fps``;
-# both helpers live in atemwire._state.
+# both helpers live in atemwire.state.
 
 
 def _resolve_rate(conn, rate_str):

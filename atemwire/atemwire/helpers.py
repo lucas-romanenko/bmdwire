@@ -6,7 +6,7 @@ keyframe enum lookup.
 Rate strings are the ``seconds:frames`` format the ATEM uses on the wire for
 transition rates, fade-to-black durations, and downstream keyer rates. Parsing
 and formatting both need the switcher's display FPS (ASC convention: 59.94→30,
-50→25, etc.) — resolve it via ``atemwire._state.display_fps(mixerstate)`` and
+50→25, etc.) — resolve it via ``atemwire.state.display_fps(mixerstate)`` and
 pass it in, or the ``FALLBACK_FPS`` of 25 will be used during the handshake
 window before the first ``video-mode`` packet arrives.
 """
@@ -16,7 +16,7 @@ window before the first ``video-mode`` packet arrives.
 # Fallback FPS used only when mixerstate doesn't have a video-mode yet (e.g.
 # during the handshake window before the first VidM packet arrives).
 # Real FPS is read per-call from the connection's mixerstate via
-# ``atemwire._state.display_fps()``; callers should always pass the resolved FPS
+# ``atemwire.state.display_fps()``; callers should always pass the resolved FPS
 # when they have a connection handy.
 FALLBACK_FPS = 25
 
@@ -34,7 +34,7 @@ def parse_rate(rate_str, fps: int = FALLBACK_FPS) -> int:
         (it flattens the saved wire frame value to a plain int string).
 
     FPS is the ATEM's display FPS (ASC convention: HALF the field rate for doubled
-    modes — 59.94→30, 50→25, 23.98→24; see the module header + ``_state.display_fps``).
+    modes — 59.94→30, 50→25, 23.98→24; see the module header + ``state.display_fps``).
     Callers should resolve it from mixerstate via ``display_fps()`` and pass
     it in explicitly; the fallback only exists for the handshake window.
 

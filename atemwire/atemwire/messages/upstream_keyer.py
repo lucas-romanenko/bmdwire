@@ -34,7 +34,7 @@ Wire packets (incoming):
 import colorsys
 import struct
 
-from atemwire._state import (
+from atemwire.state import (
     _kv, display_fps, percent_from_thousandths, percent_to_tenths,
     percent_to_thousandths, percent_from_unit, safe_bool, safe_float,
     safe_int, size_thousandths, unit_from_thousandths,

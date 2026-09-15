@@ -79,7 +79,7 @@ EQ_SHAPE_NAMES = {
 EQ_SHAPE_TO_INT = {v: k for k, v in EQ_SHAPE_NAMES.items()}
 
 # EQ band frequency range. Bitfield from band_freq_range (mirrors
-# fairlight.FAIRLIGHT_EQ_FREQ_RANGES and _state._EQ_FREQ_RANGE_NAMES).
+# fairlight.FAIRLIGHT_EQ_FREQ_RANGES and state._EQ_FREQ_RANGE_NAMES).
 EQ_FREQ_RANGE_NAMES = {1: 'Low', 2: 'MidLow', 4: 'MidHigh', 8: 'High'}
 EQ_FREQ_RANGE_TO_INT = {v: k for k, v in EQ_FREQ_RANGE_NAMES.items()}
 

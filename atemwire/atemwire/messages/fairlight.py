@@ -33,7 +33,7 @@ Wire packets (incoming):
 import struct
 from typing import Optional
 
-from atemwire._state import (
+from atemwire.state import (
     _dynamics_block_dict,
     _eq_band_dict,
     _fairlight_strip_dict,

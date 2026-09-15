@@ -29,7 +29,7 @@ Wire packets:
 
 import struct
 
-from atemwire._state import decode_name
+from atemwire.state import decode_name
 from atemwire.messages._dsl import Recv, Send, boolean, string, u8, u16
 from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
@@ -405,7 +405,7 @@ class TimeRequestCommand(Send):
 # Readers (no operations — system_info is read-only at the app layer)
 # =============================================================================
 #
-# display_fps already lives in atemwire._state (lifted in fade_to_black
+# display_fps already lives in atemwire.state (lifted in fade_to_black
 # commit 5a) because every rate-resolving operation across multiple
 # features needs it. The remaining readers below stay here as
 # bucket-B aggregators specific to the system_info Recv classes.

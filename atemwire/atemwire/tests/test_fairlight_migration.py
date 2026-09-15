@@ -7,7 +7,7 @@ Phase 3 batch 11/22 — the final migrating feature. 7 operations +
 ``atemwire.state`` shims that briefly preserved the legacy import
 paths were deleted in the 2026-05-14 shim-removal close-out;
 ``ATEMStateMixin`` / ``build_full_state`` now live in
-``atemwire._state``.
+``atemwire.state``.
 
 Coverage focus:
 

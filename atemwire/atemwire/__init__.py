@@ -21,10 +21,23 @@ Threading: ATEM instances are safe to call from any thread. Write
 methods enqueue commands and return immediately; state property reads
 are safe from any thread.
 
-Internals (atemwire.messages, atemwire.protocol, atemwire.pool,
-atemwire._state, atemwire.helpers, atemwire.transport, ...)
-remain importable for advanced or low-level usage. The blessed public
-surface is what's listed in ``__all__`` below.
+Two layers, both supported from 1.0.0. ``__all__`` below is the short
+way in. Building your own frontend needs more than that, so these are
+public too and covered by the version number:
+
+    atemwire.state       ATEMStateMixin / build_full_state — the whole
+                         switcher as one dict, plus me_count,
+                         me_keyer_count, decode_name, md5_hex
+    atemwire.messages.*  one module per feature, holding that feature's
+                         wire formats, operations and readers
+    atemwire.pool        acquire_connection / ATEMInstanceManager — one
+                         pooled session per switcher
+    atemwire.profile     save and restore switcher state as XML
+    atemwire.ready       wait_ready
+
+Below that line (protocol, transport, helpers and anything named with a
+leading underscore) is the wire itself. It is importable, and it may
+change in a minor release.
 """
 
 from atemwire.atem import ATEM

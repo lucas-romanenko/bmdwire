@@ -16,7 +16,7 @@ Wire packets:
 
 import struct
 
-from atemwire._state import safe_int
+from atemwire.state import safe_int
 from atemwire.messages._dsl import Recv, Send, boolean, u8, u16
 
 

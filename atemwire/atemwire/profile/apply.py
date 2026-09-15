@@ -22,7 +22,7 @@ at module load instead of at runtime.
 import logging
 from typing import Optional
 
-from atemwire._state import _me_count
+from atemwire.state import me_count
 
 from atemwire.messages.color_generator import (
     set_color_generator_hue, set_color_generator_luma,
@@ -191,13 +191,13 @@ def _iter_me_blocks(conn, root):
     profile applied to a 1-M/E switcher applies only index 0
     (cross-model load, not an error). The per-M/E option gating
     (``opts.mes[me]``) is the caller's job."""
-    me_count = _me_count(getattr(conn, 'mixerstate', None) or {})
+    live_me_count = me_count(getattr(conn, 'mixerstate', None) or {})
     for block in root.findall('MixEffectBlocks/MixEffectBlock'):
         me = _int(block.get('index'), 0)
-        if me < 0 or me >= me_count:
+        if me < 0 or me >= live_me_count:
             logger.debug(
                 "skipping <MixEffectBlock index=%r> — switcher has %d M/E(s)",
-                block.get('index'), me_count)
+                block.get('index'), live_me_count)
             continue
         yield me, block
 

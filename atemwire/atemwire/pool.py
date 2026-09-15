@@ -410,7 +410,7 @@ def acquire_connection(ip_address: str):
         ATEMInstanceManager.release_instance(ip_address)
 
 
-def _close_all_sessions_at_exit():
+def close_all_sessions_at_exit():
     """Interpreter-exit safety net: send the protocol goodbye on every
     pooled connection that is still open.
 
@@ -441,4 +441,4 @@ def _close_all_sessions_at_exit():
             pass
 
 
-atexit.register(_close_all_sessions_at_exit)
+atexit.register(close_all_sessions_at_exit)

@@ -12,7 +12,7 @@ import logging
 import xml.etree.ElementTree as ET
 from typing import List
 
-from atemwire._state import _dsk_count, _me_count, _me_keyer_count, decode_name
+from atemwire.state import _dsk_count, me_count, me_keyer_count, decode_name
 from atemwire.messages.color_generator import color_generator
 from atemwire.messages.downstream_keyer import dsk_state
 from atemwire.messages.fade_to_black import (
@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 def _build_mix_effect_blocks(root: ET.Element, mx: dict, opts) -> None:
     """Build the ``<MixEffectBlocks><MixEffectBlock>`` tree, one block
-    per M/E the connected switcher has (``_me_count``), each gated by
+    per M/E the connected switcher has (``me_count``), each gated by
     its ``opts.mes[me]`` (``MixEffectOptions``) block:
 
     - ``mes[me].program`` → ``<Program>``
@@ -91,7 +91,7 @@ def _build_mix_effect_blocks(root: ET.Element, mx: dict, opts) -> None:
     every M/E is deselected the ``<MixEffectBlocks>`` wrapper itself
     is omitted (mirroring the per-section gates elsewhere).
     """
-    selected = [me for me in range(_me_count(mx))
+    selected = [me for me in range(me_count(mx))
                 if opts.me_options(me).any_selected()]
     if not selected:
         return
@@ -204,7 +204,7 @@ def _build_mix_effect_block(blocks: ET.Element, mx: dict, me: int,
     # multi-M/E Constellations carry fewer keyers on the upper M/Es).
     if any(me_opts.usk):
         keys = ET.SubElement(block, 'Keys')
-        for k in range(_me_keyer_count(mx, me)):
+        for k in range(me_keyer_count(mx, me)):
             if k < len(me_opts.usk) and me_opts.usk[k]:
                 _build_key(keys, mx, me, k)
 
