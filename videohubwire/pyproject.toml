@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "videohubwire"
-version = "1.0.0"
+version = "1.0.1"
 description = "Blackmagic Videohub Ethernet Protocol client (TCP 9990): state snapshot, routing, label editing"
 readme = "README.md"
 license = { text = "MIT" }
