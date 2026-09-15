@@ -17,7 +17,7 @@ Wire packets:
 
 import struct
 
-from atemwire._state import _kv, decode_name, md5_hex, safe_bool, safe_int
+from atemwire.state import _kv, decode_name, md5_hex, safe_bool, safe_int
 from atemwire.messages._dsl import Recv, Send, u8
 
 

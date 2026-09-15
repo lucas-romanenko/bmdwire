@@ -32,7 +32,7 @@ ship an ``atem.pyi`` stub if that becomes a friction point.
 
 from typing import Optional
 
-from atemwire._state import build_full_state, display_fps
+from atemwire.state import build_full_state, display_fps
 from atemwire.connection import ATEMConnection, ConnectionDeadError
 from atemwire.helpers import format_rate
 from atemwire.messages import (
@@ -297,7 +297,7 @@ class ATEM:
 
     def snapshot(self) -> dict:
         """Assemble the full state dict an application pushes to its
-        frontend. Same shape as ``atemwire._state.build_full_state``. Build
+        frontend. Same shape as ``atemwire.state.build_full_state``. Build
         time is a few ms for a typical ATEM; call on-demand rather than
         in a tight loop."""
         return build_full_state(self._conn)

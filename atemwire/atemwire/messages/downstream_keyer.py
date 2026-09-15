@@ -20,7 +20,7 @@ Wire packets:
 
 import struct
 
-from atemwire._state import (
+from atemwire.state import (
     _kv, display_fps, percent_to_tenths,
     safe_bool, safe_float, safe_int,
 )

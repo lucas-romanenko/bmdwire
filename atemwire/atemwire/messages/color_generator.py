@@ -15,7 +15,7 @@ import colorsys
 
 import struct
 
-from atemwire._state import percent_from_unit, safe_float
+from atemwire.state import percent_from_unit, safe_float
 from atemwire.messages._dsl import Recv, Send, u8, u16
 
 

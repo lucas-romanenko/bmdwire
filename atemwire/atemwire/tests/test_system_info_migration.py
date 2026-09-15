@@ -9,7 +9,7 @@ No operations — system_info is read-only at the app layer.
   video_resolution       (bucket B — calls .get_resolution() method)
   product_name           (bucket B — bytes decode via decode_name)
 
-display_fps already lives in atemwire._state from the fade_to_black
+display_fps already lives in atemwire.state from the fade_to_black
 commit, so it's not part of this migration.
 """
 

@@ -56,7 +56,7 @@ import json
 import os
 from types import SimpleNamespace
 
-from atemwire._state import build_full_state
+from atemwire.state import build_full_state
 from atemwire.testing import FakeAtemProtocol
 
 _SNAPSHOT_PATH = os.path.join(

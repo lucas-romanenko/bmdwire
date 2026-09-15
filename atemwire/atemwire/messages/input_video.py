@@ -16,7 +16,7 @@ Wire packets:
 
 import struct
 
-from atemwire._state import _kv, decode_name
+from atemwire.state import _kv, decode_name
 from atemwire.messages._dsl import Recv, Send, string, u8, u16
 
 
