@@ -35,13 +35,20 @@ ECHO = (
 
 @pytest.fixture
 def wired(monkeypatch, fake_socket_cls):
-    """Script a unit: prelude, then one reply. Returns the socket so a test
-    can read back exactly what got sent."""
-    def _wire(reply):
-        sock = fake_socket_cls([PRELUDE, reply.encode(), socket.timeout()])
-        monkeypatch.setattr(network, "_connect_with_retry",
-                            lambda host, port, timeout=None: sock)
-        return sock
+    """Script a unit one SESSION per reply — a set is two sessions (the write,
+    then the read-back). Returns the list of sockets, so a test can inspect
+    exactly what was sent on each."""
+    def _wire(*replies):
+        socks = []
+
+        def connect(host, port, timeout=None):
+            reply = replies[min(len(socks), len(replies) - 1)]
+            sock = fake_socket_cls([PRELUDE, reply.encode(), socket.timeout()])
+            socks.append(sock)
+            return sock
+
+        monkeypatch.setattr(network, "_connect_with_retry", connect)
+        return socks
     return _wire
 
 
@@ -110,12 +117,12 @@ def test_dns_servers_parse_as_a_list():
 # ---- read ------------------------------------------------------------------
 
 def test_read_network_queries_and_parses(wired):
-    sock = wired("ACK\n\n" + ECHO)
+    socks = wired("ACK\n\n" + ECHO)
     iface = read_network("192.0.2.21")
     assert isinstance(iface, NetworkInterface)
     assert iface.netmask == "255.255.252.0"
-    assert sock.sent == b"NETWORK INTERFACE 0:\n\n", "read must set nothing"
-    assert sock.closed
+    assert socks[0].sent == b"NETWORK INTERFACE 0:\n\n", "read must set nothing"
+    assert socks[0].closed
 
 
 def test_a_nak_is_an_error_not_an_empty_result(wired):
@@ -133,25 +140,45 @@ def test_silence_is_an_error(wired):
 # ---- set -------------------------------------------------------------------
 
 def test_set_sends_address_and_mask_as_one_field(wired):
-    sock = wired("ACK\n\n" + ECHO.replace("255.255.252.0", "255.255.248.0"))
+    widened = ECHO.replace("255.255.252.0", "255.255.248.0")
+    socks = wired("ACK\n\nNETWORK INTERFACE 0:\nStatic Addresses: x\n\n",
+                  "ACK\n\n" + widened)
     iface = set_network("192.0.2.21", address="192.168.81.98", netmask="255.255.248.0")
-    assert b"Static Addresses: 192.168.81.98/255.255.248.0\n" in sock.sent
-    assert sock.sent.endswith(b"\n\n")
-    assert iface.static_netmask == "255.255.248.0", "the echo is the verification"
+    assert b"Static Addresses: 192.168.81.98/255.255.248.0\n" in socks[0].sent
+    assert socks[0].sent.endswith(b"\n\n")
+    assert iface.static_netmask == "255.255.248.0"
+
+
+def test_set_verifies_by_reading_back_not_by_trusting_the_echo(wired):
+    """The set echo carries only the fields that were sent, so the state must
+    come from a fresh query — the second session, whose block sets nothing."""
+    socks = wired("ACK\n\nNETWORK INTERFACE 0:\nStatic Addresses: x\n\n",
+                  "ACK\n\n" + ECHO)
+    set_network("192.0.2.21", address="192.168.81.98", netmask="255.255.248.0")
+    assert len(socks) == 2, "a set is the write plus a read-back"
+    assert socks[1].sent == b"NETWORK INTERFACE 0:\n\n"
 
 
 def test_set_returns_what_the_unit_says_not_what_was_asked(wired):
     """If the unit keeps the old value, the caller must be able to see that."""
-    wired("ACK\n\n" + ECHO)
+    wired("ACK\n\nNETWORK INTERFACE 0:\nStatic Addresses: x\n\n", "ACK\n\n" + ECHO)
     iface = set_network("192.0.2.21", address="192.168.81.98", netmask="255.255.248.0")
     assert iface.static_netmask == "255.255.252.0"
 
 
+def test_a_write_that_cannot_be_read_back_raises_loudly(wired):
+    """Accepted-then-unreachable is the dangerous case: never report success."""
+    wired("ACK\n\nNETWORK INTERFACE 0:\nStatic Addresses: x\n\n", "")
+    with pytest.raises(UltimatteNetworkError, match="CHECK THIS UNIT"):
+        set_network("192.0.2.21", address="192.168.81.98", netmask="255.255.248.0",
+                    readback_timeout=0)
+
+
 def test_an_address_without_its_mask_is_refused_before_the_wire(wired):
-    sock = wired("ACK\n\n" + ECHO)
+    socks = wired("ACK\n\n" + ECHO)
     with pytest.raises(ValueError, match="one field"):
         set_network("192.0.2.21", address="192.168.81.98")
-    assert sock.sent == b"", "nothing may reach the unit"
+    assert socks == [], "nothing may reach the unit"
 
 
 def test_a_mask_without_its_address_is_refused_too(wired):
@@ -165,26 +192,26 @@ def test_setting_nothing_is_refused(wired):
 
 
 def test_gateway_and_dns_can_be_set_alone(wired):
-    sock = wired("ACK\n\n" + ECHO)
+    socks = wired("ACK\n\n" + ECHO)
     set_network("192.0.2.21", gateway="192.168.80.1", dns=["8.8.8.8", "1.1.1.1"])
-    assert b"Static Gateway: 192.168.80.1\n" in sock.sent
-    assert b"Static DNS Servers: 8.8.8.8 1.1.1.1\n" in sock.sent
-    assert b"Static Addresses" not in sock.sent
+    assert b"Static Gateway: 192.168.80.1\n" in socks[0].sent
+    assert b"Static DNS Servers: 8.8.8.8 1.1.1.1\n" in socks[0].sent
+    assert b"Static Addresses" not in socks[0].sent
 
 
 def test_dns_empty_list_clears_and_none_leaves_alone(wired):
-    sock = wired("ACK\n\n" + ECHO)
+    socks = wired("ACK\n\n" + ECHO)
     set_network("192.0.2.21", dns=[])
-    assert b"Static DNS Servers: \n" in sock.sent
-    sock2 = wired("ACK\n\n" + ECHO)
+    assert b"Static DNS Servers: \n" in socks[0].sent
+    socks2 = wired("ACK\n\n" + ECHO)
     set_network("192.0.2.21", gateway="192.168.80.1")
-    assert b"Static DNS Servers" not in sock2.sent
+    assert b"Static DNS Servers" not in socks2[0].sent
 
 
 def test_switching_to_dhcp_is_expressible(wired):
-    sock = wired("ACK\n\n" + ECHO)
+    socks = wired("ACK\n\n" + ECHO)
     set_network("192.0.2.21", dynamic=True)
-    assert b"Dynamic IP: true\n" in sock.sent
+    assert b"Dynamic IP: true\n" in socks[0].sent
 
 
 def test_a_refused_set_raises_rather_than_reporting_success(wired):
