@@ -48,6 +48,8 @@ NAK = "NAK"
 PRELUDE_END = b"END PRELUDE:"
 REPLY_QUIET_TIMEOUT = 2.0
 PRELUDE_QUIET_TIMEOUT = 2.0
+READBACK_TIMEOUT = 15.0      # an interface that reapplies is briefly unreachable
+READBACK_POLL = 0.5
 
 
 class UltimatteNetworkError(Exception):
@@ -208,19 +210,23 @@ def read_network(host, index=0, **kw):
 
 
 def set_network(host, index=0, *, address=None, netmask=None, gateway=None,
-                dns=None, dynamic=None, settle=0.0, **kw):
-    """Set static network parameters and return the unit's echoed state.
+                dns=None, dynamic=None, readback_timeout=READBACK_TIMEOUT, **kw):
+    """Set static network parameters and return the unit's state READ BACK.
 
     ``address`` and ``netmask`` travel together in one ``Static Addresses``
     field, so supplying one without the other is an error — the unit would
     be told to drop the half you left out. Pass ``dns=[]`` to clear the DNS
     list; ``dns=None`` leaves it alone.
 
-    Writes what it is told: see the module docstring — the caller owns the
-    question of whether a change is safe.
+    The returned interface comes from a fresh query, not from the set's own
+    echo (which carries only the fields that were sent — see the module
+    docstring). Changing an address can make the unit briefly unreachable
+    while the interface reapplies, so the read-back is retried until
+    ``readback_timeout``; if it never answers, this raises rather than
+    reporting a success it cannot stand behind.
 
-    ``settle`` sleeps before returning, for a caller that wants the echo to
-    reflect a reapplied interface rather than the instant of the write.
+    Writes what it is told: the caller owns the question of whether a change
+    is safe.
     """
     if (address is None) != (netmask is None):
         raise ValueError(
@@ -236,7 +242,19 @@ def set_network(host, index=0, *, address=None, netmask=None, gateway=None,
         fields["Static DNS Servers"] = " ".join(dns)
     if not fields:
         raise ValueError("nothing to set")
-    echoed = exchange(host, build_block(index, **fields), **kw)
-    if settle:
-        time.sleep(settle)
-    return parse_interface(echoed, index)
+
+    exchange(host, build_block(index, **fields), **kw)     # raises on NAK
+
+    deadline = time.time() + readback_timeout
+    last = None
+    while True:
+        try:
+            return read_network(host, index, **kw)
+        except (UltimatteNetworkError, OSError) as exc:
+            last = exc
+            if time.time() >= deadline:
+                break
+            time.sleep(READBACK_POLL)
+    raise UltimatteNetworkError(
+        f"{host}: the unit accepted {sorted(fields)} but could not be read back "
+        f"within {readback_timeout:g}s — CHECK THIS UNIT ({last})")
