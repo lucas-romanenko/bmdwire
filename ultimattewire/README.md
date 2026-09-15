@@ -1,9 +1,11 @@
 # ultimattewire
 
-Python library that archives and restores the configuration of a Blackmagic
-**Ultimatte 12** or **Ultimatte 12 4K** keyer over its native TCP protocol,
-producing and consuming the same zip archives the vendor's Smart Remote 4
-writes with **Archive All** and reads with **Restore**.
+Python library for the Blackmagic **Ultimatte 12** and **Ultimatte 12 4K**
+keyers over their native TCP protocol. It archives and restores unit
+configuration — producing and consuming the same zip archives the vendor's
+Smart Remote 4 writes with **Archive All** and reads with **Restore** — and
+reads and sets the unit's **network interface** (address, netmask, gateway,
+DNS, static or DHCP), which is what the vendor's Ultimatte Setup does.
 
 [![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/ultimattewire.svg)](https://pypi.org/project/ultimattewire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=ultimattewire-v*&label=release)](https://github.com/lucas-romanenko/bmdwire/tags)
 
@@ -16,7 +18,7 @@ established and what is still a guess.
 
 ## Status
 
-- **Pre-release** (`0.1.0.dev1`), extracted from a broadcast control
+- **Pre-release** (`0.2.0.dev0`), extracted from a broadcast control
   application where operators archive and restore keyer configurations from a
   web page.
 - Verified against an Ultimatte 12 4K (the unit the captures came from). The
@@ -41,6 +43,7 @@ Python 3.10 or newer. No other dependencies.
 
 ## Features
 
+- `read_network(host)` / `set_network(host, address=…, netmask=…, gateway=…, dns=…, dynamic=…)`: the unit's network interface — what Ultimatte Setup configures. `set_network` verifies by reading back the *settled* interface, not by trusting the unit's acknowledgement.
 - `archive_unit_to_bytes(host)`: pull every saved preset slot plus the `GPISettings` and `SavedSettings` resources into an in-memory zip in Smart Remote's exact layout, with a human-readable annotated state dump riding along.
 - `restore_unit_from_bytes(host, zip_bytes)`: push such a zip back, in the order the vendor app uses, aborting at the first rejected write.
 - Reads the unit's text prelude on TCP 9998 (label, firmware release, live control values, the preset FILE LIST) and does binary slot/resource reads and writes on TCP 9996.
@@ -71,6 +74,19 @@ if not ok:
 A zip produced by this library can be opened with Smart Remote 4's Restore
 unchanged, and a Smart Remote "Archive All" zip can be passed straight to
 `restore_unit_from_bytes`.
+
+```python
+from ultimattewire import read_network, set_network
+
+iface = read_network("192.0.2.21")
+print(iface.static_address, iface.static_netmask, iface.static_gateway, iface.mac)
+
+# Widen the mask, keeping the address and gateway. Returns the settled
+# interface as the unit reports it — not what was asked for.
+iface = set_network("192.0.2.21", address=iface.static_address,
+                    netmask="255.255.248.0", gateway=iface.static_gateway)
+assert iface.netmask == "255.255.248.0"
+```
 
 ## Protocol notes
 
@@ -119,6 +135,50 @@ terminated by the next all-caps header or `END PRELUDE:`; two pitfalls
 already hit and fixed are recorded in `_preamble.py` (a `$` anchor that
 truncated multi-line FILE LISTs, and a `\s*` that let an empty section
 swallow the next one).
+
+### Setting values: the 9998 block protocol
+
+The 9998 channel is not only a prelude. After it, the unit accepts **blocks**:
+an upper-case section header ending in a colon, then `key: value` lines, then
+a **blank line — and the blank line is what submits the block.** Nothing
+happens until it arrives, which is why single-line probes (`IDENTITY?`,
+`help`, `ping`, with either line ending) draw no reply at all and look like
+the unit ignoring the client. That is the one fact the whole feature rests on.
+
+The unit answers `ACK\n\n` followed by the section echoed back, or a bare
+`NAK\n\n` for an unknown section or a value it will not take.
+
+Three properties worth knowing:
+
+- **An empty block is a query.** Header, blank line, no fields: sets nothing
+  and echoes the full section. Read and write are therefore one code path,
+  and reading network state needs no prelude parsing.
+- **The echo after a set carries only the fields that were sent**, not the
+  section. A query echoes all eleven lines of `NETWORK INTERFACE 0`; a set of
+  two fields echoes those two. So the echo proves the unit *accepted* the
+  fields and says nothing about what it now holds — it must not be treated as
+  verification.
+- **`Static Addresses` is `<ip>/<dotted-netmask>` as one field**
+  (`192.168.1.10/255.255.252.0`), not a prefix length and not two fields.
+  Sending the address alone tells the unit to drop the mask, so `set_network`
+  refuses an address without its mask before anything reaches the wire.
+
+Changing an address makes the interface reapply, and for about a second the
+unit answers normally while reporting `Current Addresses: 0.0.0.0/255.255.0.0`
+with `Static Addresses` already holding the new value. Verifying against the
+current fields in that window reads garbage; verifying against the static
+fields declares success before the interface is running the value. So
+`set_network` polls until the unit is live on what it was configured with —
+current present, not `0.0.0.0`, and equal to static — and raises rather than
+reporting a success it cannot stand behind. A set that touches no address
+reapplies nothing and is not made to wait.
+
+`exchange`, `build_block` and `parse_interface` are public, so any other
+section the unit exposes can be driven the same way.
+
+There is deliberately no policy in the library: `set_network` writes what it
+is told. Whether a change is safe belongs to the caller — re-addressing a
+unit over the network can put it out of reach until someone visits it.
 
 ### The 9996 binary channel
 
