@@ -50,6 +50,7 @@ REPLY_QUIET_TIMEOUT = 2.0
 PRELUDE_QUIET_TIMEOUT = 2.0
 READBACK_TIMEOUT = 15.0      # an interface that reapplies is briefly unreachable
 READBACK_POLL = 0.5
+UNCONFIGURED = "0.0.0.0"     # what Current Addresses reads mid-reapply
 
 
 class UltimatteNetworkError(Exception):
@@ -249,12 +250,34 @@ def set_network(host, index=0, *, address=None, netmask=None, gateway=None,
     last = None
     while True:
         try:
-            return read_network(host, index, **kw)
+            iface = read_network(host, index, **kw)
+            if _settled(iface, address is not None):
+                return iface
+            last = f"interface still reapplying (Current {iface.address}/{iface.netmask})"
         except (UltimatteNetworkError, OSError) as exc:
             last = exc
-            if time.time() >= deadline:
-                break
-            time.sleep(READBACK_POLL)
+        if time.time() >= deadline:
+            break
+        time.sleep(READBACK_POLL)
     raise UltimatteNetworkError(
-        f"{host}: the unit accepted {sorted(fields)} but could not be read back "
+        f"{host}: the unit accepted {sorted(fields)} but did not settle "
         f"within {readback_timeout:g}s — CHECK THIS UNIT ({last})")
+
+
+def _settled(iface, address_was_set):
+    """Has the interface finished reapplying?
+
+    Measured on hardware: for about a second after an address change the unit
+    answers happily but reports ``Current Addresses: 0.0.0.0/255.255.0.0``
+    while ``Static Addresses`` already holds the new value. A caller that
+    verified against the CURRENT fields in that window would read garbage —
+    and one that verified against the STATIC fields would declare success
+    before the interface had actually taken them. So "settled" means the unit
+    is live on what it was configured with.
+    """
+    if not address_was_set:
+        return True
+    if not iface.address or iface.address == UNCONFIGURED:
+        return False
+    return (iface.address == iface.static_address
+            and iface.netmask == iface.static_netmask)

@@ -166,9 +166,59 @@ def test_set_returns_what_the_unit_says_not_what_was_asked(wired):
     assert iface.static_netmask == "255.255.252.0"
 
 
+REAPPLYING = ECHO.replace(
+    "Current Addresses: 192.168.81.98/255.255.252.0",
+    "Current Addresses: 0.0.0.0/255.255.0.0").replace(
+    "Static Addresses: 192.168.81.98/255.255.252.0",
+    "Static Addresses: 192.168.81.98/255.255.248.0")
+
+SETTLED = ECHO.replace("255.255.252.0", "255.255.248.0")
+
+SET_ACK = "ACK\n\nNETWORK INTERFACE 0:\nStatic Addresses: x\n\n"
+
+
+def test_a_mid_reapply_read_is_not_accepted_as_settled(wired, monkeypatch):
+    """For ~1s after an address change the unit answers but reports
+    Current Addresses: 0.0.0.0 while Static already holds the new value.
+    Returning that would hand the caller garbage in the live fields."""
+    monkeypatch.setattr(network, "READBACK_POLL", 0)
+    wired(SET_ACK, "ACK\n\n" + REAPPLYING, "ACK\n\n" + SETTLED)
+    iface = set_network("192.0.2.21", address="192.168.81.98", netmask="255.255.248.0")
+    assert iface.address == "192.168.81.98", "must not return the 0.0.0.0 window"
+    assert iface.netmask == "255.255.248.0"
+
+
+def test_an_interface_that_never_settles_raises(wired, monkeypatch):
+    monkeypatch.setattr(network, "READBACK_POLL", 0)
+    wired(SET_ACK, "ACK\n\n" + REAPPLYING)
+    with pytest.raises(UltimatteNetworkError, match="did not settle"):
+        set_network("192.0.2.21", address="192.168.81.98", netmask="255.255.248.0",
+                    readback_timeout=0)
+
+
+def test_current_must_match_static_before_a_set_is_believed(wired, monkeypatch):
+    """Static taking the value is not the same as the interface running it."""
+    monkeypatch.setattr(network, "READBACK_POLL", 0)
+    stale = ECHO.replace("Static Addresses: 192.168.81.98/255.255.252.0",
+                         "Static Addresses: 192.168.81.98/255.255.248.0")
+    wired(SET_ACK, "ACK\n\n" + stale)
+    with pytest.raises(UltimatteNetworkError, match="did not settle"):
+        set_network("192.0.2.21", address="192.168.81.98", netmask="255.255.248.0",
+                    readback_timeout=0)
+
+
+def test_a_set_that_touches_no_address_does_not_wait_for_the_interface(wired):
+    """A gateway- or DNS-only change reapplies nothing, so it must not be
+    held up waiting for Current to match."""
+    socks = wired(SET_ACK, "ACK\n\n" + ECHO)
+    iface = set_network("192.0.2.21", gateway="192.168.80.1")
+    assert iface.static_gateway == "192.168.80.1"
+    assert len(socks) == 2
+
+
 def test_a_write_that_cannot_be_read_back_raises_loudly(wired):
     """Accepted-then-unreachable is the dangerous case: never report success."""
-    wired("ACK\n\nNETWORK INTERFACE 0:\nStatic Addresses: x\n\n", "")
+    wired(SET_ACK, "")
     with pytest.raises(UltimatteNetworkError, match="CHECK THIS UNIT"):
         set_network("192.0.2.21", address="192.168.81.98", netmask="255.255.248.0",
                     readback_timeout=0)
