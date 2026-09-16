@@ -5,7 +5,7 @@ Ethernet Protocol on TCP 9990: state snapshot, crosspoint routing with
 ACK/NAK handling, port labels, and live application of the router's pushed
 updates.
 
-[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/videohubwire.svg)](https://pypi.org/project/videohubwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=videohubwire-v*&label=release)](https://github.com/lucas-romanenko/bmdwire/tags)
+[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/bmdwire.svg?label=pypi%20bmdwire)](https://pypi.org/project/bmdwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
 videohubwire is small, dependency-free and synchronous by design: open, read,
 act, close, in milliseconds on a LAN, which suits per-request use from a web
@@ -21,16 +21,17 @@ backend or a script.
 
 ## Install
 
-From PyPI:
+videohubwire ships inside the `bmdwire` distribution together with the other three
+libraries in this repository, at one version:
 
 ```sh
-pip install videohubwire
+pip install bmdwire
 ```
 
-Pin the version in a requirements file (`videohubwire==1.0.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Pin the version in a requirements file (`bmdwire==1.1.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "videohubwire @ git+https://github.com/lucas-romanenko/bmdwire.git@videohubwire-v1.0.0#subdirectory=videohubwire"
+pip install "bmdwire @ git+https://github.com/lucas-romanenko/bmdwire.git@v1.1.0"
 ```
 
 Python 3.10 or newer. No other dependencies.
@@ -90,16 +91,16 @@ or what this client does on top of it.
 
 ```sh
 git clone https://github.com/lucas-romanenko/bmdwire.git
-cd bmdwire/videohubwire
+cd bmdwire
 pip install -e ".[test]"
-python -m pytest
+python -m pytest videohubwire/tests      # or plain `python -m pytest` for all four suites
 ```
 
-The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request.
+The suite needs no hardware. CI runs all four suites on Python 3.10, 3.12 and 3.14 for every push and pull request.
 
 ## Related libraries
 
-One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
+The same `pip install bmdwire` carries one library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
 
 - [atemwire](../atemwire/): ATEM switchers (UDP protocol, macros, profiles)
 - [hyperdeckwire](../hyperdeckwire/): HyperDeck recorders (transport control, clip upload)

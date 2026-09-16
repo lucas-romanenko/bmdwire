@@ -1,40 +1,41 @@
-# Publish ONE package to PyPI per tag, via trusted publishing (OIDC): no API
-# token lives in this repository.
+# Publish bmdwire to PyPI, via trusted publishing (OIDC): no API token lives
+# in this repository.
 #
-# ON PYPI.ORG, ONCE PER PROJECT (manual): each of the four projects —
-# atemwire, hyperdeckwire, ultimattewire, videohubwire — has a trusted
-# publisher that still points at its old repository. Update (or add) each
-# one to owner lucas-romanenko, repository bmdwire, workflow publish.yml,
-# environment pypi. Until that is done PyPI refuses uploads from here.
+# ON PYPI.ORG, ONCE (manual): the project `bmdwire` needs a trusted
+# publisher — owner lucas-romanenko, repository bmdwire, workflow
+# publish.yml, environment pypi. Until the project has its first release
+# that is a "pending publisher" added from the account's Publishing page.
+# Until it exists PyPI refuses the upload. The four old projects (atemwire,
+# hyperdeckwire, ultimattewire, videohubwire) keep their last 1.0.x
+# release and are not published from here any more.
 #
-# Tags are <package>-v<version>: atemwire-v0.15.0.dev0, hyperdeckwire-v0.1.0.dev0,
-# ultimattewire-v0.1.0.dev0, videohubwire-v0.1.0.dev0. The workflow parses the
-# tag, refuses anything else, checks the version against that package's
-# pyproject.toml, builds only that package and publishes it. atemwire ships
-# an sdist plus prebuilt wheels (cibuildwheel: Linux x86_64 and aarch64,
-# macOS arm64 and x86_64, Windows x86_64, CPython 3.10–3.14) so a pip
-# install never needs a C compiler; the others ship sdist + wheel. Re-publish an existing tag with "Run workflow" and the tag
-# name. A GitHub release for the tag triggers it too.
+# A release is a tag `v<version>` on main whose version equals
+# `project.version` in pyproject.toml; the tag PUSH starts this workflow
+# (a GitHub release created afterwards with `gh release edit` / `gh
+# release create` on the existing tag does not start a second run). The
+# sdist is built once; cibuildwheel builds the wheels — atemwire's C
+# extension makes the whole distribution platform-specific — for Linux
+# x86_64 and aarch64, macOS arm64 and x86_64, Windows x86_64 on CPython
+# 3.10–3.14, so a pip install never needs a compiler. Re-publish an
+# existing tag with "Run workflow" and the tag name.
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish, <package>-v<version> (e.g. atemwire-v0.15.0.dev0)"
+        description: "Tag to publish, v<version> (e.g. v1.1.0)"
         required: true
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build ${{ github.event.inputs.tag || github.ref_name }}
+  sdist:
+    name: sdist for ${{ github.event.inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
-    outputs:
-      package: ${{ steps.parse.outputs.package }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,57 +43,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Parse the tag into package and version
-        id: parse
+      - name: Tag version matches pyproject.toml
         shell: bash
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           case "$TAG" in
-            atemwire-v?*|hyperdeckwire-v?*|ultimattewire-v?*|videohubwire-v?*) ;;
-            *) echo "::error::tag '$TAG' is not <package>-v<version> for one of the four packages"; exit 1 ;;
+            v[0-9]*) ;;
+            *) echo "::error::tag '$TAG' is not v<version>"; exit 1 ;;
           esac
-          package="${TAG%%-v*}"
-          version="${TAG#*-v}"
-          echo "package=$package" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG package=$package version=$version"
-      - name: Tag version matches the package's pyproject version
-        working-directory: ${{ steps.parse.outputs.package }}
-        env:
-          TAG_VERSION: ${{ steps.parse.outputs.version }}
-        run: |
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
-          echo "tag version=$TAG_VERSION pyproject version=$version"
-          test "$TAG_VERSION" = "$version"
-      - name: Build the distribution
-        working-directory: ${{ steps.parse.outputs.package }}
-        env:
-          PACKAGE: ${{ steps.parse.outputs.package }}
+          echo "tag=$TAG pyproject version=$version"
+          test "${TAG#v}" = "$version"
+      - name: Build the sdist
         run: |
-          pip install build
-          if [ "$PACKAGE" = "atemwire" ]; then
-            python -m build --sdist
-          else
-            python -m build
-          fi
-          ls -l dist/
-      - name: Check the distributions
-        working-directory: ${{ steps.parse.outputs.package }}
-        run: |
-          pip install twine
+          pip install build twine
+          python -m build --sdist
           twine check dist/*
+          ls -l dist/
       - uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: ${{ steps.parse.outputs.package }}/dist/
+          name: sdist
+          path: dist/
 
-  # atemwire only: binary wheels for the C extension, one runner per
-  # platform (the macOS runner cross-compiles the x86_64 wheel as well).
   wheels:
-    name: atemwire wheels on ${{ matrix.os }}
-    needs: build
-    if: needs.build.outputs.package == 'atemwire'
+    name: wheels on ${{ matrix.os }}
+    needs: sdist
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -104,13 +80,12 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: pypa/cibuildwheel@v4.2.1
         with:
-          package-dir: atemwire
           output-dir: wheelhouse
         env:
           CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "pp* *-musllinux_*"
           CIBW_ARCHS_MACOS: "arm64 x86_64"
-          CIBW_TEST_COMMAND: python -c "import atemwire.mediaconvert"
+          CIBW_TEST_COMMAND: python -c "import atemwire.mediaconvert, hyperdeckwire, ultimattewire, videohubwire"
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
@@ -118,10 +93,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: [build, wheels]
-    # Runs after the sdist and, for atemwire, the wheels; the wheels job is
-    # skipped for the other packages and that must not block them.
-    if: always() && needs.build.result == 'success' && (needs.wheels.result == 'success' || needs.wheels.result == 'skipped')
+    needs: [sdist, wheels]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -129,10 +101,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: dist
+          name: sdist
           path: dist/
       - uses: actions/download-artifact@v4
-        if: needs.wheels.result == 'success'
         with:
           pattern: wheels-*
           merge-multiple: true
@@ -143,6 +114,6 @@ jobs:
         with:
           # A manual "Run workflow" on a tag that is already on PyPI is a
           # no-op (the way to prove the publisher is wired without a new
-          # version). A release-triggered run keeps failing on a duplicate,
-          # so a tag made without a version bump is caught loudly.
+          # version). A tag-triggered run keeps failing on a duplicate, so
+          # a tag made without a version bump is caught loudly.
           skip-existing: ${{ github.event_name == 'workflow_dispatch' }}
