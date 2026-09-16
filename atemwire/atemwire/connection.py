@@ -703,6 +703,19 @@ class ATEMConnection:
     def _close_protocol(self):
         if self._protocol is None:
             return
+        # Give the media lock back BEFORE the goodbye. A lock we still hold
+        # at teardown outlives us: the switcher keeps it for the rest of the
+        # session's life, and for an abandoned session that is its own ~5
+        # minute timeout. Every client that asks for the media store in that
+        # window is refused, which is a switcher that will not load a still
+        # and an ATEM Software Control media pool slot that spins forever on
+        # a thumbnail it cannot download. Releasing after the goodbye would
+        # be releasing into a session that has already ended, so the order
+        # here matters.
+        try:
+            self._protocol.release_locks_now()
+        except Exception:
+            pass
         # Protocol-level goodbye BEFORE the socket close — an abandoned
         # session wedges the switcher (see transport.close_session).
         try:
