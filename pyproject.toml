@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bmdwire"
-version = "1.1.0"
+version = "1.2.0"
 description = "Python libraries for Blackmagic Design broadcast devices: ATEM switchers, HyperDeck recorders, Ultimatte keyers and Videohub routers"
 readme = "README.md"
 # atemwire is a fork of pyatem and stays LGPL-3.0-only; the other three were
