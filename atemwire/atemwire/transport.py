@@ -312,6 +312,16 @@ class UdpProtocol(BaseProtocol):
         # thread_recv_queue when the gap fills.
         self._deliver_next = None
         self._parked = {}
+        # A packet pulled from thread_recv_queue that ``receive_packet`` had
+        # to put aside because it owed the caller a sentinel first
+        # (ConnectionReady / TransferQueueFlushed). It is handed out on the
+        # NEXT call. Before this existed the packet was simply dropped: the
+        # switcher's first packet after the state dump never reached the
+        # protocol layer, and its retransmissions were then deduplicated as
+        # "already received". When that packet was the LKOB answering a
+        # lock request sent during the dump, the session held the media
+        # lock without knowing it — for the rest of its life (2026-09-16).
+        self._stashed_packet = None
 
         self.state = UdpProtocol.STATE_CLOSED
         self.session_id = 0x1337
@@ -454,12 +464,16 @@ class UdpProtocol(BaseProtocol):
 
         Without this, closing the socket ABANDONS the session: the ATEM
         keeps it alive — counted against its small session table, any
-        still-store lock included — until its own ~5 minute timeout.
-        Enough abandoned sessions inside a 5-minute window and the
-        switcher refuses all new connections and/or never grants the
-        media lock, which reads as a "wedged network engine" that only a
-        power cycle clears (observed live on two switchers, 2026-07-02).
-        Every close path must call this BEFORE ``sock.close()``.
+        still-store lock included — until it reaps it on its own
+        (measured 2026-09-16 on a 1 M/E Constellation HD: the lock of an
+        abandoned session came back ~5 s after the socket closed; the
+        "~5 minutes" this used to say was never measured). Enough
+        abandoned sessions in flight and the switcher refuses all new
+        connections and/or never grants the media lock, which reads as a
+        "wedged network engine" that only a power cycle clears (observed
+        live on two switchers, 2026-07-02). Every close path must call
+        this BEFORE ``sock.close()``. The goodbye itself releases every
+        lock the session holds within ~10 ms (measured the same day).
 
         Fire-and-forget: one datagram, no wait for the ATEM's reply —
         we're tearing down regardless, and a lost goodbye is no worse
@@ -625,7 +639,18 @@ class UdpProtocol(BaseProtocol):
         # ACK if: we're already in ack-mode and the packet is reliable, OR
         # we haven't entered ack-mode yet and this is a no-data control
         # packet (kicks off ack-mode on the initial control frame).
-        if (packet.flags & UdpProtocol.FLAG_RELIABLE and self.enable_ack) or \
+        # ACK every reliable packet once the session is ESTABLISHED. The
+        # historical rule waited for the first no-data control frame before
+        # ACKing anything, so the whole initial state dump went unACKed
+        # until the switcher's post-dump ping — on a LAN that is ~5 ms, but
+        # the switcher's retransmit timer is ~80 ms, and any dump slower
+        # than that (VPN, a busy switcher, or a data packet instead of a
+        # ping after the dump) was retransmitted in full over and over
+        # until we finally ACKed (measured 2026-09-16: the entire 20-packet
+        # dump resent every 80 ms). ATEM Software Control ACKs each packet.
+        if (packet.flags & UdpProtocol.FLAG_RELIABLE
+                and (self.enable_ack
+                     or self.state == UdpProtocol.STATE_ESTABLISHED)) or \
                 (not self.enable_ack and len(packet.data) == 0):
             self.enable_ack = True
             # ACK this
@@ -799,6 +824,7 @@ class UdpProtocol(BaseProtocol):
         # sequence space and must never drain into the new one.
         self._deliver_next = None
         self._parked.clear()
+        self._stashed_packet = None
         self.session_id = 0x1337
         self.enable_ack = False
         # Buffered packets carry the OLD session id — never serve them
@@ -827,7 +853,12 @@ class UdpProtocol(BaseProtocol):
 
     def receive_packet(self):
         while True:
-            packet = self._receive_packet()
+            if self._stashed_packet is not None:
+                # Owed from the previous call, which returned a sentinel
+                # instead of this packet. See _stashed_packet in __init__.
+                packet, self._stashed_packet = self._stashed_packet, None
+            else:
+                packet = self._receive_packet()
 
             if packet is True:
                 continue
@@ -861,10 +892,21 @@ class UdpProtocol(BaseProtocol):
                 return packet
 
             if self.mark_next_connected:
+                # The packet just pulled is NOT consumed by the sentinel:
+                # keep it for the next call. Dropping it lost the first
+                # packet after every state dump — a real, reliable packet
+                # the switcher will not resend usefully (its retransmits
+                # are deduplicated as already-received).
                 self.mark_next_connected = False
+                self._stashed_packet = packet
                 return ConnectionReady()
 
             if self.enable_ack and self.queue_trigger():
+                # Same rule: the flush sentinel must not eat the packet
+                # that happened to be pulled when the send queue drained —
+                # mid-upload that packet can be the FTCD budget grant, and
+                # losing it stalls the transfer until the caller's timeout.
+                self._stashed_packet = packet
                 return TransferQueueFlushed()
 
             if self.state == UdpProtocol.STATE_SYN_SENT:

@@ -67,7 +67,12 @@ logger = logging.getLogger(__name__)
 
 
 # Wait up to this long for initial state (video-mode) after calling connect().
-CONNECT_TIMEOUT = 6.0
+# Handshake plus the COMPLETE initial state dump (InCm seen). Ready used to
+# mean "video-mode has arrived", which is the first packet of the dump, so
+# 6 s was generous; a whole dump over a VPN can take several seconds on a
+# large switcher, and a connect that times out is worse than one that takes
+# eight seconds.
+CONNECT_TIMEOUT = 15.0
 
 # Cadence at which the worker pumps protocol.loop() while idle.
 PUMP_INTERVAL = 0.01
@@ -299,8 +304,18 @@ class ATEMConnection:
                     except Exception:
                         pass
 
+            def _on_error(contents):
+                # The protocol raises this ONLY for a fatal status (the
+                # lock-dance statuses 1/5/6 are recovered internally), and
+                # transfers on this connection are serialized, so it is
+                # ours. It has already dropped the task and released the
+                # lane — fail now instead of sitting out the timeout.
+                result['error'] = contents
+                done.set()
+
             done_id = protocol.on('download-done', _on_done)
             prog_id = protocol.on('transfer-progress', _on_progress)
+            err_id = protocol.on('file-transfer-error', _on_error)
             try:
                 protocol.download(store, index)
                 if not done.wait(timeout):
@@ -325,11 +340,16 @@ class ATEMConnection:
                     raise TimeoutError(
                         f"download: store {store} slot {index} on "
                         f"{ip} timed out ({timeout}s){hint}")
+                if 'error' in result:
+                    raise RuntimeError(
+                        f"download: store {store} slot {index} on {ip} "
+                        f"rejected by the switcher: {result['error']}")
                 return result['data']
             finally:
                 try:
                     protocol.off('download-done', done_id)
                     protocol.off('transfer-progress', prog_id)
+                    protocol.off('file-transfer-error', err_id)
                 except Exception:
                     pass
 

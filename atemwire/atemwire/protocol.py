@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 import logging
 import struct
+import time
 
 from atemwire._transfer import TransferTask, TransferQueueFlushed
 from atemwire.transport import UdpProtocol, Packet, ConnectionReady, Wakeup
@@ -29,6 +30,12 @@ def _is_tcp_transport(transport) -> bool:
     here rather than waiting for the transport's ConnectionReady, and
     file-transfer uploads go straight to ``transport.upload(task)``."""
     return type(transport).__name__ == 'TcpProtocol'
+
+# A lock request (LOCK / PLCK) with no LKOB back after this long is sent
+# again on the next trigger. Measured: a granted request answers in ~1 ms;
+# a queued PLCK answers the moment the holder releases; a full LOCK sent
+# while another session holds the store is simply dropped by the switcher.
+LOCK_REREQUEST_SECONDS = 1.0
 
 
 class AtemProtocol:
@@ -113,7 +120,12 @@ class AtemProtocol:
         self.mixerstate = {}
         self.callbacks = {}
         self.callback_idx = 1
+        # ``connected``: any data packet has arrived on the session (flips
+        # on the FIRST packet of the state dump). ``initialized``: the dump
+        # is complete — InCm seen and the ConnectionReady sentinel
+        # delivered; this is what "ready" means (see atemwire.ready).
         self.connected = False
+        self.initialized = False
 
         self.locks = {}
         # Stores whose unlock we have SENT but whose LKST release echo has
@@ -124,6 +136,17 @@ class AtemProtocol:
         # back-to-back downloads). _transfer_trigger defers requests for
         # these stores; the LKST echo clears the entry and re-triggers.
         self._lock_release_pending = set()
+        # store -> monotonic time of the last lock request (LOCK / PLCK)
+        # sent with no LKOB back yet. ``download()`` calls _transfer_trigger
+        # once per queued task, and before this existed every call re-sent
+        # the request: three downloads queued together put three PLCKs on
+        # the wire for one grant (measured 2026-09-16). A request younger
+        # than LOCK_REREQUEST_SECONDS is not repeated; an older one is,
+        # because the switcher does not queue every kind of request (a
+        # full LOCK sent while held is ignored) and a client must re-ask.
+        # Cleared by the LKOB, by the store's LKST release broadcast (the
+        # pounce re-requests anyway), and by every lane reset.
+        self._lock_requested = {}
         self.mode = None
         self.transfer_queue = {}
         self.transfer_id = 42
@@ -151,6 +174,7 @@ class AtemProtocol:
             if self.connected:
                 self._raise('disconnected')
                 self.mixerstate = {}
+                self.initialized = False
                 # A transfer in flight when the session died is gone. The
                 # transport auto-reconnects (same worker survives), and the
                 # NEW session must not inherit ghost lane state — a stale
@@ -163,6 +187,7 @@ class AtemProtocol:
             return
         if isinstance(packet, ConnectionReady):
             self.connected = True
+            self.initialized = True
             self.send_commands([TimeRequestCommand()])
             self._raise('connected')
             return
@@ -189,6 +214,7 @@ class AtemProtocol:
             self._raise('disconnected')
             self.mixerstate = {}
             self.connected = False
+            self.initialized = False
             self._reset_transfer_lane()
             try:
                 self.transport.close_session()
@@ -261,6 +287,7 @@ class AtemProtocol:
         if key == 'lock-obtained':
             self.log.info('Got lock for {}'.format(contents.store))
             self.locks[contents.store] = True
+            self._lock_requested.pop(contents.store, None)
             self._transfer_trigger(contents.store)
             return
         elif key == 'lock-state':
@@ -274,6 +301,12 @@ class AtemProtocol:
             # Our per-frame unlock is now confirmed processed — requests
             # for this store are safe to send again.
             self._lock_release_pending.discard(contents.store)
+            # The lock is free: whatever request we had outstanding is
+            # either about to be granted (a queued PLCK — the switcher
+            # grants it directly, sometimes without even broadcasting the
+            # release) or was ignored (a LOCK sent while held). Let the
+            # pounce below re-request either way; a duplicate is harmless.
+            self._lock_requested.pop(contents.store, None)
             # THE POUNCE (ASC parity, 2026-07-07): the store lock just became
             # free — either our own per-frame release echoing back (see
             # _release_then_continue) or a FOREIGN holder (ASC, another
@@ -325,10 +358,11 @@ class AtemProtocol:
                 self.log.error('Got file transfer data for wrong transfer id')
             return
         elif key == 'file-transfer-error':
-            # Status 1 (try-again) and 5 (no-lock) are part of the normal
-            # per-frame lock dance — the machinery below recovers them in
-            # microseconds. Only genuinely fatal statuses deserve ERROR.
-            if getattr(contents, 'status', None) in (1, 5):
+            # Status 1 (try-again), 5 (no-lock) and 6 (lock taken by another
+            # session) are part of the normal per-frame lock dance — the
+            # machinery below recovers them. Only genuinely fatal statuses
+            # deserve ERROR.
+            if getattr(contents, 'status', None) in (1, 5, 6):
                 self.log.debug(f"file-transfer-error: {str(contents)}")
             else:
                 self.log.error(f"file-transfer-error: {str(contents)}")
@@ -351,6 +385,23 @@ class AtemProtocol:
             elif contents.status == 5:
                 self.locks[self.transfer.store] = False
                 self._transfer_trigger(self.transfer.store, retry=True)
+            elif contents.status == 6:
+                # Another session asked for the store while our transfer
+                # was being set up: the switcher aborts OUR request with 6
+                # but we STILL hold the lock (measured 2026-09-16 — two
+                # clients requesting within ~150 ms: the first gets LKOB,
+                # FTSU, then FTDE 6; the second's PLCK stays queued until
+                # the first releases; re-requesting without releasing
+                # deadlocked both for the full timeout). So: give the lock
+                # back now, keep the task at the head of the queue, and let
+                # the store's next release broadcast re-request it (the
+                # pounce in the lock-state handler). Treating 6 as fatal
+                # used to drop the task and leave the caller to time out —
+                # 15-30 s per collision with ATEM Software Control or a
+                # second control page on the same switcher.
+                store = self.transfer.store
+                self._lock_requested.pop(store, None)
+                self._release_then_continue(store)
             else:
                 # Fatal for THIS transfer (e.g. code 2 = rejected mode/slot):
                 # retrying the same request would fail identically forever.
@@ -389,34 +440,32 @@ class AtemProtocol:
                 return
             # Remove current item from the transfer queue
             store = self.transfer.store
+            slot = self.transfer.slot
+            upload = self.transfer.upload
             queue = self.transfer_queue[store]
             self.transfer_queue[store] = queue[1:]
+            raw = b''.join(self.transfer_buffer)
+            self.transfer_buffer = []
+            self.transfer_buffer_bytes = 0
+            self.transfer_requested = False
 
-            # From here the queue head is already popped: _transfer_trigger
-            # MUST run even if event delivery blows up, or the lane wedges
-            # with the store lock held and nothing in flight — the
-            # empty-queue unlock inside the trigger is what releases the
-            # ATEM's media lock (2026-07-06).
+            # Give the store lock back FIRST, then decode and notify. The
+            # RLE decode of a 1080p still is pure Python and took ~250 ms
+            # measured — with the release after it, every frame held the
+            # switcher's media lock a quarter second longer than the
+            # transfer needed, on every thumbnail, against every other
+            # client. The queue head is already popped, so this MUST run
+            # before anything that can raise: the empty-queue unlock inside
+            # the trigger is what frees the ATEM's media lock (2026-07-06).
+            self._release_then_continue(store)
             try:
-                if self.transfer.upload:
-                    self._raise('upload-done', store, self.transfer.slot)
-                    self.transfer_requested = False
+                if upload:
+                    self._raise('upload-done', store, slot)
                 else:
-                    # Assemble the buffer
-                    data = b''.join(self.transfer_buffer)
-                    self.transfer_buffer = []
-                    self.transfer_buffer_bytes = 0
-                    self.transfer_requested = False
-
-                    # Decompress the buffer if needed
-                    if store == 0:
-                        data = rle_decode(data)
-
-                    self._raise('download-done', store, self.transfer.slot, data)
-            finally:
-                # Per-frame lock discipline: release, then let the LKST
-                # echo start the next queued transfer.
-                self._release_then_continue(store)
+                    data = rle_decode(raw) if store == 0 else raw
+                    self._raise('download-done', store, slot, data)
+            except Exception:
+                self.log.exception('transfer completion handling failed')
             return
         elif key == 'transfer-complete':
             self.log.debug('Proxy transfer complete')
@@ -461,6 +510,7 @@ class AtemProtocol:
             # TCP proxy fires 'connected' here, on InCm — UDP/USB fire
             # it later via the transport's ConnectionReady sentinel.
             if _is_tcp_transport(self.transport):
+                self.initialized = True
                 self._raise('connected')
         self._raise('change', key, contents)
 
@@ -521,28 +571,26 @@ class AtemProtocol:
         self.transfer_buffer_bytes = 0
         self.locks = {}
         self._lock_release_pending.clear()
+        self._lock_requested.clear()
 
     def release_locks_now(self):
         """Give back every store lock we hold, SYNCHRONOUSLY, for teardown.
 
-        ``abort_transfers`` releases through ``send_commands``, which queues
-        the packet for the worker thread to drain. On a close path the worker
-        is already exiting, so that packet is never sent and the switcher goes
-        on believing we hold the lock. It then holds it for the session's
-        remaining life, and if the session was abandoned rather than closed,
-        for the ATEM's own ~5 minute timeout. A later client asking for the
-        media store is refused for that whole window, which looks to an
-        operator like a switcher that will not let them load a still, and to
-        ATEM Software Control like a media pool slot that spins forever
-        because it cannot download the thumbnail it wants to draw.
+        Belt and braces. Measured 2026-09-16 (1 M/E Constellation HD): the
+        goodbye alone releases a held lock within ~10 ms, and even an
+        abandoned session's lock is reaped by the switcher in ~5 s, so this
+        is not what "connect and find the store locked" was about (that
+        was a lock GRANTED to us whose LKOB the transport dropped, fixed in
+        ``transport.receive_packet``). It still costs nothing and protects
+        the one case the goodbye datagram itself is lost.
 
-        So this writes straight to the socket the way the goodbye does
-        (``_send_packet_low``), before the socket is closed. Best effort and
-        never raises: we are tearing down either way, and a lost release is
-        no worse than the behaviour it replaces.
+        ``abort_transfers`` is not usable here: it releases through
+        ``send_commands``, which queues for the worker thread, and on a
+        close path that worker is already exiting. This writes straight to
+        the socket the way the goodbye does (``_send_packet_low``), before
+        the socket is closed. Best effort and never raises.
 
-        Call it BEFORE ``transport.close_session()``. Releasing after the
-        goodbye is releasing into a session the switcher has already ended.
+        Call it BEFORE ``transport.close_session()``.
         """
         held = [store for store, is_held in self.locks.items() if is_held]
         if not held:
@@ -561,6 +609,7 @@ class AtemProtocol:
                                exc_info=True)
             self.locks[store] = False
         self._lock_release_pending.clear()
+        self._lock_requested.clear()
 
     def abort_transfers(self):
         """Best-effort reset of the transfer state machine, for callers that
@@ -579,6 +628,7 @@ class AtemProtocol:
         # it was deferring for is gone, and the next caller's fresh request
         # must not be deferred against a stale mark.
         self._lock_release_pending.clear()
+        self._lock_requested.clear()
         for lock in list(self.locks):
             if self.locks[lock]:
                 try:
@@ -664,7 +714,10 @@ class AtemProtocol:
     def _queue_chunks(self):
         # Can't transfer without a chunk size
         if self.transfer_budget is None:
-            self.log.error('Cannot transfer without chunk size')
+            # Normal between budgets: the queue drained, the FTCD that
+            # grants the next batch has not arrived yet. Not an error
+            # (it was logged as one ten times per still upload).
+            self.log.debug('Chunk budget exhausted — waiting for the next FTCD')
             return
 
         # Only queue chunks if an upload is planned
@@ -795,6 +848,12 @@ class AtemProtocol:
                     f'Deferring lock request for {next.store} until the '
                     f'release echo lands')
                 return
+            asked = self._lock_requested.get(next.store)
+            if asked is not None and time.monotonic() - asked < LOCK_REREQUEST_SECONDS:
+                self.log.debug(
+                    f'Lock request for {next.store} already on the wire — '
+                    f'waiting for LKOB')
+                return
             self.log.info('Requesting lock for {}'.format(next.store))
             # Clear tasks take the FULL store lock: CSTL was verified
             # honored under a LOCK grant; whether a PLCK per-slot grant
@@ -804,6 +863,7 @@ class AtemProtocol:
                 cmd = LockCommand(next.store, True)
             else:
                 cmd = PartialLockCommand(next.store, next.slot)
+            self._lock_requested[next.store] = time.monotonic()
             self.send_commands([cmd])
             return
 

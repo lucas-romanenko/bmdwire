@@ -398,6 +398,7 @@ class _FakeReadyProtocol:
     def loop(self):
         if self._become_ready:
             self.connected = True
+            self.initialized = True      # the dump is complete (InCm seen)
             self.mixerstate['video-mode'] = object()
 
 

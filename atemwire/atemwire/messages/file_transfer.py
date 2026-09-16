@@ -219,7 +219,9 @@ class FileTransferErrorField(Recv):
     Offset Size Type   Description
     ====== ==== ====== ===========
     0      2    u16    Transfer id
-    2      1    u8     Error code (1=try-again, 2=not-found, 5=no-lock)
+    2      1    u8     Error code (1=try-again, 2=not-found, 5=no-lock,
+                       6=lock-lost: the store was granted to another
+                       session before this transfer was serviced)
     3      1    ?      padding
     ====== ==== ====== ===========
     """
@@ -230,7 +232,7 @@ class FileTransferErrorField(Recv):
     status   = u8 (at=2)
 
     def __repr__(self):
-        errors = {1: 'try-again', 2: 'not-found', 5: 'no-lock'}
+        errors = {1: 'try-again', 2: 'not-found', 5: 'no-lock', 6: 'lock-lost'}
         s = errors.get(self.status, f'unknown ({self.status})')
         return f'<file-transfer-error transfer={self.transfer} status={s}>'
 

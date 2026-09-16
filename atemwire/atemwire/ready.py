@@ -36,8 +36,11 @@ def wait_ready(
 ) -> dict:
     """Block until ``protocol`` has completed the ATEM's initial state dump.
 
-    Pumps ``protocol.loop()`` at ``pump_interval`` until the 'connected'
-    event has fired AND ``'video-mode'`` is present in ``mixerstate``, then
+    Pumps ``protocol.loop()`` at ``pump_interval`` until the switcher has
+    finished its initial state dump (``protocol.initialized`` — set when the
+    ``InCm`` end-of-dump marker has been processed, the same moment the
+    'connected' event fires) AND ``'video-mode'`` is present in
+    ``mixerstate``, then
     optionally keeps pumping for ``extra_settle`` seconds to let late-
     arriving state fields (e.g. macro-properties) populate.
 
@@ -52,8 +55,11 @@ def wait_ready(
     :raises TimeoutError: if not ready within ``timeout`` seconds.
     :raises WaitAborted: if ``stop_event`` is set before ready.
     """
-    # Fast path: already connected and initial state dumped.
-    if getattr(protocol, 'connected', False) and 'video-mode' in protocol.mixerstate:
+    # Fast path: initial state already dumped. ``protocol.connected`` is
+    # NOT the test — it flips on the first data packet of the dump, so it
+    # used to make this return mid-dump (with a partial mixerstate, and
+    # with any lock request sent right then racing the dump's tail).
+    if getattr(protocol, 'initialized', False) and 'video-mode' in protocol.mixerstate:
         if extra_settle > 0:
             _pump_for(protocol, extra_settle, pump_interval, stop_event)
         return protocol.mixerstate
@@ -78,7 +84,7 @@ def wait_ready(
             except Exception as e:
                 logger.debug("wait_ready: protocol.loop() error: %s", e)
             if (
-                (connected['flag'] or getattr(protocol, 'connected', False))
+                (connected['flag'] or getattr(protocol, 'initialized', False))
                 and 'video-mode' in protocol.mixerstate
             ):
                 break
