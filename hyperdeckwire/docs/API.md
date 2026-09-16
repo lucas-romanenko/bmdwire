@@ -5,17 +5,21 @@ units over the network.
 
 ## What it covers
 
-Two transports, both required for a full feature loop:
+Three channels, one per thing a deck offers over the network:
 
 | Transport | Protocol | Port | Used for |
 |---|---|---|---|
 | Ethernet Protocol | TCP, line-oriented text | 9993 | Transport control, clip listing, timeline manipulation |
 | FTP | Standard FTP | 21 | File upload (push new clips onto the SD/SSD) |
+| Configuration API | HTTP, JSON | 80 | What HyperDeck Setup shows: name, network, the FTP / Web Media Manager / Ethernet Protocol switches, certificate, users, date and time, reboot (`HyperdeckSetup`, see [Configuration](#configuration-hyperdecksetup)) |
 
-The HTTP REST API that newer HyperDeck Studio HD Plus / Pro / HDR / Shuttle
-SKUs got in firmware 8.x is **not** used. The **Studio HD Mini** was left
-out of that rollout (port 80 is closed on it), and `9993 + FTP` is the only
-universally-supported combination across the lineup.
+Playback and upload stay on `9993 + FTP` on purpose: every networked
+HyperDeck has them, while the HTTP media/transport REST API that arrived in
+firmware 8.x is only on the Plus / Pro / HDR / Shuttle models. The
+configuration API is a different thing: it is what the HyperDeck Setup app
+is a browser onto, it is on the Studio HD Mini too (checked on 9.0.2), and
+it is the only place the network and access switches live, since the 9993
+protocol has no commands for them.
 
 The Ethernet protocol itself is fully documented by BMD in
 `HyperDeckEthernetProtocol.pdf` (December 2024 revision). hyperdeckwire
@@ -48,12 +52,15 @@ Everything below is exported from `hyperdeckwire`:
 
 ```python
 from hyperdeckwire import (
-    Hyperdeck,        # 9993 protocol client (context manager)
-    Clip,             # dataclass — one row of disk_list / clips_get
-    Response,         # dataclass — raw protocol response
-    HyperdeckError,   # raised on 1xx protocol errors
-    upload_clip,      # FTP upload helper
-    UploadResult,     # dataclass returned by upload_clip
+    Hyperdeck,           # 9993 protocol client (context manager)
+    Clip,                # dataclass — one row of disk_list / clips_get
+    Response,            # dataclass — raw protocol response
+    HyperdeckError,      # raised on 1xx protocol errors
+    upload_clip,         # FTP upload helper
+    UploadResult,        # dataclass returned by upload_clip
+    HyperdeckSetup,      # configuration API client (port 80)
+    HyperdeckSetupError, # the deck refused, or a setting did not read back
+    SetupInfo, NetworkInterface, RemoteAdmin, User,   # its dataclasses
 )
 ```
 
@@ -244,6 +251,122 @@ After the upload completes, the new clip is immediately visible to the
 9993 `disk_list()` call — no manual rescan needed. You can chain
 upload → query → cue + play in one connected flow.
 
+## Configuration (`HyperdeckSetup`)
+
+Everything the HyperDeck Setup app shows for a networked deck lives on a
+REST API at `http://<deck>/admin/api/v1/`; the app itself is a browser onto
+`http://<deck>/admin/`, over USB as well. `HyperdeckSetup` is a client for
+that API: stateless, one HTTP request per call, standard library only.
+Measured on two HyperDeck Studio HD Mini units on software 9.0.2; the
+network endpoints are the same shapes the ATEM and Videohub setup apps use.
+
+```python
+from hyperdeckwire import HyperdeckSetup, HyperdeckSetupError
+
+deck = HyperdeckSetup('192.0.2.11')          # timeout=4.0 per request
+
+info = deck.setup_basic()       # SetupInfo: product_name, device_name, hostname,
+                                #            software, build, hardware, language
+net = deck.network()            # NetworkInterface: address, netmask, gateway, dns
+                                #   (configured) + active_* (running), dhcp, mac
+deck.network_access()           # {'FTP': 'Enabled', 'HTTP': 'Enabled'}
+deck.ethernet_protocol()        # 'Enabled'   — TCP 9993 on
+deck.remote_admin()             # RemoteAdmin(enabled=True, usb_request_source=False)
+```
+
+Two rules the client is built around:
+
+- **"Configure via USB and Ethernet" is read-only from the network.** While
+  it is off the deck answers every GET and refuses every PUT with HTTP 401,
+  including the PUT that would turn it on; it can only be enabled over USB.
+  `remote_admin()` reads it so a 401 can be explained before it happens, and
+  there is deliberately no setter. A 401 raises `HyperdeckSetupError` with
+  `status == 401` and a message that names the switch.
+- **Nothing is believed on a 200.** Every setter reads the setting back and
+  raises `HyperdeckSetupError` (`status is None`, message ends in
+  `CHECK THIS DECK`) if the deck holds something else.
+
+### Network interface
+
+```python
+deck.set_network(netmask='255.255.248.0')    # widen; address, gateway, DNS kept
+deck.set_network(gateway='192.0.2.1', dns=['192.0.2.53'])
+deck.set_network(dns=[])                     # clear the DNS list
+deck.set_network(dhcp=True)                  # manual values stay on the deck
+deck.set_network(address='192.0.2.40')       # read-back goes to the NEW address
+```
+
+Fields left out keep their current values: the deck is read first and the
+whole object is written back (the API takes it whole). The read-back is
+retried until the interface is *live* on the new values, `NetworkInterface.settled`
+(the deck reapplies for about a second, during which the running config lags),
+or `readback_timeout` (20 s) passes and the call raises. `set_network` writes
+what it is told; whether a change is safe is the caller's question. A wrong
+address or gateway strands a deck until someone walks to it.
+
+### Network access: FTP, Web Media Manager, the 9993 protocol
+
+```python
+deck.network_access()              # {'FTP': 'Enabled', 'HTTP': 'Enabled'}
+deck.network_access_options()      # {'FTP': False, 'HTTP': True}   — offers SecureOnly?
+deck.network_access_urls()         # {'FTP': 'ftp://Deck.local', 'HTTP': 'http://Deck.local'}
+deck.set_network_access(ftp='Enabled')            # returns reboot_required (bool)
+deck.set_network_access(http='SecureOnly')        # HTTPS only, needs the certificate
+
+deck.ethernet_protocol()           # 'Enabled' | 'Disabled'
+deck.set_ethernet_protocol('Enabled')
+```
+
+States are `'Disabled'`, `'Enabled'`, `'SecureOnly'` (module constants
+`DISABLED` / `ENABLED` / `SECURE_ONLY`). `HTTP` is the Web Media Manager
+switch. Protocol keywords are case-insensitive and protocols not named keep
+their state. When the deck answers that a reboot is needed the read-back is
+skipped (the old state is what it reads until then) and `True` is returned.
+
+What the content-change use of this library needs: `ethernet_protocol()` Enabled
+(for `Hyperdeck`, and for the ATEM's own HyperDeck control) and `FTP` Enabled
+(for `upload_clip`). `HTTP` is not used by the library, but this configuration
+API is served on the same port, so leave it Enabled rather than Disabled
+(what Disabled does to `/admin/api` was not tested, because there is no way
+back except USB).
+
+### Name, identify, language
+
+```python
+deck.set_name('Deck 4 wide')       # also the 9993 `device info` name; changes the mDNS hostname
+deck.identify()                    # flash the front panel; deck.identify(False) stops
+deck.languages(); deck.set_language('en_US.UTF-8')
+deck.capabilities()                # which API sections this firmware has
+deck.heartbeat()
+```
+
+### Certificate, users, date and time, reboot
+
+```python
+deck.certificate_summary()               # {'hostname': …} plus domain/issuer/validity when installed
+deck.create_self_signed_certificate()
+deck.upload_certificate(pem_text)
+deck.delete_certificate()
+deck.create_signing_request(common_name=…, country=…, state_name=…, locality=…, organization=…)
+deck.download_signing_request(csr_id)    # bytes of the .csr   (the CSR pair is untested on hardware)
+
+deck.admin_required()                    # False on a fresh deck
+deck.users()                             # [User(auth_user_id='1', username='Guest', …)]
+deck.create_user('ops', 'secret'); deck.update_user('2', password='new'); deck.delete_user('2')
+
+deck.date_and_time()                     # {'time': <unix s>, 'timezone_offset': <min>, 'time_friendly': …}
+deck.set_date_and_time(unix_seconds, timezone_offset_minutes)
+deck.ntp(); deck.set_ntp('192.0.2.5', enabled=True)
+deck.timezone_offset(); deck.set_timezone_offset(-300)
+
+deck.reboot()                            # GET hands out a one-time key the PUT must return
+```
+
+Connection-level failures (refused, timeout, no route) propagate as
+`OSError` (`urllib.error.URLError` is one); anything the deck itself refused
+is `HyperdeckSetupError`. `opener=` takes any object with
+`open(request, timeout=)` for tests, the suite's `_FakeDeck` being one.
+
 ## Error handling
 
 `HyperdeckError(code, text)` is raised when the unit responds with a
@@ -313,10 +436,15 @@ These exist in the protocol but aren't exposed yet:
   upload → cue + loop. 47.6 MB/s upload on a 50MB clip into a freshly
   cleared slot.
 
+- **HyperDeck Studio HD Mini, software 9.0.2** (two units): the
+  configuration API (`HyperdeckSetup`), every read endpoint plus the
+  write paths exercised as same-value round trips (name, network, network
+  access, Ethernet protocol, NTP, timezone, identify).
+
 Other Studio HD-class units (Plus, Pro, HDR, Shuttle, Extreme) speak
-the same 9993 protocol. They additionally expose the HTTP REST API,
-but hyperdeckwire doesn't use it. Should still work on those units
-without changes.
+the same 9993 protocol and the same configuration API. They additionally
+expose the HTTP media/transport REST API, which hyperdeckwire doesn't use.
+Should still work on those units without changes.
 
 ## Wire-protocol reference
 

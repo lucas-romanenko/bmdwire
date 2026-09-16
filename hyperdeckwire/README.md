@@ -2,14 +2,18 @@
 
 Python library for Blackmagic **HyperDeck Studio** recorders: transport control,
 clip listing and timeline editing over the HyperDeck Ethernet Protocol (TCP
-9993), plus clip upload over the deck's built-in FTP server.
+9993), clip upload over the deck's built-in FTP server, and the deck's
+configuration (network, the FTP / Web Media Manager / Ethernet Protocol
+switches, certificate, users, time) over the API HyperDeck Setup drives.
 
 [![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/bmdwire.svg?label=pypi%20bmdwire)](https://pypi.org/project/bmdwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
-hyperdeckwire is small and dependency-free. It targets the `9993 + FTP`
-combination on purpose: the HTTP REST API that arrived in firmware 8.x is only
-available on the Plus/Pro/HDR/Shuttle models, while every networked HyperDeck,
-including the Studio HD Mini, offers these two.
+hyperdeckwire is small and dependency-free. Playback and upload use the
+`9993 + FTP` combination on purpose: the HTTP media/transport REST API that
+arrived in firmware 8.x is only available on the Plus/Pro/HDR/Shuttle models,
+while every networked HyperDeck, including the Studio HD Mini, offers these
+two. The configuration API is a separate thing, on the Mini too, and is the
+only place the network and access switches live.
 
 ## Status
 
@@ -17,7 +21,8 @@ including the Studio HD Mini, offers these two.
   application where it drives decks in production: clip push, cue-and-loop
   as a switcher background source, and a transport modal for operators.
 - Verified on a HyperDeck Studio HD Mini (firmware 8.1.1) through the full
-  probe / clear / upload / cue-and-loop cycle. Other Studio HD models speak
+  probe / clear / upload / cue-and-loop cycle, and on two HD Minis on 9.0.2
+  for the configuration API. Other Studio HD models speak
   the same protocol but were not on the bench.
 
 ## Install
@@ -29,10 +34,10 @@ libraries in this repository, at one version:
 pip install bmdwire
 ```
 
-Pin the version in a requirements file (`bmdwire==1.1.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Pin the version in a requirements file (`bmdwire==1.2.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "bmdwire @ git+https://github.com/lucas-romanenko/bmdwire.git@v1.1.0"
+pip install "bmdwire @ git+https://github.com/lucas-romanenko/bmdwire.git@v1.2.0"
 ```
 
 Python 3.10 or newer. No other dependencies.
@@ -45,7 +50,8 @@ Python 3.10 or newer. No other dependencies.
 - Typed `Clip` and `Response` dataclasses; protocol errors raise `HyperdeckError` with the deck's code and text.
 - Asynchronous 5xx notifications are filtered out of blocking requests and can be read explicitly.
 - `upload_clip` FTP helper with storage-volume auto-detection, anonymous-login fallback, progress callback and throughput reporting.
-- Pure standard library; a `socket_factory` hook and `ftplib` monkeypatching make the whole suite runnable without hardware.
+- `HyperdeckSetup`: the configuration API on the deck's HTTP port. Name, network interface (address, netmask, gateway, DNS, DHCP), the FTP / Web Media Manager / HyperDeck Ethernet Protocol switches, certificate, users, date and time, NTP, identify, reboot. Every setter reads the setting back before reporting success; the "Configure via USB and Ethernet" switch is read-only from the network by construction.
+- Pure standard library; a `socket_factory` hook, `ftplib` monkeypatching and an `opener` hook make the whole suite runnable without hardware.
 
 ## Usage
 
@@ -68,6 +74,14 @@ with Hyperdeck('192.0.2.11') as hd:
     except HyperdeckError as e:
         raise SystemExit(f'deck refused the clip: {e}')
     hd.play(loop=True, single_clip=True)
+
+# Make sure a deck in a rack is set up for the above: 9993 on, FTP on.
+from hyperdeckwire import HyperdeckSetup
+deck = HyperdeckSetup('192.0.2.11')
+if deck.ethernet_protocol() != 'Enabled':
+    deck.set_ethernet_protocol('Enabled')
+if deck.network_access()['FTP'] != 'Enabled':
+    deck.set_network_access(ftp='Enabled')
 ```
 
 The full command reference, dataclass fields and error-code table are in

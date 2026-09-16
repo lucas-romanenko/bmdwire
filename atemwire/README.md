@@ -52,10 +52,10 @@ libraries in this repository, at one version:
 pip install bmdwire
 ```
 
-Pin the version in a requirements file (`bmdwire==1.1.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Pin the version in a requirements file (`bmdwire==1.2.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "bmdwire @ git+https://github.com/lucas-romanenko/bmdwire.git@v1.1.0"
+pip install "bmdwire @ git+https://github.com/lucas-romanenko/bmdwire.git@v1.2.0"
 ```
 
 Python 3.10 or newer. The `atemwire.mediaconvert` extension (BT.709 conversion and RLE encoding) ships as a prebuilt wheel for Linux, macOS and Windows on CPython 3.10 to 3.14, so the usual install needs no compiler. On anything outside that set pip falls back to the sdist and builds it, which does need one. Add the `images` extra for Pillow, used only by the profile media-pool image export:
