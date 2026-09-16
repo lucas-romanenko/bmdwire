@@ -53,6 +53,9 @@ class FakeAtemProtocol:
         self.transport = FakeTransport()
         self.mixerstate = {}
         self.connected = False
+        # Mirrors the real protocol: ``initialized`` is what "ready" means
+        # (the state dump is complete), ``connected`` only says packets flow.
+        self.initialized = False
 
         self._callbacks = {}
         self._connect_delay = connect_delay
@@ -81,6 +84,7 @@ class FakeAtemProtocol:
         # fired AND 'video-mode' in mixerstate" — populate both.
         self.mixerstate['video-mode'] = _FakeVideoMode()
         self.connected = True
+        self.initialized = True
         # Wake any blocked loop().
         self.transport.thread_recv_queue.put('CONNECTED_PACKET')
         # Fire callbacks registered for 'connected'.
@@ -100,6 +104,7 @@ class FakeAtemProtocol:
             if packet is None:
                 # Disconnect signal.
                 self.connected = False
+                self.initialized = False
                 self.mixerstate = {}
                 for cb in self._callbacks.get('disconnected', []):
                     try:
