@@ -6,6 +6,9 @@ correct it.
 
 ## Which package
 
+One distribution, `bmdwire`, four import packages, each in its own
+directory at the root of the repository:
+
 | You want to change | Package |
 |---|---|
 | An ATEM command, field or reader | `atemwire` |
@@ -13,13 +16,14 @@ correct it.
 | Ultimatte settings, archive, network | `ultimattewire` |
 | Videohub routing or labels | `videohubwire` |
 
-Each directory is a complete project with its own version, licence and
-tests. A change spanning two device families is still one pull request.
+Each directory carries its own licence and its own `tests/`; the version is
+one number for all of them, in `pyproject.toml` at the root. A change
+spanning two device families is one pull request and one release.
 
 ## Adding an ATEM command
 
 The whole library-side change happens in one file, the per-feature module
-under `atemwire/atemwire/messages/`. Wire format, operation wrapper and
+under `atemwire/messages/`. Wire format, operation wrapper and
 mixerstate reader live together there:
 
 1. Declare the wire format as a `Send` or `Recv` subclass using the field
@@ -52,14 +56,12 @@ can, cross-check against what the vendor's own software sends.
 ## Running the tests
 
 ```bash
-cd atemwire          # or another package
-pip install -e .     # atemwire builds a small C extension, so it needs a compiler
-pip install pytest pytest-timeout pillow
-pytest -q
+pip install -e ".[test]"     # atemwire builds a small C extension, so it needs a compiler
+pytest -q                    # all four suites, from the repository root
 ```
 
-No hardware required. Continuous integration runs the changed package's
-suite on Python 3.10, 3.12 and 3.14 for every push and pull request.
+No hardware required. Continuous integration runs the suite on Python
+3.10, 3.12 and 3.14 for every push and pull request.
 
 ## Licensing, which differs by package
 

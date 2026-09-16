@@ -7,12 +7,13 @@ vulnerability**, on this repository. It is enabled. Please do not open a
 public issue for a vulnerability, so there is a window to fix and release
 before it is exploitable against anyone running it.
 
-Say which of the four packages is affected, since they are independent
-distributions with their own versions.
+Say which of the four packages is affected and which `bmdwire` version you
+have (`pip show bmdwire`).
 
 ## What these libraries are
 
-Four clients that speak to broadcast hardware on a local network:
+One distribution, four clients that speak to broadcast hardware on a local
+network:
 
 | Package | Protocol |
 |---|---|

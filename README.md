@@ -1,17 +1,21 @@
-<p align="center"><img src=".github/banner.png" alt="bmdwire: Python libraries for Blackmagic Design broadcast devices. One package per device family, four independent PyPI distributions in one repository." width="100%"></p>
+<p align="center"><img src=".github/banner.png" alt="bmdwire: Python libraries for Blackmagic Design broadcast devices. One package, four device families, one version." width="100%"></p>
 
-Python libraries for Blackmagic Design broadcast devices: one package per device family, four independent PyPI distributions in one repository.
+Python libraries for Blackmagic Design broadcast devices: one package, one version, four device families.
 
-[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml)
+[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/bmdwire.svg?label=pypi)](https://pypi.org/project/bmdwire/) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
-| Package | Install | Purpose | License | Latest | Docs |
-|---|---|---|---|---|---|
-| **atemwire** | `pip install atemwire` | ATEM switchers: the native UDP protocol, a connection pool, macro bytecode, "Save Switcher State" profiles | LGPL-3.0-only | [![PyPI](https://img.shields.io/pypi/v/atemwire.svg?label=pypi)](https://pypi.org/project/atemwire/) | [atemwire/README.md](atemwire/README.md) |
-| **hyperdeckwire** | `pip install hyperdeckwire` | HyperDeck recorders: transport control and clip listing over TCP 9993, clip upload over FTP | MIT | [![PyPI](https://img.shields.io/pypi/v/hyperdeckwire.svg?label=pypi)](https://pypi.org/project/hyperdeckwire/) | [hyperdeckwire/README.md](hyperdeckwire/README.md) |
-| **ultimattewire** | `pip install ultimattewire` | Ultimatte 12 keyers: archive and restore over the native TCP protocol, Smart Remote 4 compatible zips | MIT | [![PyPI](https://img.shields.io/pypi/v/ultimattewire.svg?label=pypi)](https://pypi.org/project/ultimattewire/) | [ultimattewire/README.md](ultimattewire/README.md) |
-| **videohubwire** | `pip install videohubwire` | Videohub routers: state snapshot, crosspoint routing, labels over TCP 9990 | MIT | [![PyPI](https://img.shields.io/pypi/v/videohubwire.svg?label=pypi)](https://pypi.org/project/videohubwire/) | [videohubwire/README.md](videohubwire/README.md) |
+```sh
+pip install bmdwire
+```
 
-All four are at 1.0.0. They are pure standard library except atemwire, whose small C extension ships as a prebuilt wheel for Linux, macOS and Windows on CPython 3.10 to 3.14, so installing it needs no compiler.
+| Import | Purpose | License | Docs |
+|---|---|---|---|
+| **`atemwire`** | ATEM switchers: the native UDP protocol, a connection pool, macro bytecode, "Save Switcher State" profiles | LGPL-3.0-only | [atemwire/README.md](atemwire/README.md) |
+| **`hyperdeckwire`** | HyperDeck recorders: transport control and clip listing over TCP 9993, clip upload over FTP | MIT | [hyperdeckwire/README.md](hyperdeckwire/README.md) |
+| **`ultimattewire`** | Ultimatte 12 keyers: archive and restore over the native TCP protocol, Smart Remote 4 compatible zips | MIT | [ultimattewire/README.md](ultimattewire/README.md) |
+| **`videohubwire`** | Videohub routers: state snapshot, crosspoint routing, labels over TCP 9990 | MIT | [videohubwire/README.md](videohubwire/README.md) |
+
+All four are pure standard library except atemwire, whose small C extension ships prebuilt for Linux, macOS and Windows on CPython 3.10 to 3.14, so installing needs no compiler. Pin the version in a requirements file (`bmdwire==1.1.0`) so a later release cannot change your install under you.
 
 ## atemwire stands on pyatem
 
@@ -25,24 +29,30 @@ coverage, macro upload, and profile save and restore.
 
 The licence is unchanged and not negotiable: **LGPL-3.0-only**, the same as
 upstream. Improvements to atemwire stay open, as they should. The other three
-libraries here were written from scratch and are MIT.
+libraries here were written from scratch and are MIT. The distribution's
+licence expression is `LGPL-3.0-only AND MIT`, and each package directory
+carries the text that governs it.
 
 If you want the original rather than this fork, it is at
 <https://git.sr.ht/~martijnbraam/pyatem> and it is still maintained.
 
-## Why one repo
+## Why one package
 
-The four libraries share an author, a shape and a purpose: they are the device layer of one broadcast control application, extracted and published so others can use them. Keeping them in one repository means one place to file an issue, one CI setup, one release procedure, and a change that spans two device families (a HyperDeck bound to an ATEM, say) is one pull request. They stay four distributions on purpose: each directory is a complete, independently installable project with its own version, license and tests, and `pip install atemwire` never pulls in the other three.
+The four libraries share an author, a shape and a purpose: they are the device layer of one broadcast control application, extracted and published so others can use them. Until 1.0.x each was its own PyPI project with its own version number. Nothing downstream ever wanted them apart, and four numbers to track for one release train was confusion with no benefit, so since 1.1.0 they are one distribution: one tag, one version, one line to pin. The import names did not change.
+
+The four old names stay on PyPI at their last 1.0.x release and are not updated. They are not shims either, on purpose: a release of `atemwire` that depended on bmdwire would break `pip install -U atemwire`, because pip installs the dependency first and then removes the old package's files, which are the same paths bmdwire just wrote. **If an environment already has any of the four old packages, uninstall them before installing bmdwire** (`pip uninstall atemwire hyperdeckwire ultimattewire videohubwire`). Two distributions owning one module directory work until one of them is uninstalled. A fresh virtualenv, a pipx install or a container build never has this problem.
 
 ## Development
 
 ```sh
 git clone https://github.com/lucas-romanenko/bmdwire.git
-cd bmdwire/atemwire            # or hyperdeckwire, ultimattewire, videohubwire
-pip install -e ".[test]"
+cd bmdwire
+pip install -e ".[test]"      # builds atemwire's C extension in place, needs a compiler
 python -m pytest
 ```
 
-Each package is developed from its own directory exactly as before. CI runs the changed package's suite on Python 3.10, 3.12 and 3.14 for every push and pull request. A release is a tag named `<package>-v<version>` (`atemwire-v1.0.0`) whose version matches that package's `pyproject.toml`; the publish workflow builds and uploads that one package.
+The editable install matters: a plain `pip install .` puts the extension in site-packages, and `python -m pytest` run from the checkout then imports the source tree without it and fails on `atemwire.mediaconvert`. The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request, and builds an sdist and a wheel to prove the metadata.
+
+A release is a tag `v<version>` on `main` whose version equals `project.version` in `pyproject.toml`; pushing it builds the sdist and the wheels and publishes them to PyPI. `pip show bmdwire`, not a hand-typed number, is how to know what is installed.
 
 Not affiliated with or endorsed by Blackmagic Design Pty Ltd. ATEM, HyperDeck, Ultimatte and Videohub are trademarks of Blackmagic Design.

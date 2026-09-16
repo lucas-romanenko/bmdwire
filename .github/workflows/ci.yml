@@ -1,12 +1,11 @@
-# One CI workflow for the four packages: a matrix of package x Python, with
-# each package installed editable (with its `test` extras — all four define
-# one) and its suite run from its own directory, exactly as the four old
-# per-repo workflows did (those did nothing more: no lint, no build check).
+# One distribution, one suite: the four packages' tests run together from
+# the repository root (pytest.ini lists them), on three Pythons, for every
+# push and pull request. The editable install builds atemwire's C extension
+# in place with the runner's gcc, which the source tree needs to import.
 #
-# Path filter: a push or pull request that touches only <package>/ runs that
-# package's matrix alone. A change anywhere else (this file, the root files)
-# and a manual run test all four. Done with a short git diff below rather
-# than a third-party action so the rule is visible here.
+# The `build` job proves the metadata: an sdist and a wheel that pass
+# `twine check`, so a licence-expression or manifest mistake shows up on
+# the pull request rather than on the tag.
 name: CI
 
 on:
@@ -15,78 +14,50 @@ on:
   workflow_dispatch:
 
 jobs:
-  changes:
-    name: Which packages changed
-    runs-on: ubuntu-latest
-    outputs:
-      packages: ${{ steps.detect.outputs.packages }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: detect
-        shell: bash
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          all='["atemwire","hyperdeckwire","ultimattewire","videohubwire"]'
-          # Manual run, first push of a branch, or a base we no longer have
-          # (force-push): no diff to trust, so run everything.
-          if [ "$EVENT" = "workflow_dispatch" ] || [ -z "$BASE" ] \
-             || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
-             || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "packages=$all" >> "$GITHUB_OUTPUT"
-            echo "all packages (no usable base)"
-            exit 0
-          fi
-          changed="$(git diff --name-only "$BASE" HEAD)"
-          echo "$changed"
-          # Anything outside the four package directories runs everything.
-          if [ -z "$changed" ] || echo "$changed" | grep -qvE '^(atemwire|hyperdeckwire|ultimattewire|videohubwire)/'; then
-            echo "packages=$all" >> "$GITHUB_OUTPUT"
-            echo "all packages (a change outside the package directories)"
-            exit 0
-          fi
-          list=""
-          for p in atemwire hyperdeckwire ultimattewire videohubwire; do
-            if echo "$changed" | grep -q "^$p/"; then list="$list\"$p\","; fi
-          done
-          echo "packages=[${list%,}]" >> "$GITHUB_OUTPUT"
-          echo "changed packages: [${list%,}]"
-
   test:
-    name: ${{ matrix.package }} on Python ${{ matrix.python-version }}
-    needs: changes
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        package: ${{ fromJSON(needs.changes.outputs.packages) }}
         python-version: ["3.10", "3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install the package editable with its test extras (atemwire builds its C extension with the runner's gcc)
-        run: pip install -e "./${{ matrix.package }}[test]"
+      - name: Install editable with the test extras
+        run: pip install -e ".[test]"
       - name: Test
-        working-directory: ${{ matrix.package }}
         run: python -m pytest -q
 
-  # One check with a fixed name for branch protection to require: the matrix
-  # job names vary with the path filter, this one is always there and is
-  # green only when the change detection and every selected test job passed.
+  build:
+    name: sdist and wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - name: The wheel installs and every package imports
+        run: |
+          pip install dist/*.whl
+          cd /tmp && python -c "import atemwire.mediaconvert, hyperdeckwire, ultimattewire, videohubwire; print('ok')"
+
+  # One check with a fixed name for branch protection to require; green only
+  # when every matrix entry and the build passed.
   result:
     name: CI result
-    needs: [changes, test]
+    needs: [test, build]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - env:
-          CHANGES: ${{ needs.changes.result }}
           TESTS: ${{ needs.test.result }}
+          BUILD: ${{ needs.build.result }}
         run: |
-          echo "changes=$CHANGES tests=$TESTS"
-          test "$CHANGES" = "success" && test "$TESTS" = "success"
+          echo "tests=$TESTS build=$BUILD"
+          test "$TESTS" = "success" && test "$BUILD" = "success"
