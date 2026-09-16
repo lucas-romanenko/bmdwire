@@ -1,0 +1,69 @@
+# One distribution, four import packages. `pip install bmdwire` gives you
+# atemwire, hyperdeckwire, ultimattewire and videohubwire at one version,
+# released together under one tag (v<version>). The import names are the
+# ones they always had; only the thing you install and pin changed
+# (2026-09-16: until 1.0.x each was its own PyPI project with its own
+# number, and nothing downstream ever wanted them apart).
+#
+# setuptools>=77 for the SPDX licence expression and the nested
+# license-files below (PEP 639).
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bmdwire"
+version = "1.1.0"
+description = "Python libraries for Blackmagic Design broadcast devices: ATEM switchers, HyperDeck recorders, Ultimatte keyers and Videohub routers"
+readme = "README.md"
+# atemwire is a fork of pyatem and stays LGPL-3.0-only; the other three were
+# written from scratch and are MIT. Each package directory carries the
+# licence that governs it, and the wheel ships all of them.
+license = "LGPL-3.0-only AND MIT"
+license-files = [
+    "LICENSE",
+    "atemwire/LICENSE",
+    "atemwire/LICENSE-gpl3.txt",
+    "atemwire/NOTICE",
+    "hyperdeckwire/LICENSE",
+    "ultimattewire/LICENSE",
+    "videohubwire/LICENSE",
+]
+requires-python = ">=3.10"
+authors = [
+    { name = "Lucas Romanenko" },
+    { name = "Martijn Braam and the OpenAtem contributors" },
+]
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Development Status :: 4 - Beta",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Video",
+]
+
+[project.urls]
+Repository = "https://github.com/lucas-romanenko/bmdwire"
+Issues = "https://github.com/lucas-romanenko/bmdwire/issues"
+
+[project.optional-dependencies]
+# Pillow is used only by atemwire's profile media-pool image export.
+images = ["pillow"]
+test = ["pytest", "pytest-timeout", "pillow"]
+
+[tool.setuptools.packages.find]
+include = [
+    "atemwire", "atemwire.*",
+    "hyperdeckwire", "hyperdeckwire.*",
+    "ultimattewire", "ultimattewire.*",
+    "videohubwire", "videohubwire.*",
+]
+exclude = ["*.tests", "*.tests.*"]
+
+[tool.setuptools.package-data]
+atemwire = ["py.typed", "docs/*.md"]

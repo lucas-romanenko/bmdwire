@@ -4,7 +4,7 @@ Python library for Blackmagic Design **ATEM** switchers: the native UDP
 protocol, a thread-safe connection pool, a full macro bytecode codec, and
 save/restore of ATEM Software Control's "Save Switcher State" XML.
 
-[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/atemwire.svg)](https://pypi.org/project/atemwire/) [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=atemwire-v*&label=release)](https://github.com/lucas-romanenko/bmdwire/tags)
+[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/bmdwire.svg?label=pypi%20bmdwire)](https://pypi.org/project/bmdwire/) [![License: LGPL-3.0](https://img.shields.io/badge/license-LGPL--3.0-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
 atemwire is a fork of [pyatem](https://git.sr.ht/~martijnbraam/pyatem), Martijn
 Braam's ATEM protocol library, renamed to avoid confusion with upstream. It
@@ -45,22 +45,23 @@ print(probe('192.0.2.10'))   # {'video_format': ..., 'atem_model': ..., ...}
 
 ## Install
 
-From PyPI:
+atemwire ships inside the `bmdwire` distribution together with the other three
+libraries in this repository, at one version:
 
 ```sh
-pip install atemwire
+pip install bmdwire
 ```
 
-Pin the version in a requirements file (`atemwire==1.0.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Pin the version in a requirements file (`bmdwire==1.1.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "atemwire @ git+https://github.com/lucas-romanenko/bmdwire.git@atemwire-v1.0.0#subdirectory=atemwire"
+pip install "bmdwire @ git+https://github.com/lucas-romanenko/bmdwire.git@v1.1.0"
 ```
 
 Python 3.10 or newer. The `atemwire.mediaconvert` extension (BT.709 conversion and RLE encoding) ships as a prebuilt wheel for Linux, macOS and Windows on CPython 3.10 to 3.14, so the usual install needs no compiler. On anything outside that set pip falls back to the sdist and builds it, which does need one. Add the `images` extra for Pillow, used only by the profile media-pool image export:
 
 ```sh
-pip install "atemwire[images]"
+pip install "bmdwire[images]"
 ```
 
 ## What you get
@@ -175,18 +176,18 @@ client (see [videohubwire](../videohubwire/)).
 
 ```sh
 git clone https://github.com/lucas-romanenko/bmdwire.git
-cd bmdwire/atemwire
+cd bmdwire
 pip install -e ".[test]"
-python -m pytest
+python -m pytest atemwire/tests      # or plain `python -m pytest` for all four suites
 ```
 
 The editable install matters: it builds the C extension in place. A plain `pip install .` puts the extension in site-packages, and `python -m pytest` run from the checkout then imports the source tree without it and fails on `atemwire.mediaconvert`.
 
-The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request.
+The suite needs no hardware. CI runs all four suites on Python 3.10, 3.12 and 3.14 for every push and pull request.
 
 ## Related libraries
 
-One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
+The same `pip install bmdwire` carries one library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
 
 - [hyperdeckwire](../hyperdeckwire/): HyperDeck recorders (transport control, clip upload)
 - [ultimattewire](../ultimattewire/): Ultimatte keyers (archive and restore)
