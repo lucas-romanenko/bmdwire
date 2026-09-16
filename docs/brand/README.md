@@ -2,7 +2,7 @@
 
 ## Overview
 
-Repository identity for **bmdwire** — the monorepo of four Python libraries for Blackmagic
+Repository identity for **bmdwire** — one Python package carrying four libraries for Blackmagic
 Design broadcast devices (`atemwire`, `hyperdeckwire`, `ultimattewire`, `videohubwire`).
 
 This is a **repo-presentation** package, not an app UI. There is no interface to build. The

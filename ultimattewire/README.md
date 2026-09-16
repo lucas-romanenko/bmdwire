@@ -7,7 +7,7 @@ Smart Remote 4 writes with **Archive All** and reads with **Restore**, and
 reads and sets the unit's **network interface** (address, netmask, gateway,
 DNS, static or DHCP), which is what the vendor's Ultimatte Setup does.
 
-[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/ultimattewire.svg)](https://pypi.org/project/ultimattewire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) [![Latest tag](https://img.shields.io/github/v/tag/lucas-romanenko/bmdwire?filter=ultimattewire-v*&label=release)](https://github.com/lucas-romanenko/bmdwire/tags)
+[![CI](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml/badge.svg)](https://github.com/lucas-romanenko/bmdwire/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/bmdwire.svg?label=pypi%20bmdwire)](https://pypi.org/project/bmdwire/) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
 Blackmagic does not document the protocol. Everything here was
 reverse-engineered from packet captures of the vendor app talking to real
@@ -27,16 +27,17 @@ established and what is still a guess.
 
 ## Install
 
-From PyPI:
+ultimattewire ships inside the `bmdwire` distribution together with the other three
+libraries in this repository, at one version:
 
 ```sh
-pip install ultimattewire
+pip install bmdwire
 ```
 
-Pin the version in a requirements file (`ultimattewire==1.0.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
+Pin the version in a requirements file (`bmdwire==1.1.0`) so a later release cannot change your install under you. To install straight from a GitHub tag instead (git needed on the machine):
 
 ```sh
-pip install "ultimattewire @ git+https://github.com/lucas-romanenko/bmdwire.git@ultimattewire-v1.0.0#subdirectory=ultimattewire"
+pip install "bmdwire @ git+https://github.com/lucas-romanenko/bmdwire.git@v1.1.0"
 ```
 
 Python 3.10 or newer. No other dependencies.
@@ -295,16 +296,16 @@ the second.
 
 ```sh
 git clone https://github.com/lucas-romanenko/bmdwire.git
-cd bmdwire/ultimattewire
+cd bmdwire
 pip install -e ".[test]"
-python -m pytest
+python -m pytest ultimattewire/tests      # or plain `python -m pytest` for all four suites
 ```
 
-The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request.
+The suite needs no hardware. CI runs all four suites on Python 3.10, 3.12 and 3.14 for every push and pull request.
 
 ## Related libraries
 
-One library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
+The same `pip install bmdwire` carries one library per Blackmagic device family, same shape, same author, all pure standard library except atemwire's small C extension:
 
 - [atemwire](../atemwire/): ATEM switchers (UDP protocol, macros, profiles)
 - [hyperdeckwire](../hyperdeckwire/): HyperDeck recorders (transport control, clip upload)
