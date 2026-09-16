@@ -522,6 +522,46 @@ class AtemProtocol:
         self.locks = {}
         self._lock_release_pending.clear()
 
+    def release_locks_now(self):
+        """Give back every store lock we hold, SYNCHRONOUSLY, for teardown.
+
+        ``abort_transfers`` releases through ``send_commands``, which queues
+        the packet for the worker thread to drain. On a close path the worker
+        is already exiting, so that packet is never sent and the switcher goes
+        on believing we hold the lock. It then holds it for the session's
+        remaining life, and if the session was abandoned rather than closed,
+        for the ATEM's own ~5 minute timeout. A later client asking for the
+        media store is refused for that whole window, which looks to an
+        operator like a switcher that will not let them load a still, and to
+        ATEM Software Control like a media pool slot that spins forever
+        because it cannot download the thumbnail it wants to draw.
+
+        So this writes straight to the socket the way the goodbye does
+        (``_send_packet_low``), before the socket is closed. Best effort and
+        never raises: we are tearing down either way, and a lost release is
+        no worse than the behaviour it replaces.
+
+        Call it BEFORE ``transport.close_session()``. Releasing after the
+        goodbye is releasing into a session the switcher has already ended.
+        """
+        held = [store for store, is_held in self.locks.items() if is_held]
+        if not held:
+            return
+        for store in held:
+            if store == 0xffff:          # macro store is lock-exempt
+                continue
+            try:
+                packet = Packet()
+                packet.flags = UdpProtocol.FLAG_RELIABLE
+                packet.data = LockCommand(store, False).get_command()
+                self.transport._send_packet_low(packet)
+                self.log.info(f'Releasing lock {store} (teardown)')
+            except Exception:
+                self.log.debug('teardown lock release failed for store %s', store,
+                               exc_info=True)
+            self.locks[store] = False
+        self._lock_release_pending.clear()
+
     def abort_transfers(self):
         """Best-effort reset of the transfer state machine, for callers that
         time out waiting on a queued transfer. Without this, an unanswered
