@@ -30,6 +30,7 @@ from atemwire.messages.media import (
 from atemwire.messages.switching import (
     aux_source, preview_source, program_source,
 )
+from atemwire.messages.input_video import VIDEO_MODE_XML_NAMES
 from atemwire.messages.system_info import sdi_3g_level, video_mode
 from atemwire.messages.transition import (
     dip_rate, dip_source, dve_clip, dve_enable_key, dve_fill_source,
@@ -516,10 +517,16 @@ _DEFAULT_MULTIVIEW_VIDEO_MODES = [
 def _build_video_mode(root: ET.Element, mx: dict) -> None:
     e = ET.SubElement(root, 'VideoMode')
     vm = video_mode(mx)
-    label = (vm or {}).get('format', '') if isinstance(vm, dict) else ''
-    # XML form has no spaces or aspect — drop any " 16:9" suffix.
-    label = label.split(' ')[0] if label else ''
-    e.set('videoMode', label or '1080p60')
+    # The canonical XML name by mode number ("1080p5994", "PAL_widescreen"),
+    # the spelling apply reads back. get_label() is the display form
+    # ("1080p59.94", aspect dropped below) and is only a fallback for a
+    # video-mode node without a known mode number.
+    name = VIDEO_MODE_XML_NAMES.get(vm.get('id')) if isinstance(vm, dict) else None
+    if name is None:
+        label = (vm or {}).get('format', '') if isinstance(vm, dict) else ''
+        # XML form has no spaces or aspect — drop any " 16:9" suffix.
+        name = label.split(' ')[0] if label else ''
+    e.set('videoMode', name or '1080p60')
 
 
 # ---------------------------------------------------------------------------

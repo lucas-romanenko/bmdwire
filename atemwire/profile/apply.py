@@ -43,7 +43,7 @@ from atemwire.messages.fairlight import (
     set_fairlight_master_limiter, set_fairlight_strip,
 )
 from atemwire.messages.input_video import (
-    VIDEO_MODE_NAMES, set_input_label, set_video_mode,
+    VIDEO_MODE_NAMES, VIDEO_MODE_XML_NAMES, set_input_label, set_video_mode,
 )
 from atemwire.messages.media import (
     set_media_player_clip, set_media_player_still,
@@ -328,6 +328,28 @@ _DSK_MASK_EDGES = (
 )
 
 
+# The spellings profiles saved by atemwire up to 1.2.0 carry where they
+# differ from the canonical names: VideoModeField.get_label() with the
+# aspect dropped, so fractional rates keep their decimal point. Those
+# files never recorded the SD aspect; "525i59.94" (like "625i50") is read
+# as the 4:3 mode.
+_LEGACY_VIDEO_MODE_LABELS = {
+    '525i59.94': 0,
+    '720p59.94': 5,
+    '1080i59.94': 7,
+    '1080p23.98': 8, '1080p29.97': 11, '1080p59.94': 13,
+    '2160p23.98': 14, '2160p29.97': 17, '2160p59.94': 19,
+    '4320p23.98': 20, '4320p29.97': 23, '4320p59.94': 25,
+}
+
+
+def _video_mode_number(name):
+    """Wire mode number for an XML videoMode name, canonical or legacy;
+    None when unknown."""
+    mode = VIDEO_MODE_NAMES.get(name)
+    return _LEGACY_VIDEO_MODE_LABELS.get(name) if mode is None else mode
+
+
 def _apply_video_mode(conn, root, result):
     """Apply the <VideoMode videoMode="..."/> element, if it differs from
     the live state. Mode changes are destructive: outputs drop briefly
@@ -345,7 +367,7 @@ def _apply_video_mode(conn, root, result):
         result.note_skipped('video_mode', 'empty videoMode in profile')
         return
 
-    target_int = VIDEO_MODE_NAMES.get(target_name)
+    target_int = _video_mode_number(target_name)
     if target_int is None:
         result.note_skipped('video_mode',
                             f'unrecognized mode {target_name!r}')
@@ -356,8 +378,11 @@ def _apply_video_mode(conn, root, result):
     # state.video_mode emits "1080p60 16:9" — the XML doesn't carry the
     # aspect suffix, so split before comparing.
     current_label = current_label.split(' ')[0] if current_label else ''
+    current_int = (current or {}).get('id') if current else None
+    if current_int not in VIDEO_MODE_XML_NAMES:
+        current_int = _video_mode_number(current_label)
 
-    if current_label == target_name:
+    if current_int == target_int:
         result.note_skipped('video_mode',
                             f'already at {target_name}')
         return
@@ -367,7 +392,7 @@ def _apply_video_mode(conn, root, result):
         "briefly while the ATEM resyncs.", current_label or '?', target_name,
     )
     try:
-        set_video_mode(conn, mode=target_name)
+        set_video_mode(conn, mode=target_int)
     except Exception as exc:  # noqa: BLE001
         result.note_error('video_mode', exc)
         return
