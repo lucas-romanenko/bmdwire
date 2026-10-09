@@ -115,23 +115,10 @@ def _d_ftb_enabled(params, mx):
 # is the current mode (replaying the macro re-asserts the same mode,
 # a functional no-op).
 
-# Canonical int → XML name. Software Control prefers the numerical
-# form (`525i5994` over `NTSC`); pick those for the reverse map even
-# though `set_video_mode` accepts both.
-
-_VIDEO_MODE_INT_TO_NAME = {
-    0: '525i5994', 1: '625i50',
-    2: 'NTSC_widescreen', 3: 'PAL_widescreen',
-    4: '720p50', 5: '720p5994', 28: '720p60',
-    6: '1080i50', 7: '1080i5994', 29: '1080i60',
-    8: '1080p2398', 9: '1080p24', 10: '1080p25',
-    11: '1080p2997', 26: '1080p30',
-    12: '1080p50', 13: '1080p5994', 27: '1080p60',
-    14: '2160p2398', 15: '2160p24', 16: '2160p25', 17: '2160p2997',
-    18: '2160p50', 19: '2160p5994',
-    20: '4320p2398', 21: '4320p24', 22: '4320p25', 23: '4320p2997',
-    24: '4320p50', 25: '4320p5994',
-}
+# Canonical int → XML name: the one table profile save/apply use too.
+from atemwire.messages.input_video import (  # noqa: E402
+    VIDEO_MODE_XML_NAMES as _VIDEO_MODE_INT_TO_NAME,
+)
 
 def _d_video_mode(params, mx):
     mode_int = params[0]
