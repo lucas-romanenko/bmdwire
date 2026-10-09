@@ -221,8 +221,11 @@ class ATEM:
 
     @property
     def connected(self) -> bool:
+        """True while the session is up AND its state is current — False
+        during a transport re-handshake, when the state is empty (see
+        ``ATEMConnection.is_ready``)."""
         conn = self._conn
-        return bool(conn and conn.is_connected)
+        return bool(conn and conn.is_ready)
 
     @property
     def video_mode(self) -> str:
