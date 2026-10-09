@@ -1759,7 +1759,17 @@ def run_flying_key_keyframe(conn, keyer, keyframe, me=0):
 def run_flying_key_infinite_direction(conn, keyer, direction, me=0):
     """Run USK flight toward 'infinite' in the given numeric direction.
     direction is a wire constant (1=TL, 2=top, 3=TR, 4=L, 5=center,
-    6=R, 7=BL, 8=bottom, 9=BR) — caller supplies it directly."""
+    6=R, 7=BL, 8=bottom, 9=BR) — caller supplies it directly.
+
+    TODO(fly-key direction): unverified for the centre. The macro codec's
+    ``_FLYKEY_LOCATION_NAMES`` (macrotransfer/_helpers.py) has 0 =
+    CentreOfKey and no 5; this list has 5 = centre and no 0. Both agree
+    on 1-4 and 6-9, and ASC names CentreOfKey and MiddleCentre as two
+    different locations. What settles it: a Wireshark capture of ATEM
+    Software Control's RFlK packets (byte 5) as it runs a fly-enabled
+    key to each of its ten locations, CentreOfKey and the 3x3 grid
+    including MiddleCentre; ideally also those ten runs recorded into a
+    macro and downloaded, to compare the 0x0056 op's location byte."""
     conn.send(KeyerKeyframeRunCommand(
         index=me, keyer=int(keyer),
         run_to=keyframe_constant('runToInfinite'),
