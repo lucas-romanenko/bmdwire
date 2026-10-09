@@ -350,6 +350,79 @@ def test_on_died_fires_at_most_once(
 
 
 # ---------------------------------------------------------------------------
+# Session readiness through a transport re-handshake
+# ---------------------------------------------------------------------------
+
+
+def _wait_for(predicate, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def _rehandshake_start(proto):
+    """What the transport does after ~5 s of silence: it delivers None, and
+    the protocol raises 'disconnected' and empties mixerstate. The worker
+    keeps pumping the same protocol."""
+    proto.transport.thread_recv_queue.put(None)
+
+
+def test_is_ready_follows_a_transport_rehandshake(
+    reset_pool, fake_protocol_factory, short_connect_timeout,
+):
+    instances = fake_protocol_factory()
+    conn = ATEMConnection('atem_test')
+    assert conn.is_ready is False
+    assert conn.connect('1.2.3.4')
+    try:
+        proto = instances[-1]
+        assert conn.is_ready is True
+
+        _rehandshake_start(proto)
+        assert _wait_for(lambda: not conn.is_ready)
+        # The worker is alive and recovering: is_connected (and so pool
+        # eviction) is untouched, but the state is gone.
+        assert conn.is_connected is True
+        assert conn.mixerstate == {}
+
+        proto.connect()            # the new state dump is complete
+        assert _wait_for(lambda: conn.is_ready)
+        assert 'video-mode' in conn.mixerstate
+    finally:
+        conn.disconnect()
+    assert conn.is_ready is False
+
+
+def test_facade_and_probe_report_the_rehandshake_gap(
+    reset_pool, fake_protocol_factory, short_connect_timeout, short_grace,
+):
+    from atemwire import ATEM, probe
+
+    instances = fake_protocol_factory()
+    with ATEM('1.2.3.4') as atem:
+        proto = instances[-1]
+        assert atem.connected is True
+
+        _rehandshake_start(proto)
+        assert _wait_for(lambda: not atem.connected)
+        # A warm probe during the gap joins the same session.
+        assert probe('1.2.3.4') == {
+            'video_format': None, 'atem_model': None,
+            'connection_status': False,
+        }
+
+        proto.connect()
+        assert _wait_for(lambda: atem.connected)
+        result = probe('1.2.3.4')
+        assert result['connection_status'] is True
+        assert result['video_format'] == '1080p50'
+    assert len(instances) == 1     # one session throughout, never replaced
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

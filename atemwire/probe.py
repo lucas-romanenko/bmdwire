@@ -34,8 +34,10 @@ def probe(ip_address: str) -> dict:
     Warm pool: ~0 ms. Cold / unreachable: pays ``atemwire.connection
     .CONNECT_TIMEOUT`` (~6 s) before returning the failure dict.
 
-    On timeout the returned dict has ``connection_status=False`` and the
-    other fields are None. On unexpected exception the dict additionally
+    On timeout, and while a warm session is re-handshaking (its state is
+    empty until the new dump completes), the returned dict has
+    ``connection_status=False`` and the other fields are None. On
+    unexpected exception the dict additionally
     carries an ``error`` key with the exception message.
     """
     result = {
@@ -46,6 +48,11 @@ def probe(ip_address: str) -> dict:
 
     try:
         with acquire_connection(ip_address) as conn:
+            # A warm session in the middle of a transport re-handshake has
+            # an empty state: report it as not connected rather than
+            # connected with nothing to say.
+            if not conn.is_ready:
+                return result
             result["connection_status"] = True
             result["atem_model"] = product_name(conn.mixerstate, None) or None
             vm = video_mode(conn.mixerstate)
