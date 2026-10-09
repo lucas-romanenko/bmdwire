@@ -330,11 +330,16 @@ _DSK_MASK_EDGES = (
 
 # The spellings profiles saved by atemwire up to 1.2.0 carry where they
 # differ from the canonical names: VideoModeField.get_label() with the
-# aspect dropped, so fractional rates keep their decimal point. Those
-# files never recorded the SD aspect; "525i59.94" (like "625i50") is read
-# as the 4:3 mode.
+# aspect dropped, so fractional rates keep their decimal point.
+#
+# Those saves wrote the two SD labels below for both aspects. "525i59.94"
+# is only ever that (ASC writes "525i5994"), so it says nothing about
+# 4:3 versus 16:9 and apply leaves the video mode alone. "625i50" is also
+# ASC's own name for PAL 4:3, so it is applied as 4:3 with a warning.
+_SD_LABEL_WITHOUT_ASPECT = '525i59.94'
+_SD_LABEL_AMBIGUOUS_BEFORE_1_3 = '625i50'
+
 _LEGACY_VIDEO_MODE_LABELS = {
-    '525i59.94': 0,
     '720p59.94': 5,
     '1080i59.94': 7,
     '1080p23.98': 8, '1080p29.97': 11, '1080p59.94': 13,
@@ -366,6 +371,23 @@ def _apply_video_mode(conn, root, result):
     if not target_name:
         result.note_skipped('video_mode', 'empty videoMode in profile')
         return
+
+    if target_name == _SD_LABEL_WITHOUT_ASPECT:
+        logger.warning(
+            "Profile.apply: videoMode %r was written by atemwire before "
+            "1.3.0 for both NTSC 4:3 and 16:9; leaving the video mode "
+            "unchanged.", target_name,
+        )
+        result.note_skipped('video_mode',
+                            f'{target_name!r} does not record 4:3 or 16:9')
+        return
+    if target_name == _SD_LABEL_AMBIGUOUS_BEFORE_1_3:
+        logger.warning(
+            "Profile.apply: videoMode %r is ambiguous in files saved by "
+            "atemwire before 1.3.0 (written for both PAL 4:3 and 16:9); "
+            "applying it as PAL 4:3, as ATEM Software Control means it.",
+            target_name,
+        )
 
     target_int = _video_mode_number(target_name)
     if target_int is None:
