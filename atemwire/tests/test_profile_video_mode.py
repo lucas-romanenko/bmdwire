@@ -5,7 +5,9 @@ Save used to write ``VideoModeField.get_label()`` ("1080p59.94", and
 "625i50" for both SD aspects) while apply resolved names through
 ``VIDEO_MODE_NAMES`` ("1080p5994"), so every fractional-rate mode came
 back "unrecognized" and the 16:9 SD modes came back as 4:3. Both sides
-now use ``VIDEO_MODE_XML_NAMES``; the old spellings are still read.
+now use ``VIDEO_MODE_XML_NAMES``; the old spellings are still read, except
+the SD ones, which never said 4:3 or 16:9: "525i59.94" is skipped with a
+warning, and "625i50" (also ASC's PAL 4:3) applies as 4:3 with a warning.
 """
 
 import struct
@@ -107,15 +109,63 @@ def test_already_at_the_saved_mode_sends_nothing(mode):
     assert any(s.startswith('video_mode: already at') for s in result.skipped)
 
 
-@pytest.mark.parametrize('mode', ALL_MODES)
-def test_old_label_spellings_still_apply(mode):
-    # What atemwire <= 1.2.0 wrote: the display label without its aspect.
-    label = VideoModeField(struct.pack('>B3x', mode)).get_label().split(' ')[0]
+def _apply_label(label):
     profile = Profile.from_xml(
         f'<Profile majorVersion="2" minorVersion="1">'
         f'<VideoMode videoMode="{label}"/></Profile>')
     conn = _RecordingConn()
-    profile.apply(conn, _video_mode_only_apply())
-    # The old label never recorded the SD aspect: 16:9 SD reads as 4:3.
-    expected = {2: 0, 3: 1}.get(mode, mode)
-    assert _sent_modes(conn) == [expected]
+    result = profile.apply(conn, _video_mode_only_apply())
+    return _sent_modes(conn), result
+
+
+SD_MODES = (0, 1, 2, 3)
+
+
+@pytest.mark.parametrize('mode', [m for m in ALL_MODES if m not in SD_MODES])
+def test_old_label_spellings_still_apply(mode):
+    # What atemwire <= 1.2.0 wrote: the display label without its aspect.
+    label = VideoModeField(struct.pack('>B3x', mode)).get_label().split(' ')[0]
+    sent, _ = _apply_label(label)
+    assert sent == [mode]
+
+
+# --- SD: the old labels carried no aspect ------------------------------------
+
+APPLY_LOGGER = 'atemwire.profile.apply'
+
+
+def test_old_sd_labels_are_what_the_old_save_wrote_for_both_aspects():
+    def old_label(mode):
+        return VideoModeField(struct.pack('>B3x', mode)).get_label().split(' ')[0]
+    assert old_label(0) == old_label(2) == '525i59.94'
+    assert old_label(1) == old_label(3) == '625i50'
+
+
+def test_old_ntsc_label_is_skipped_with_a_warning(caplog):
+    with caplog.at_level('WARNING', logger=APPLY_LOGGER):
+        sent, result = _apply_label('525i59.94')
+    assert sent == []
+    assert any(s.startswith('video_mode:') and '525i59.94' in s
+               for s in result.skipped)
+    assert any('525i59.94' in r.getMessage() for r in caplog.records)
+
+
+def test_625i50_applies_as_pal_4x3_with_a_warning(caplog):
+    # ASC's own name for PAL 4:3, and what old saves wrote for both aspects.
+    with caplog.at_level('WARNING', logger=APPLY_LOGGER):
+        sent, _ = _apply_label('625i50')
+    assert sent == [1]
+    assert any('625i50' in r.getMessage() and 'ambiguous' in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.parametrize('label, mode', [
+    ('525i5994', 0), ('NTSC', 0), ('PAL', 1),
+    ('NTSC_widescreen', 2), ('PAL_widescreen', 3),
+])
+def test_explicit_sd_names_apply_without_a_warning(caplog, label, mode):
+    with caplog.at_level('WARNING', logger=APPLY_LOGGER):
+        sent, _ = _apply_label(label)
+    assert sent == [mode]
+    assert not any(label in r.getMessage() and 'atemwire before' in r.getMessage()
+                   for r in caplog.records)
