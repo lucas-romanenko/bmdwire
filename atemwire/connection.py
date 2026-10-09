@@ -498,7 +498,9 @@ class ATEMConnection:
             # bare (non-indexed) field so the event name is 'change:macro-play-status'.
             def _on_macro_play(contents):
                 running = bool(getattr(contents, 'running', False))
-                idx = int(getattr(contents, 'index', 0xFFFF) or 0xFFFF)
+                # Slot 0 is a real macro; only 0xFFFF (or no index) is idle.
+                idx = getattr(contents, 'index', None)
+                idx = 0xFFFF if idx is None else int(idx)
                 if running and idx != 0xFFFF and idx >= 0:
                     self.last_run_macro_index = idx
 

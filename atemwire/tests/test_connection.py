@@ -423,6 +423,45 @@ def test_facade_and_probe_report_the_rehandshake_gap(
 
 
 # ---------------------------------------------------------------------------
+# Last-run macro latch (MRPr)
+# ---------------------------------------------------------------------------
+
+
+def _play_status(running, index):
+    import struct
+    from atemwire.messages.macros import MacroPlayStatusField
+    return MacroPlayStatusField(struct.pack('>BBH', 0x01 if running else 0, 0, index))
+
+
+def test_macro_slot_0_latches_as_last_run(
+    reset_pool, fake_protocol_factory, short_connect_timeout,
+):
+    from atemwire.state import build_full_state
+
+    instances = fake_protocol_factory()
+    conn = ATEMConnection('atem_test')
+    assert conn.connect('1.2.3.4')
+    try:
+        handlers = instances[-1]._callbacks['change:macro-play-status']
+
+        def mrpr(running, index):
+            for cb in handlers:
+                cb(_play_status(running, index))
+
+        assert build_full_state(conn)['lastRunMacro'] == {'index': -1, 'name': None}
+        mrpr(True, 0)
+        assert conn.last_run_macro_index == 0
+        assert build_full_state(conn)['lastRunMacro'] == {'index': 0, 'name': 'Macro 1'}
+        # Idle (0xFFFF) keeps the latch; another slot replaces it.
+        mrpr(False, 0xFFFF)
+        assert conn.last_run_macro_index == 0
+        mrpr(True, 4)
+        assert conn.last_run_macro_index == 4
+    finally:
+        conn.disconnect()
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
