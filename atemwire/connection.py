@@ -131,6 +131,12 @@ class ATEMConnection:
         # immediately reflects the post-disconnect state.
         self._handshake_done: bool = False
 
+        # ``_session_ready`` follows the protocol's 'connected' /
+        # 'disconnected' events: False from the moment a transport
+        # re-handshake empties mixerstate until the new state dump is
+        # complete. Read through ``is_ready``.
+        self._session_ready: bool = False
+
         self._lifecycle_lock = threading.Lock()  # serializes connect/disconnect calls
         self._transfer_serial_lock = threading.Lock()  # one native transfer at a time
 
@@ -167,6 +173,19 @@ class ATEMConnection:
             return False
         worker = self._worker
         return worker is not None and worker.is_alive()
+
+    @property
+    def is_ready(self) -> bool:
+        """True iff ``is_connected`` AND the switcher's state is current.
+
+        After ~5 s without packets the transport re-handshakes on its own:
+        the protocol raises 'disconnected' and empties ``mixerstate``, the
+        same worker carries on, and 'connected' fires again once the new
+        state dump is complete. ``is_connected`` stays True through that
+        gap (the worker is alive and recovering, so the pool must not evict
+        it); ``is_ready`` is False for its whole length.
+        """
+        return self._session_ready and self.is_connected
 
     @property
     def mixerstate(self) -> dict:
@@ -405,6 +424,7 @@ class ATEMConnection:
             self._ready_event.clear()
             self._connect_error = None
             self._handshake_done = False
+            self._session_ready = False
             self._died_signalled = False
             self.ip_address = ip_address
 
@@ -478,11 +498,26 @@ class ATEMConnection:
             # bare (non-indexed) field so the event name is 'change:macro-play-status'.
             def _on_macro_play(contents):
                 running = bool(getattr(contents, 'running', False))
-                idx = int(getattr(contents, 'index', 0xFFFF) or 0xFFFF)
+                # Slot 0 is a real macro; only 0xFFFF (or no index) is idle.
+                idx = getattr(contents, 'index', None)
+                idx = 0xFFFF if idx is None else int(idx)
                 if running and idx != 0xFFFF and idx >= 0:
                     self.last_run_macro_index = idx
 
             self._protocol.on('change:macro-play-status', _on_macro_play)
+
+            # Session readiness (``is_ready``): 'disconnected' is raised when
+            # the transport gives up on the session and mixerstate is
+            # emptied; 'connected' when a state dump is complete, at the
+            # first connect and again after every re-handshake.
+            def _on_connected():
+                self._session_ready = True
+
+            def _on_disconnected():
+                self._session_ready = False
+
+            self._protocol.on('connected', _on_connected)
+            self._protocol.on('disconnected', _on_disconnected)
 
             try:
                 self._protocol.connect()

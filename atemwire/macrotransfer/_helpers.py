@@ -406,6 +406,19 @@ _DVE_PATTERN_TO_INT = {v: k for k, v in _DVE_PATTERN_NAMES.items()}
 # FlyKey infinity location → wire u8. Captured live: TopLeft=1,
 # CentreOfKey=0, BottomCentre=8, MiddleCentre=0 (alias of CentreOfKey).
 # 3x3 grid positions verified empirically against the Lots XML.
+#
+# TODO(fly-key direction): the byte for the centre is unsettled. Two
+# candidates for the infinite-run location (this table, RFlK byte 5):
+#   A. this table: 0 CentreOfKey, no 5.
+#   B. messages.upstream_keyer.run_flying_key_infinite_direction's
+#      docstring: 5 = centre.
+# Both agree on 1-4 and 6-9. The Lots XML (ASC's own export, 2026-04-30)
+# names CentreOfKey AND MiddleCentre as different locations within one
+# macro, and ASC writes that XML from its bytecode, so MiddleCentre is
+# not an alias of CentreOfKey; it may be 5. No RFlK capture or 0x0056
+# bytecode in this repository shows either byte. Settle it with a capture
+# of ASC running the key to each of the ten locations (see the docstring
+# there) before changing either side.
 
 _FLYKEY_LOCATION_NAMES = {
     # Decoder picks `CentreOfKey` as the canonical name for wire 0
