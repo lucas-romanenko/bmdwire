@@ -810,9 +810,11 @@ Each Op uses a small grammar of attributes:
 - `clip` / `gain` / `xSize` / `ySize` / etc.: floats matching the
   units used elsewhere in the file (e.g. `clip="0.300003"` is a 0..1
   scalar; `gain="-0.0800018"` is dB; `xPosition="0"` is unit-scaled).
-- Audio-op `gain` is in dB but **specially encoded**: `-327.68`
-  represents the wire's `-32768/100`, which is the silenced sentinel
-  value (≡ `-inf` in the declarative `<AudioSource>` representation).
+- Floats are written to six significant digits (`%g`), as ASC writes
+  them: Q16.16 -5243 is `-0.0800018`, 471859 is `7.2` (bmdwire#17).
+- Audio-op `gain` is in dB. `-327.68` is the silenced fader, Q16.16
+  -21474836 (bytes `ec 51 b8 fe`), ≡ `-inf` in the declarative
+  `<AudioSource>` representation.
 - Audio-op `sourceId` is the `<AudioSource id>` value read unsigned:
   `18446744073709486336` = `0xFFFFFFFFFFFF0100` is -65280 (a stereo
   strip), and a dual-mono input's halves are `18446744073709551360`

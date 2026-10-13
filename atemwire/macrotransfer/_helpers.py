@@ -89,14 +89,20 @@ def _resolve_source_to_symbol(source_id: int, mx: Optional[dict]) -> str:
 def _bool_str(v: int) -> str:
     return 'True' if v else 'False'
 
-def _fmt_scalar(v: float, max_decimals: int = 6) -> str:
-    """Format a float in the same compact form ATEM Software Control's XML
-    uses: up to ``max_decimals`` digits, trailing zeros stripped, no
-    trailing dot. ``0.0`` becomes ``"0"`` to match observed output."""
+def _fmt_scalar(v: float) -> str:
+    """Format a float the way ATEM Software Control's XML does: six
+    significant digits with trailing zeros dropped (``%g``, C++'s default
+    stream precision), so -21474836/65536 is ``"-327.68"`` and -5243/65536
+    ``"-0.0800018"``. Every float in the macros of twelve ASC exports
+    matches this form (bmdwire#17); six decimals missed 50 of 399.
+    ``0.0`` (and -0.0) is ``"0"``.
+
+    Above 10 that is fewer decimals than Q16.16 resolves, so decoding and
+    re-encoding can move a value by a few 1/65536 steps, as a macro saved
+    and restored through ASC does."""
     if v == 0.0:
         return '0'
-    s = f'{v:.{max_decimals}f}'.rstrip('0').rstrip('.')
-    return s if s else '0'
+    return f'{v:.6g}'
 
 # ----- Encoder helpers (used by encode_macro_bytecode) ----------------------
 

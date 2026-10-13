@@ -18,6 +18,7 @@ import pytest
 from atemwire.macrotransfer import (
     _KNOWN_OPS,
     decode_macro_bytecode,
+    encode_single_op,
 )
 
 
@@ -70,13 +71,15 @@ def test_decoder_xpos_signed_negative():
     assert op['keyIndex'] == '0'
 
 
-def test_decoder_xpos_off_by_one_keeps_precision():
+def test_decoder_xpos_off_by_one_reads_as_asc_writes_it():
     # The -1048577 value seen live is what BMD's CKDV→bytecode pipeline
-    # actually produces for wire=-16000. _fmt_scalar emits up to 6
-    # decimals; it should not silently round to -16.
+    # actually produces for wire=-16000, and the XML ASC wrote for it said
+    # -16: six significant digits (bmdwire#17). Encoding "-16" gives
+    # -1048576, one step off, as restoring ASC's own XML does.
     op = _decode_one(0x004A, bytes([0x00, 0x00, 0x0c, 0x00]) +
                      struct.pack('<i', -1048577))
-    assert op['xPosition'] == '-16.000015'
+    assert op['xPosition'] == '-16'
+    assert encode_single_op(op)[8:12] == struct.pack('<i', -1048576)
 
 
 def test_decoder_ypos_signed_positive():
@@ -116,8 +119,9 @@ def test_decoder_dve_mask_bottom_signed():
     op = _decode_one(0x0037, bytes([0x00, 0x00, 0x0c, 0x00]) +
                      struct.pack('<i', 471859))
     assert op['id'] == 'DVEKeyMaskBottom'
-    # 471859/65536 = 7.19998... — _fmt_scalar emits up to 6 decimals.
-    assert op['bottom'].startswith('7.199')
+    # 471859/65536 = 7.1999969..., which ASC writes as 7.2 (six
+    # significant digits).
+    assert op['bottom'] == '7.2'
 
 
 def test_decoder_dve_mask_left_signed():
