@@ -100,6 +100,7 @@ from atemwire.profile._enums import (
     TRANS_STYLE_TO_INT,
     USK_TYPE_TO_INT,
     WIPE_PATTERN_TO_INT,
+    audio_source_channel,
 )
 from atemwire.profile._xml import (
     _bool,
@@ -564,10 +565,12 @@ def _apply_fairlight(conn, root, result):
             if src <= 0:
                 continue
             for src_e in ai.findall('AudioSource'):
-                # Constellation-HD profiles use channel=-1 (stereo
-                # combined) or -256/-65280 (mono natively / stereo
-                # natively). Both map to channel=-1 in the wire format.
-                channel = -1
+                # The id is the strip's wire address: -65280 a stereo
+                # strip (channel -1); -256/-255 split channel 0/1, which
+                # is each half of a dual-mono input, and the mono XLR's
+                # one strip at -256 (_enums.audio_source_channel).
+                channel = audio_source_channel(src_e.get('id'))
+                strip = f'{src}' if channel == -1 else f'{src}.{channel}'
                 try:
                     set_fairlight_strip(
                         conn,
@@ -582,7 +585,7 @@ def _apply_fairlight(conn, root, result):
                     )
                     n_strips += 1
                 except Exception as exc:  # noqa: BLE001
-                    result.note_error(f'fairlight.strip[{src}]', exc)
+                    result.note_error(f'fairlight.strip[{strip}]', exc)
 
                 # EQ block — set master EQ enable/gain on the strip too,
                 # then per-band.
@@ -595,11 +598,11 @@ def _apply_fairlight(conn, root, result):
                             eq_gain_db=_float(eq_e.get('gain')),
                         )
                     except Exception as exc:  # noqa: BLE001
-                        result.note_error(f'fairlight.strip[{src}].eq', exc)
+                        result.note_error(f'fairlight.strip[{strip}].eq', exc)
                     for band_e in eq_e.findall('EqualizerBand'):
                         _apply_eq_band(conn, source=src, channel=channel,
                                        band_e=band_e, result=result,
-                                       label=f'fairlight.strip[{src}].eq')
+                                       label=f'fairlight.strip[{strip}].eq')
                         n_bands += 1
 
                 # Dynamics: make-up gain on the strip, then the
@@ -613,10 +616,10 @@ def _apply_fairlight(conn, root, result):
                         )
                     except Exception as exc:  # noqa: BLE001
                         result.note_error(
-                            f'fairlight.strip[{src}].dynamics', exc)
+                            f'fairlight.strip[{strip}].dynamics', exc)
                     _apply_dynamics_block(
                         conn, source=src, channel=channel, dyn_e=dyn_e,
-                        result=result, label=f'fairlight.strip[{src}]')
+                        result=result, label=f'fairlight.strip[{strip}]')
         if n_strips:
             result.note_applied(
                 f'fairlight ({n_strips} strips, {n_bands} EQ bands)')
