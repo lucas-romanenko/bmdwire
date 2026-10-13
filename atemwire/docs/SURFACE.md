@@ -106,7 +106,7 @@ Every row takes `index:u8=me` and `keyer:u8` first.
 | `KeyPropertiesMaskCommand` | `CKMs` | `enabled?:bool`, `top?:i16`, `bottom?:i16`, `left?:i16`, `right?:i16` | edges ×1000 (display ±9 top/bottom, ±16 left/right). The docstring says "Not Wireshark-validated yet". Ops `set_usk_mask_enabled`, `set_usk_mask_top/bottom/left/right(display, ×1000, no clamp)` |
 | `KeyPropertiesDveCommand` | `CKDV` | `size_x?:i32`, `size_y?:i32`, `pos_x?:i32`, `pos_y?:i32`, `rotation?:i32`, `border_enabled?:bool`, `shadow_enabled?:bool`, `border_bevel_enabled?:u8 (bevel type)`, `outer_width?:u16=0–1600`, `inner_width?:u16=0–1600`, `outer_softness?:u8=0–100`, `inner_softness?:u8=0–100`, `bevel_softness?:u8=0–100`, `bevel_position?:u8=0–100`, `border_opacity?:u8=0–100`, `border_hue?:u16`, `border_saturation?:u16`, `border_luma?:u16`, `angle?:u16=0–3590`, `altitude?:u8=10–100`, `mask_enabled?:bool`, `mask_top?:i16=±9000`, `mask_bottom?:i16=±9000`, `mask_left?:i16=±16000`, `mask_right?:i16=±16000`, `rate?:u8=frames` | u32 mask, 26 bits; `__init__(index, keyer, **kwargs)`. Helper method `set_border_color_rgb`. Ops `set_usk_dve_position_x/y(display ×1000; clamped only to the i32 range so off-screen fly positions survive)`, `set_usk_dve_size_x/y(0–2 → 0–2000, clamped)`, `set_usk_dve_rotation(deg ×10)`, `set_usk_dve_border_enabled`, `set_usk_dve_border_hue/saturation/luma(×10; the "SCALE CONTRACT" comment explains the asymmetric read)`, `set_usk_dve_border_opacity`, `set_usk_dve_border_outer_width/inner_width(×100)`, `set_usk_dve_border_outer_softness/inner_softness/bevel_softness/bevel_position`, `set_usk_dve_masked`, `set_usk_dve_top/bottom/left/right(×1000)`, `set_usk_dve_light_direction(deg ×10)`, `set_usk_dve_light_altitude`, `set_usk_dve_shadow`, `set_usk_dve_rate(rate_str)`. No op sets `border_bevel_enabled` |
 | `KeyerKeyframeSetCommand` | `SFKF` | `keyframe:u8=1 A\|2 B` | op `set_keyer_fly_keyframe(conn, keyer, 'a'\|'b'\|'full'\|'runToInfinite', me)` maps through `helpers.KEYFRAME_BY_NAME` (a=1, b=2, full=3, runToInfinite=4); the wire docstring documents only A/B |
-| `KeyerKeyframeRunCommand` | `RFlK` | `run_to:u8=1 A\|2 B\|3 Full\|4 Infinite` (or `'A'`,`'B'`,`'Full'`,`'Infinite'`), `direction?:u8` | mask bit 1 gates `direction`; `run_to` has no mask bit. Ops `run_flying_key_keyframe(conn, keyer, 'a'\|'b'\|'full', me)`, `run_flying_key_infinite_direction(conn, keyer, direction int, me)`. Direction encodings disagree: the op docstring says 1 TL … 5 centre … 9 BR, while the macro table `_FLYKEY_LOCATION_NAMES` has 0 CentreOfKey, 1 TopLeft, 2 TopCentre, 3 TopRight, 4 MiddleLeft, 6 MiddleRight, 7 BottomLeft, 8 BottomCentre, 9 BottomRight, and no 5 |
+| `KeyerKeyframeRunCommand` | `RFlK` | `run_to:u8=1 A\|2 B\|3 Full\|4 Infinite` (or `'A'`,`'B'`,`'Full'`,`'Infinite'`), `direction?:u8` | mask bit 1 gates `direction`; `run_to` has no mask bit. Ops `run_flying_key_keyframe(conn, keyer, 'a'\|'b'\|'full', me)`, `run_flying_key_infinite_direction(conn, keyer, direction, me)`. `direction` is the location, the same byte as macro op 0x0056's location and `KeFS` byte 5, captured from ASC (bmdwire#10): 0 CentreOfKey, 1 TopLeft, 2 TopCentre, 3 TopRight, 4 MiddleLeft, 5 MiddleCentre, 6 MiddleRight, 7 BottomLeft, 8 BottomCentre, 9 BottomRight. In 1.3.0 and earlier the op takes the int only and its docstring calls 5 the centre, and the macro table has no 5 (§5.4 items 9 and 10); since `b89fcb7` both use `helpers.FLYKEY_LOCATION_NAMES` and the op also takes the names. ASC sends 0x6E in padding byte 3, atemwire 0 |
 
 ### 1.5 keyer-dsk — `messages/downstream_keyer.py`
 
@@ -330,7 +330,7 @@ brackets where it matters). "Written by" names the §1 command(s) whose effect l
 | `key-properties-advanced-chroma-colorpicker` | `KACC` | `index`, `keyer`, `cursor:bool`, `preview:bool`, `x:i16`, `y:i16`, `size:u16`, `Y:float=(wire−625)/8544`, `Cb:float=(wire−5000)/5000`, `Cr:float`; method `get_rgb()` | me,keyer | `CACC` |
 | `key-properties-pattern` | `KePt` | `index`, `keyer`, `pattern:u8`, `size`, `symmetry`, `softness`, `position_x`, `position_y` (u16 0–10000), `invert:bool` | me,keyer | `CKPt` |
 | `key-properties-dve` | `KeDV` | `index`, `keyer`, `size_x`, `size_y`, `pos_x`, `pos_y`, `rotation` (i32), `border_enabled`, `shadow_enabled`, `border_bevel:u8`, `border_outer_width`, `border_inner_width` (u16), `border_outer_softness`, `border_inner_softness`, `border_bevel_softness`, `border_bevel_position`, `border_opacity` (u8), `border_hue:float deg (÷10)`, `border_saturation:float 0–1 (÷1000)`, `border_luma:float 0–1`, `light_angle:u16`, `light_altitude:u8`, `mask_enabled`, `mask_top/bottom/left/right:i16`, `rate:u8` | me,keyer | `CKDV` |
-| `key-properties-fly` | `KeFS` | `index`, `keyer`, `is_a_set`, `is_b_set`, `run_to_infinite_index:u8`, `at_keyframe_a`, `at_keyframe_b`, `at_keyframe_full`, `at_keyframe_infinite` | me,keyer | `SFKF`, `RFlK` (effect) |
+| `key-properties-fly` | `KeFS` | `index`, `keyer`, `is_a_set`, `is_b_set`, `run_to_infinite_index:u8 (the RFlK location)`, `at_keyframe_a`, `at_keyframe_b`, `at_keyframe_full`, `at_keyframe_infinite` | me,keyer | `SFKF`, `RFlK` (effect) |
 | `key-properties-fly-keyframe` | `KKFP` | `index`, `keyer`, `keyframe:u8 (1 A, 2 B)`, `size_x`, `size_y` (u32), `pos_x`, `pos_y`, `rotation` (i32), border widths/softness/bevel/opacity, `border_hue/saturation/luma` (scaled like `KeDV`), `light_angle`, `light_altitude`, `mask_top/bottom/left/right:i16` | me,keyer,keyframe | `SFKF` stores the live DVE; no command writes keyframe geometry directly |
 | `dkey-properties-base` | `DskB` | `index`, `fill_source:u16`, `key_source:u16` | dsk | `CDsF`, `CDsC` |
 | `dkey-properties` | `DskP` | `index`, `tie:bool`, `rate:u8`, `premultiplied`, `clip:u16`, `gain:u16` (0–1000), `invert_key`, `masked`, `top/bottom/left/right:i16 ×1000` | dsk | `CDsT`, `CDsR`, `CDsG`, `CDsM` |
@@ -902,7 +902,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 ### 5.4 Behaviour a CLI will trip over (verified in code)
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
-1.2.0 and earlier, including the 1.1.0 that WebATEM pins.
+1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
+10 were fixed after 1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -947,7 +948,8 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
    - Unknown transition style, key type and mix type strings silently encode as Mix, Luma and On.
    - TransitionSource mask 0 becomes Background.
    - u16/u32 values are masked silently (70000 → 4464).
-   - Fly-key `MiddleCentre` raises, despite a comment saying it is accepted.
+   - Fly-key `MiddleCentre` raises, despite a comment saying it is accepted. *Fixed in
+     `b89fcb7`:* it encodes as 5, the byte ASC's own recorded macro holds (bmdwire#10).
    - A missing `MacroSleep.frames` encodes as 0.
 10. **Unit traps:**
     - **Unclamped values:** stinger clip/gain (×10). CACK values are ×1000 and unclamped.
@@ -964,7 +966,9 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
       and the macro table (0 CentreOfKey, no 5). They agree on 1–4 and 6–9. ASC's own export (the
       Lots XML) uses both `CentreOfKey` and `MiddleCentre` in one macro, so they are different
       locations. No capture in the repo shows the centre byte; both sites carry a TODO
-      (`f960428`).
+      (`f960428`). *Fixed in `b89fcb7`:* a capture of ASC settled it (bmdwire#10). `RFlK` byte 5,
+      `KeFS` byte 5 and the 0x0056 location are one enum, `helpers.FLYKEY_LOCATION_NAMES`:
+      0 CentreOfKey, 1–9 the grid row by row with 5 MiddleCentre. The op also takes the names.
 11. **Bare clear is unreliable.** The `CSTL` sent by `media.clear_still` is ignored by some models;
     use the locked `clear_still`.
 12. **Upload progress can exceed 100%**, and download progress under-reports.

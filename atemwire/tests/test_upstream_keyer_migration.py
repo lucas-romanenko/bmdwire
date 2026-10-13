@@ -802,10 +802,23 @@ def test_run_flying_key_keyframe_unknown_raises():
 
 def test_run_flying_key_infinite_direction_includes_direction():
     """Infinite variant always uses keyframe_constant('runToInfinite')
-    and packs the numeric direction."""
+    and packs the location at byte 5 under mask bit 1, by number or by
+    ASC's name. All ten are pinned to the capture in
+    test_flykey_locations.py."""
+    for direction in (5, 'MiddleCentre'):
+        conn = _FakeConn()
+        run_flying_key_infinite_direction(conn, keyer=0, direction=direction,
+                                          me=0)
+        assert conn.sent[0][4:8] == b'RFlK'
+        assert conn.sent[0][8:] == bytes([0x02, 0, 0, 0, 0x04, 0x05, 0, 0])
+
+
+def test_run_flying_key_infinite_direction_unknown_raises():
     conn = _FakeConn()
-    run_flying_key_infinite_direction(conn, keyer=0, direction=5, me=0)
-    assert conn.sent[0][4:8] == b'RFlK'
+    with pytest.raises(ValueError, match='unknown fly-key location'):
+        run_flying_key_infinite_direction(conn, keyer=0, direction='Centre',
+                                          me=0)
+    assert conn.sent == []
 
 
 # --- Reader: usk_fly ------------------------------------------------------
