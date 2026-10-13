@@ -404,7 +404,7 @@ brackets where it matters). "Written by" names the §1 command(s) whose effect l
 | `time` | `Time` | `hours`, `minutes`, `seconds`, `frames`, `dropframe:bool`; `total_seconds()` | bare | `TiRq` (request), `SToD` (sets the clock) |
 | `time-config` | `TCCc` | `mode:u8 (0 freerun, 1 time-of-day)` | bare | — (no command) |
 | `lock-obtained` | `LKOB` | `store:u16` | consumed by the transfer engine, **not stored** | `LOCK`/`PLCK` |
-| `lock-state` | `LKST` | `store:u16`, `state:bool`, `u1` | bare | `LOCK` |
+| `lock-state` | `LKST` | `store:u16`, `state:bool`, `u1` | bare: the latest LKST, whatever its store. Only releases until `312c7cf` (§5.4 item 19). Held by another client: `state` True while `protocol.locks.get(store)` is falsy | `LOCK` |
 | `file-transfer-*` | `FTDa`/`FTDE`/`FTDC`/`FTCD` | `transfer`, `size`/`status`/`count`… | consumed by the transfer engine, **not stored** | §3 |
 | `transfer-complete` | `*XFC` | `store`, `slot`, `upload:bool` | consumed (TCP-proxy transport only); since `15321d0` dropped unparsed on UDP (§5.4 item 18) | — |
 | `InCm` | `InCm` | raw bytes (end of the initial state dump) | bare | — |
@@ -753,7 +753,8 @@ callback is logged and swallowed.
 | `file-transfer-error` | `(FileTransferErrorField)` | fatal `FTDE` only |
 | `clear-dispatched` | `(store, slot)` | locked clear sent (local, not a switcher confirmation) |
 
-`LKOB`, `FTCD`, `FTDa`, `FTDE`, `FTDC` and `*XFC` produce **no** `change` events.
+`LKOB`, `FTCD`, `FTDa`, `FTDE`, `FTDC` and `*XFC` produce **no** `change` events. `LKST`
+produces `change:lock-state` for a lock taken as well as a release since `312c7cf`.
 
 ### 4.4 Knowing a command took effect
 
@@ -907,8 +908,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
-10, the split-mono bullet of item 8, the float bullet of item 9, items 15, 16 and 18, and part
-of item 17 were fixed after 1.3.0 and still apply to it.
+10, the split-mono bullet of item 8, the float bullet of item 9, items 15, 16, 18 and 19, and
+part of item 17 were fixed after 1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1021,6 +1022,12 @@ of item 17 were fixed after 1.3.0 and still apply to it.
     datagram; with a transfer queued it pops that transfer and may raise a spurious
     `upload-done`. *Fixed in `15321d0`:* on UDP it is dropped before parsing, logged at debug,
     and the TCP branch reads the queue with `.get()` (bmdwire#14).
+19. **`LKST` reporting a lock taken is dropped** (1.3.0). Nothing is stored and no event fires,
+    whether the lock is this session's or another client's, so `mixerstate['lock-state']` only
+    ever shows the last release and a held media store can't be seen; a foreign holder shows
+    only as a download timing out with "lock never granted". *Fixed in `312c7cf`:* both states
+    are stored and raise `change:lock-state`; the transfer engine still reacts to releases only
+    (bmdwire#15). The key is still bare, so stores 0 and `0xFFFF` overwrite each other.
 
 ## Counts
 
