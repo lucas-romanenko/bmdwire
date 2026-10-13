@@ -103,7 +103,8 @@ that was established on hardware.
 - **FTP login.** Stock firmware accepts an empty anonymous login; some servers reject the bare `USER` form, so the helper retries as `anonymous` before failing.
 - **The disk index updates live.** A clip is visible to `disk list` immediately after its `STOR` completes; no rescan or slot reselect is needed.
 - **Clip names contain spaces.** `disk list` and `clips get` rows are tokenised from the right (duration, format fields) and everything left over is the name, which is why a name such as `Intro Loop animation.mp4` round-trips.
-- **Client limit.** Beyond a small number of simultaneous 9993 clients the deck answers `120 connection failed` and closes the socket.
+- **Client limit.** Beyond a small number of simultaneous 9993 clients the deck answers `120 connection failed` and closes the socket; `connect()` raises `HyperdeckError` with code 120.
+- **No request ids.** A command's answer is just the next non-asynchronous response, so `request()` drops responses that arrived before the command was sent, closes the connection when an answer doesn't come within `read_timeout` (reconnect to carry on), and refuses a command with a line break in it (`ValueError`), which the deck would read as two.
 - **Verified hardware.** HyperDeck Studio HD Mini, firmware 8.1.1, full probe / clear / upload / cue-and-loop cycle. Other Studio HD models speak the same protocol but were not on the bench.
 
 ## Development
