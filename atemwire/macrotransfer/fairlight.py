@@ -453,8 +453,11 @@ def _resolve_source_id(value) -> int:
     it as i64 LE on the wire. Accept either.
     """
     if value is None or value == '':
-        # Default to the universal stereo sentinel (-65280 as i64).
-        return 0xFFFFFFFFFFFF0000
+        # Default to the universal stereo sentinel (-65280 as i64), the
+        # value every live capture carries. This returned
+        # 0xFFFFFFFFFFFF0000 (-65536), which no switcher was seen to
+        # send (bmdwire#16).
+        return 0xFFFFFFFFFFFF0100
     try:
         return int(value) & 0xFFFFFFFFFFFFFFFF
     except (TypeError, ValueError) as exc:

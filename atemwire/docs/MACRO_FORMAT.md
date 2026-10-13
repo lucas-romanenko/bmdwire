@@ -617,7 +617,8 @@ corresponding op was recorded).
 
 The strip ops (0x014A/0x014B) carry a sourceId field — Software Control's
 universal stereo sentinel is `0xFFFFFFFFFFFF0100` (= i64 -65280),
-representing "all channels of this source". The 0x4346 u16 at param
+representing "all channels of this source". The encoder writes it for an
+op with no `sourceId` attribute (or an empty one). The 0x4346 u16 at param
 offset 2 is constant in every captured recording but its meaning isn't
 known; the decoder ignores it and the encoder emits the constant for
 byte-identical round-trip.
