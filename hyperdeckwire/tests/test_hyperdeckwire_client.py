@@ -20,9 +20,12 @@ What's pinned here:
   - Action commands assemble their argument strings as documented.
 """
 
+import socket
 from typing import List, Optional
 
 import pytest
+
+import hyperdeckwire.client as client_mod
 
 from hyperdeckwire.client import (
     Clip,
@@ -34,21 +37,28 @@ from hyperdeckwire.client import (
 )
 
 
+# A script item: nothing arrives while the client waits. The recv times
+# out, and the test's clock (see ``clock``) moves on by the socket's
+# timeout, so the client's deadline passes without any real waiting.
+SILENCE = None
+
+
 class _FakeSocket:
     """Minimal socket stand-in.
 
     ``script`` is a list of byte-strings the server will send on
-    successive ``recv`` calls (one chunk per call). The fake also
-    captures everything ``sendall`` wrote in ``sent`` so tests can
-    assert on the exact wire bytes the client emitted.
+    successive ``recv`` calls (one chunk per call), or ``SILENCE``. The
+    fake also captures everything ``sendall`` wrote in ``sent`` so tests
+    can assert on the exact wire bytes the client emitted.
     """
 
-    def __init__(self, script: List[bytes]):
+    def __init__(self, script: List[bytes], clock=None):
         self._script = list(script)
         self._inbox = b''
         self.sent = b''
         self.closed = False
         self._timeout: Optional[float] = None
+        self._clock = clock
 
     # --- socket surface --------------------------------------------------
 
@@ -68,6 +78,10 @@ class _FakeSocket:
                 # Mimic real blocking — but for tests, just return empty
                 # to signal EOF rather than hang forever.
                 return b''
+            if self._script[0] is SILENCE:
+                self._script.pop(0)
+                self._clock.now += self._timeout
+                raise socket.timeout('timed out')
             self._inbox = self._script.pop(0)
         chunk, self._inbox = self._inbox[:n], self._inbox[n:]
         return chunk
@@ -386,3 +400,64 @@ def test_response_params_parses_key_value_pairs():
 def test_response_params_skips_lines_without_colon():
     resp = Response(code=200, text='something', lines=['no-colon-line'])
     assert resp.params() == {}
+
+
+# ---------------------------------------------------------------------------
+# Answers stay with their commands
+# ---------------------------------------------------------------------------
+
+class _Clock:
+    """Stands in for time.monotonic in the client: SILENCE moves it on."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    c = _Clock()
+    monkeypatch.setattr(client_mod.time, 'monotonic', c.monotonic)
+    return c
+
+
+def _deck(scripts, clock=None, read_timeout=0.3):
+    """A Hyperdeck whose every connect() gets the next scripted socket."""
+    socks = [_FakeSocket(script, clock=clock) for script in scripts]
+    pending = list(socks)
+    hd = Hyperdeck('1.2.3.4', read_timeout=read_timeout,
+                   socket_factory=lambda *_a, **_kw: pending.pop(0))
+    hd.connect()
+    return hd, socks
+
+
+TRANSPORT_PLAY = b'208 transport info:\r\nstatus: play\r\n\r\n'
+
+
+# --- #18: a timeout ends the connection -----------------------------------
+
+def test_a_timeout_closes_the_connection(clock):
+    # The deck answers transport info only after read_timeout, then ping.
+    hd, [sock] = _deck([[GREETING, SILENCE, TRANSPORT_PLAY, b'200 ok\r\n']], clock)
+    with pytest.raises(TimeoutError):
+        hd.transport_info()
+    assert hd._sock is None, (
+        'the late answer would be taken as the next command\'s: the '
+        'connection must end'
+    )
+    assert sock.closed
+    with pytest.raises(OSError, match='not connected'):
+        hd.request('ping')
+
+
+def test_after_a_timeout_a_reconnect_gets_its_own_answers(clock):
+    hd, _ = _deck([[GREETING, SILENCE, TRANSPORT_PLAY],
+                   [GREETING, b'200 ok\r\n', TRANSPORT_PLAY]], clock)
+    with pytest.raises(TimeoutError):
+        hd.transport_info()
+    hd.connect()
+    resp = hd.request('ping')
+    assert (resp.code, resp.text) == (200, 'ok')
+    assert hd.transport_info() == {'status': 'play'}

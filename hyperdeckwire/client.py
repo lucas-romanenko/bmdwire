@@ -298,9 +298,24 @@ class Hyperdeck:
 
         Does NOT raise on protocol-level error codes (1xx). Use
         :meth:`_check_ok` (or just inspect the response) for that.
+
+        The protocol has no request ids: the answer is the next
+        non-asynchronous response. So:
+
+        - A timeout closes the connection before ``TimeoutError`` is
+          raised, since the late answer would otherwise be taken as the
+          next command's and every answer after it would be one behind.
+          Later calls raise ``OSError('not connected')`` until
+          :meth:`connect`.
         """
         self._send_line(command)
-        return self._read_response(timeout=timeout)
+        try:
+            return self._read_response(timeout=timeout)
+        except TimeoutError:
+            # The answer is still owed, and nothing could tell it from the
+            # next command's (bmdwire#18).
+            self.close()
+            raise
 
     def _check_ok(self, command: str,
                   timeout: Optional[float] = None) -> Response:
