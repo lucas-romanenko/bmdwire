@@ -325,10 +325,16 @@ class AtemProtocol:
             self._lock_requested.pop(contents.store, None)
             self._transfer_trigger(contents.store)
             return
+        elif key == 'lock-state' and contents.state:
+            # Lock taken: stored and raised as 'change:lock-state' by the
+            # generic path below, like a release, but the transfer machinery
+            # reacts to releases only. This used to return here, unstored
+            # and silent, so mixerstate['lock-state'] only ever showed the
+            # last release (bmdwire#15). The packet doesn't name the holder:
+            # held by someone else is state=True while self.locks.get(store)
+            # is falsy.
+            pass
         elif key == 'lock-state':
-            if contents.state:
-                # Ignore lock aquired messages from other clients
-                return
             if contents.store in self.locks and self.locks[contents.store]:
                 # Remove the lock if we held it
                 del self.locks[contents.store]
