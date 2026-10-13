@@ -325,6 +325,9 @@ class UdpProtocol(BaseProtocol):
 
         self.state = UdpProtocol.STATE_CLOSED
         self.session_id = 0x1337
+        # The switcher-assigned id of the session the last connect()
+        # replaced, whose packets _receive_packet_low drops (bmdwire#12).
+        self._prev_session_id = None
 
         self.enable_ack = False
         self.had_traffic = False
@@ -591,6 +594,22 @@ class UdpProtocol(BaseProtocol):
             self.log.warning(f"Ignoring malformed datagram from {address[0]}: {e}")
             return
 
+        # After a re-handshake the switcher goes on resending the session
+        # it is replacing until it reaps it (~5 s). Before this guard those
+        # packets restarted the silence window, the first reliable one
+        # became the new session's ACK baseline and delivery cursor (so the
+        # new dump, starting again at low sequence numbers, was dropped as
+        # duplicates), and one arriving just after the handshake ACK was
+        # adopted as the session id (bmdwire#12). Drop them, and anything
+        # but the SYN reply while our SYN is out, before any receive state
+        # below sees them.
+        if (self._prev_session_id is not None
+                and packet.session == self._prev_session_id):
+            return
+        if self.state == UdpProtocol.STATE_SYN_SENT and not (
+                packet.flags & UdpProtocol.FLAG_SYN and packet.session == 0x1337):
+            return
+
         if packet.flags & UdpProtocol.FLAG_RETRANSMISSION:
             # Retransmitted packets are the RECOVERY working (in-order
             # delivery + contiguous ACK make the ATEM resend what we
@@ -840,6 +859,15 @@ class UdpProtocol(BaseProtocol):
         self._deliver_next = None
         self._parked.clear()
         self._stashed_packet = None
+        # Remember the session being replaced, so its stragglers are
+        # dropped. Only a switcher-assigned id: after a handshake that never
+        # got as far as one, nothing is remembered, so a switcher that
+        # reused the old id for the new session would cost one silence
+        # window, not the session.
+        if self.session_id not in (None, 0x1337):
+            self._prev_session_id = self.session_id
+        else:
+            self._prev_session_id = None
         self.session_id = 0x1337
         self.enable_ack = False
         # Buffered packets carry the OLD session id — never serve them
