@@ -230,6 +230,12 @@ class Hyperdeck:
     # ------------------------------------------------------------------
 
     def _send_line(self, line: str) -> None:
+        # The deck ends a command at the line break, so a value carrying
+        # one (a clip name, a record prefix) was sent as a second command:
+        # 'clips add: name: a.mov\nclips clear' cleared the timeline. No
+        # value in the protocol can hold one (bmdwire#20).
+        if '\n' in line or '\r' in line:
+            raise ValueError(f'line break in a HyperDeck command: {line!r}')
         if self._sock is None:
             raise OSError('not connected')
         self._sock.sendall((line + '\n').encode('utf-8'))
@@ -311,6 +317,8 @@ class Hyperdeck:
           next command's and every answer after it would be one behind.
           Later calls raise ``OSError('not connected')`` until
           :meth:`connect`.
+        - A command with a line break in it raises ``ValueError`` before
+          anything is sent.
         """
         if self._sock is not None:
             self._drop_unrequested()

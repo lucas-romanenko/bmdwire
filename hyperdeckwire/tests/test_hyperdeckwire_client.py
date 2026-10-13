@@ -508,3 +508,22 @@ def test_a_partial_response_is_left_for_the_read():
     resp = hd.request('ping')
     assert (resp.code, resp.text) == (200, 'ok')
     assert sock.sent == b'ping\n'
+
+
+# --- #20: a line break in a value is refused -------------------------------
+
+@pytest.mark.parametrize('call', [
+    lambda hd: hd.clips_add('a.mov\nplay'),
+    lambda hd: hd.clips_add('a.mov', before_clip_id='1\nclips clear'),
+    lambda hd: hd.set_configuration(record_prefix='x\r'),
+    lambda hd: hd.set_configuration(record_prefix='show\nformat: prepare: H.264High'),
+    lambda hd: hd.goto_clip('1\nstop'),
+    lambda hd: hd.request('ping\nstop'),
+], ids=['clips_add', 'clips_add-before', 'record_prefix-cr', 'record_prefix-lf',
+        'goto_clip', 'request'])
+def test_a_line_break_is_refused_before_sending(call):
+    hd, sock = _client_with_script([b'200 ok\r\n', b'200 ok\r\n'])
+    with pytest.raises(ValueError, match='line break'):
+        call(hd)
+    assert sock.sent == b''
+    assert hd._sock is sock                      # still connected
