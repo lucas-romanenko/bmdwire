@@ -41,7 +41,7 @@ from atemwire.state import (
     unit_to_thousandths, value_from_tenths, value_from_thousandths,
     value_to_thousandths,
 )
-from atemwire.helpers import keyframe_constant, parse_rate
+from atemwire.helpers import flykey_location, keyframe_constant, parse_rate
 from atemwire.messages._dsl import Recv, Send, boolean, i16, i32, u8, u16, u32
 
 
@@ -399,16 +399,20 @@ class KeyerKeyframeRunCommand(Send):
     0      1    u8     Mask (bit 1 = direction is set)
     1      1    u8     M/E index
     2      1    u8     Keyer index
-    3      1    ?      padding
+    3      1    ?      padding (ASC leaves 0x6E here)
     4      1    u8     Run-to (1=A, 2=B, 3=Full, 4=Infinite)
-    5      1    u8     Infinite-run direction index
+    5      1    u8     Infinite-run location (0..9, below)
     6      2    ?      padding
     ====== ==== ====== ===========
 
     Pass ``run_to`` as an int (1..4) or one of the strings ``'A'``,
     ``'B'``, ``'Full'``, ``'Infinite'``. ``direction`` is only
     meaningful when ``run_to=Infinite`` — leave it ``None`` for
-    A/B/Full runs.
+    A/B/Full runs. It is the location the key runs to, the enum in
+    ``helpers.FLYKEY_LOCATION_NAMES``: 1..9 the 3x3 grid row by row
+    from TopLeft (5 MiddleCentre), 0 CentreOfKey, as captured from
+    ATEM Software Control (bmdwire#10). Macro op 0x0056 stores the
+    same byte.
     """
     CODE = 'RFlK'
     SIZE = 8
@@ -605,6 +609,8 @@ class KeyPropertiesFlyField(Recv):
         self.keyer = raw[1] if len(raw) > 1 else 0
         self.is_a_set = bool(raw[2] & 0x01) if len(raw) > 2 else False
         self.is_b_set = bool(raw[3] & 0x01) if len(raw) > 3 else False
+        # The location of the Infinite run: RFlK byte 5, echoed, in the
+        # same enum (helpers.FLYKEY_LOCATION_NAMES; captured, bmdwire#10).
         self.run_to_infinite_index = raw[5] if len(raw) > 5 else 0
         flag6 = raw[6] if len(raw) > 6 else 0
         self.at_keyframe_a = bool(flag6 & 0x01)
@@ -1757,23 +1763,19 @@ def run_flying_key_keyframe(conn, keyer, keyframe, me=0):
 
 
 def run_flying_key_infinite_direction(conn, keyer, direction, me=0):
-    """Run USK flight toward 'infinite' in the given numeric direction.
-    direction is a wire constant (1=TL, 2=top, 3=TR, 4=L, 5=center,
-    6=R, 7=BL, 8=bottom, 9=BR) — caller supplies it directly.
-
-    TODO(fly-key direction): unverified for the centre. The macro codec's
-    ``_FLYKEY_LOCATION_NAMES`` (macrotransfer/_helpers.py) has 0 =
-    CentreOfKey and no 5; this list has 5 = centre and no 0. Both agree
-    on 1-4 and 6-9, and ASC names CentreOfKey and MiddleCentre as two
-    different locations. What settles it: a Wireshark capture of ATEM
-    Software Control's RFlK packets (byte 5) as it runs a fly-enabled
-    key to each of its ten locations, CentreOfKey and the 3x3 grid
-    including MiddleCentre; ideally also those ten runs recorded into a
-    macro and downloaded, to compare the 0x0056 op's location byte."""
+    """Run USK flight to infinity toward ``direction``: one of ATEM
+    Software Control's ten location names or its wire byte
+    (``helpers.FLYKEY_LOCATION_NAMES``, captured from ASC): 0 CentreOfKey,
+    1 TopLeft, 2 TopCentre, 3 TopRight, 4 MiddleLeft, 5 MiddleCentre,
+    6 MiddleRight, 7 BottomLeft, 8 BottomCentre, 9 BottomRight. A number
+    is sent as it is; an unknown name raises ValueError."""
+    location = flykey_location(direction)
+    if location is None:
+        raise ValueError(f"unknown fly-key location {direction!r}")
     conn.send(KeyerKeyframeRunCommand(
         index=me, keyer=int(keyer),
         run_to=keyframe_constant('runToInfinite'),
-        direction=int(direction),
+        direction=location,
     ))
 
 
