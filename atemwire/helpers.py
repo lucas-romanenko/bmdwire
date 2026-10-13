@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 """
 ATEM protocol helpers — rate parsing/formatting, transition-selection bitmask,
-keyframe enum lookup.
+keyframe and fly-key location enum lookup.
 
 Rate strings are the ``seconds:frames`` format the ATEM uses on the wire for
 transition rates, fade-to-black durations, and downstream keyer rates. Parsing
@@ -111,3 +111,44 @@ def keyframe_constant(name: str):
     """Map a frontend keyframe string to atemwire's enum int. Returns None for
     unknown names."""
     return KEYFRAME_BY_NAME.get(name)
+
+
+# ---------------------------------------------------------------------------
+# Fly-key location enum
+# ---------------------------------------------------------------------------
+
+# Where a flying key runs to on Run to Infinity, by ATEM Software Control's
+# name. One enum on both paths: byte 5 of the live RFlK command (which KeFS
+# byte 5 echoes) and the location byte of macro op 0x0056
+# FlyKeyRunToInfinity. 1-9 are the 3x3 grid row by row from the top left, so
+# 5 is MiddleCentre; 0 is CentreOfKey, the tenth location and a different one.
+# Captured 2026-10-13 on a 1 M/E Constellation HD (bmdwire#10): ASC's RFlK for
+# each of the ten carried these bytes, and the same ten runs recorded as a
+# macro downloaded as these location bytes, which ASC's Save Switcher State
+# named as below.
+FLYKEY_LOCATION_NAMES = {
+    0: 'CentreOfKey',
+    1: 'TopLeft',
+    2: 'TopCentre',
+    3: 'TopRight',
+    4: 'MiddleLeft',
+    5: 'MiddleCentre',
+    6: 'MiddleRight',
+    7: 'BottomLeft',
+    8: 'BottomCentre',
+    9: 'BottomRight',
+}
+
+FLYKEY_LOCATION_BY_NAME = {v: k for k, v in FLYKEY_LOCATION_NAMES.items()}
+
+
+def flykey_location(location):
+    """Map a fly-key location to its wire byte: one of ASC's names in
+    ``FLYKEY_LOCATION_NAMES``, or a number (int or numeric string), returned
+    as an int unchecked. Returns None for anything else."""
+    if isinstance(location, str) and location in FLYKEY_LOCATION_BY_NAME:
+        return FLYKEY_LOCATION_BY_NAME[location]
+    try:
+        return int(location)
+    except (TypeError, ValueError):
+        return None
