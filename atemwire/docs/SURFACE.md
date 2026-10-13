@@ -742,7 +742,7 @@ callback is logged and swallowed.
 | event | args | when |
 |---|---|---|
 | `connected` | — | initial dump complete (the packet after `InCm`) |
-| `disconnected` | — | transport timeout or forced reconnect; `mixerstate` is cleared |
+| `disconnected` | — | transport timeout or forced reconnect (since `50cb4b3`, also a dump that ends without a video mode); `mixerstate` is cleared |
 | `change` | `(key, contents)` | every stored field |
 | `change:<key>` | `(contents)` | bare fields |
 | `change:<key>:<first-index>` and `change:<key>:*` | `(contents)` | indexed fields (Fairlight: the strip id) |
@@ -906,8 +906,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
-10, the split-mono bullet of item 8, the float bullet of item 9 and items 15 and 16 were fixed
-after 1.3.0 and still apply to it.
+10, the split-mono bullet of item 8, the float bullet of item 9, items 15 and 16, and part of
+item 17 were fixed after 1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -923,7 +923,8 @@ after 1.3.0 and still apply to it.
    The new `ATEMConnection.is_ready` is False from `disconnected` until the next `connected`,
    `ATEM.connected` reads it, and `probe()` reports `connection_status=False` during the gap.
 3. **An unknown `VidM` mode code raises inside the parser.** The exception escapes `loop()`, the
-   rest of that packet is lost, `video-mode` never lands, and `wait_ready` times out.
+   rest of that packet is lost, `video-mode` never lands, and `wait_ready` times out. Since
+   `50cb4b3` the session re-handshakes three times first (item 17).
 4. **Slot 0 is never latched as the last-run macro** (1.2.0). `last_run_macro_index` uses
    `int(index) or 0xFFFF` (`connection.py:481`). *Fixed in `a9f3646`:* only a missing index or
    0xFFFF means idle.
@@ -1004,6 +1005,15 @@ after 1.3.0 and still apply to it.
     just after the handshake ACK can be adopted as the session id. *Fixed in `25e94d7`:*
     packets carrying the replaced session's switcher-assigned id are dropped before any receive
     state sees them, and so is anything but the SYN reply while the SYN is out (bmdwire#12).
+17. **The first packet of a state dump is lost for good if it is lost at all** (1.3.0). The first
+    reliable packet to arrive sets the ACK baseline and the delivery cursor. If the switcher's
+    first dump packet is lost, the second one's ACK covers it, so it is never resent, and a late
+    copy is dropped as already delivered. Without its `VidM`, `wait_ready` waits out its timeout
+    and `ATEMConnection.connect` fails after 15 s; other fields in it are silently missing.
+    *Partly fixed in `50cb4b3`:* a dump that ends (`InCm`) without `video-mode` raises
+    `disconnected` and re-handshakes at once, up to 3 times in a row, then carries on as before.
+    Other fields lost with the first packet are still missing. The real fix, a known first
+    sequence number, waits for a trace showing what it is (bmdwire#13).
 
 ## Counts
 
