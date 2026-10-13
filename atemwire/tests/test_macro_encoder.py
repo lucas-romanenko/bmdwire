@@ -187,7 +187,7 @@ def test_decode_fairlight_strip_fader_gain():
         'id': 'FairlightAudioMixerInputSourceFaderGain',
         'input': 'Camera1',
         'sourceId': '18446744073709486336',
-        'gain': '-0.050003',
+        'gain': '-0.0500031',    # -3277/65536, six significant digits
     }]
 
 
@@ -308,7 +308,7 @@ def test_decode_fairlight_master_fader_gain():
     out = decode_macro_bytecode(raw)
     assert out == [{
         'id': 'FairlightAudioMixerMasterOutFaderGain',
-        'gain': '-1.080002',
+        'gain': '-1.08',         # -70779/65536 = -1.0800018...
     }]
 
 
