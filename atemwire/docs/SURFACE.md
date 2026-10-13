@@ -406,7 +406,7 @@ brackets where it matters). "Written by" names the §1 command(s) whose effect l
 | `lock-obtained` | `LKOB` | `store:u16` | consumed by the transfer engine, **not stored** | `LOCK`/`PLCK` |
 | `lock-state` | `LKST` | `store:u16`, `state:bool`, `u1` | bare | `LOCK` |
 | `file-transfer-*` | `FTDa`/`FTDE`/`FTDC`/`FTCD` | `transfer`, `size`/`status`/`count`… | consumed by the transfer engine, **not stored** | §3 |
-| `transfer-complete` | `*XFC` | `store`, `slot`, `upload:bool` | consumed (TCP-proxy transport only) | — |
+| `transfer-complete` | `*XFC` | `store`, `slot`, `upload:bool` | consumed (TCP-proxy transport only); since `15321d0` dropped unparsed on UDP (§5.4 item 18) | — |
 | `InCm` | `InCm` | raw bytes (end of the initial state dump) | bare | — |
 
 ### 2.6 `build_full_state(conn)` (the assembled snapshot)
@@ -822,7 +822,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 - SuperSource, streaming/recording, multiview, camera control and talkback in **profile apply**.
   The last three have `ApplyOptions` flags that do nothing.
 - The `tcp://` proxy and USB transports. Both raise `NotImplementedError`, so the `*XFC`/`*XFR`
-  handling and the TCP `connected` path are dead code.
+  handling and the TCP `connected` path are dead code. A `*XFC` that reaches a UDP session
+  anyway was not inert until `15321d0` (§5.4 item 18).
 - `CXMS` bytes 10–15 (auto-roll and frame delay) are not mapped and are sent as 0.
 
 **The macro codec** knows 146 op codes. These families are absent and round-trip only as
@@ -906,8 +907,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
-10, the split-mono bullet of item 8, the float bullet of item 9, items 15 and 16, and part of
-item 17 were fixed after 1.3.0 and still apply to it.
+10, the split-mono bullet of item 8, the float bullet of item 9, items 15, 16 and 18, and part
+of item 17 were fixed after 1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1014,6 +1015,12 @@ item 17 were fixed after 1.3.0 and still apply to it.
     `disconnected` and re-handshakes at once, up to 3 times in a row, then carries on as before.
     Other fields lost with the first packet are still missing. The real fix, a known first
     sequence number, waits for a trace showing what it is (bmdwire#13).
+18. **A `*XFC` on a UDP session is handled** (1.3.0). No ATEM sends it, but if one arrives (a
+    non-ATEM peer, a fuzzer, a future firmware) the handler indexes `transfer_queue[store]`: with
+    nothing queued that raises `KeyError`, which escapes `loop()` and loses the rest of the
+    datagram; with a transfer queued it pops that transfer and may raise a spurious
+    `upload-done`. *Fixed in `15321d0`:* on UDP it is dropped before parsing, logged at debug,
+    and the TCP branch reads the queue with `.get()` (bmdwire#14).
 
 ## Counts
 
