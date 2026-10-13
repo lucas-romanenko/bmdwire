@@ -2,8 +2,9 @@
 """
 Enum tables and format constants for the ATEM Software Control profile XML.
 
-Pure data + one symbol-resolver helper. No dependencies on any other
-profile package modules — everything else imports from here.
+Pure data, one symbol-resolver helper and the Fairlight strip-id pair.
+No dependencies on any other profile package modules — everything else
+imports from here.
 """
 
 
@@ -70,6 +71,39 @@ TRANS_STYLE_TO_INT = {v: k for k, v in TRANS_STYLE_NAMES.items()}
 # Mix-option (per-input audio mix mode). Bitfield from FairlightStripPropertiesField.state.
 MIX_OPTION_NAMES = {0x01: 'Off', 0x02: 'On', 0x04: 'AudioFollowVideo'}
 MIX_OPTION_TO_INT = {v: k for k, v in MIX_OPTION_NAMES.items()}
+
+# Fairlight strip addressing. An <AudioSource id> is the strip's 8-byte wire
+# address (the one CFSP, CEBP and FASP carry) read as a signed i64: six 0xFF
+# bytes, the split byte and the channel byte. Macro ops carry the same value
+# unsigned as ``sourceId``. Captured from an ASC Save Switcher State with
+# input 1 in Dual Mono (bmdwire#9):
+#   -65280  ff..ff 01 00  a stereo strip: channel -1 in the setters
+#   -256    ff..ff ff 00  split, channel 0: a dual-mono left half, and the
+#                         natively mono XLR (1301)
+#   -255    ff..ff ff 01  split, channel 1: a dual-mono right half
+AUDIO_SOURCE_STEREO_ID = -65280
+AUDIO_SOURCE_SPLIT_ID = -256           # plus the channel
+
+
+def audio_source_id(channel: int) -> int:
+    """The <AudioSource id> of the strip the setters address as
+    ``channel``: -1 for stereo, 0 or 1 for a split half."""
+    if channel == -1:
+        return AUDIO_SOURCE_STEREO_ID
+    return AUDIO_SOURCE_SPLIT_ID + channel
+
+
+def audio_source_channel(source_id) -> int:
+    """The setters' channel for an <AudioSource id>: 0 or 1 when the split
+    byte is 0xff, else -1 (stereo). An id that isn't a whole number is taken
+    as stereo, as apply always did."""
+    try:
+        value = int(source_id) & 0xFFFFFFFFFFFFFFFF
+    except (TypeError, ValueError):
+        return -1
+    if (value >> 8) & 0xFF == 0xFF and value & 0xFF in (0, 1):
+        return value & 0xFF
+    return -1
 
 # EQ band shape. Bitfield from AtemEqBandPropertiesField.band_filter.
 EQ_SHAPE_NAMES = {
