@@ -593,7 +593,7 @@ layers, so whether this module is covered by the version number is unstated.
 **Bytecode.** A macro is a concatenation of ops, with no header, count or padding. Each op is
 `u16 LE total_len` (header included), then `u16 LE op_code`, then params. Everything is
 **little-endian**, unlike the big-endian live protocol. Fixed-point values are Q16.16 (`raw/65536`),
-written with at most 6 decimals. Decoded attributes are strings (`'True'`/`'False'` for bools).
+written with at most 6 decimals (since `4011dcb`, six significant digits; §5.4 item 9). Decoded attributes are strings (`'True'`/`'False'` for bools).
 Ops are identified by **u16 codes, not 4-char commands**.
 
 **146 op codes, all encode + decode** (`_KNOWN_OPS`, verified by import): upstream_keyer 56,
@@ -903,7 +903,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
-10 and the split-mono bullet of item 8 were fixed after 1.3.0 and still apply to it.
+10, the split-mono bullet of item 8 and the float bullet of item 9 were fixed after 1.3.0
+and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -949,6 +950,9 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
    - It has no model or version guard.
 9. **Macro codec losses:**
    - Marker bytes are rewritten.
+   - Floats decode to six decimals where ASC writes six significant digits (`-327.679993` for
+     `-327.68`, `-0.080002` for `-0.0800018`). *Fixed in `4011dcb`:* `_fmt_scalar` writes ASC's
+     form, which every float in twelve ASC exports matches (bmdwire#17).
    - Unknown transition style, key type and mix type strings silently encode as Mix, Luma and On.
    - TransitionSource mask 0 becomes Background.
    - u16/u32 values are masked silently (70000 → 4464).
