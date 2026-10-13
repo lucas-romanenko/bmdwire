@@ -519,9 +519,9 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
 
 | operation | entry point | parameters | behaviour |
 |---|---|---|---|
-| **download** | `ATEMConnection.download_still` (`connection.py:188`); on the facade, `atem.raw.download_still` | `(slot:int, *, timeout:float=30.0, progress_callback:Callable[[float],None]=None) -> bytes` | Blocking and serialised per connection. Flow: `PLCK(0,slot)` → `LKOB` → `FTSU` → `FTDa`×N/`FTUA` → `FTDC` → unlock. Returns the **RLE-decoded YCbCrA 4:2:2 frame** (w×h×4 bytes; actually a `bytearray`). Convert it with `imaging.atem_to_rgb`. Raises `ConnectionDeadError`, `RuntimeError` (fatal `FTDE`) or `TimeoutError` (after `abort_transfers`) |
+| **download** | `ATEMConnection.download_still` (`connection.py:188`); on the facade, `atem.raw.download_still` | `(slot:int, *, timeout:float=30.0, progress_callback:Callable[[float],None]=None) -> bytes` | Blocking and serialised per connection. Flow: `PLCK(0,slot)` → `LKOB` → `FTSU` → `FTDa`×N/`FTUA` → `FTDC` → unlock. Returns the **RLE-decoded YCbCrA 4:2:2 frame** (w×h×4 bytes; actually a `bytearray`). Convert it with `imaging.atem_to_rgb`. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False, §5.4 item 20), `RuntimeError` (fatal `FTDE`) or `TimeoutError` (after `abort_transfers`) |
 | **upload** | **no high-level entry point**. Only `AtemProtocol.upload` (`protocol.py:682`) | `(store, index, data, compress=True, compressed=False, name=None, description=None, size=None, task=None) -> None` | Non-blocking: it only queues, and someone must pump `loop()`. `data` is a YCbCrA frame from `imaging.rgb_to_atem`. The MD5 is taken over the uncompressed frame. Flow: `PLCK` → `LKOB` → `FTSD(mode 1 = RLE)` → `FTCD` → `FTDa`… → `FTFD` → `FTDC` → `upload-done(store, slot)`. Progress arrives as `upload-progress(store, slot, percent, done, total)`. `size` is unused. `compressed=True` needs `compress=False`. `aggressive_drain=True` (constructor only, so not reachable through the pool) drains 10 packets per trigger instead of 5. The working reference caller is in WebATEM: `atem_control/uploader.py` (its own `AtemProtocol(ip, aggressive_drain=True)`, pumps until `upload-done`, then checks the `MPfe` hash) |
-| **clear (locked)** | `ATEM.clear_still` / `ATEMConnection.clear_still` (`connection.py:196`); underneath, `AtemProtocol.queue_clear(store, index)` / `dequeue_clear(task)` | `(slot:int, *, timeout:float=5.0) -> None` | `LOCK(0,True)` → `LKOB` → `CSTL` → `clear-dispatched` → unlock. Returns once the clear has been **dispatched**, not confirmed; watch `MPfe.is_used` to confirm. Use this, not the bare `media.clear_still` op (§1.8) |
+| **clear (locked)** | `ATEM.clear_still` / `ATEMConnection.clear_still` (`connection.py:196`); underneath, `AtemProtocol.queue_clear(store, index)` / `dequeue_clear(task)` | `(slot:int, *, timeout:float=5.0) -> None` | `LOCK(0,True)` → `LKOB` → `CSTL` → `clear-dispatched` → unlock. Returns once the clear has been **dispatched**, not confirmed; watch `MPfe.is_used` to confirm. Use this, not the bare `media.clear_still` op (§1.8). Raises `ConnectionDeadError` when not connected (since `1572508`, when not `is_ready`) or `TimeoutError` |
 | capture | `media.capture_still(conn)` | — | single packet `Capt`, listed for completeness |
 
 **Formats and conversion** (`atemwire.mediaconvert`, a C extension; wrappers in `imaging.py`):
@@ -574,7 +574,7 @@ layers, so whether this module is covered by the version number is unstated.
 
 | entry point | signature | notes |
 |---|---|---|
-| `ATEMConnection.download_macro` | `(slot:int, *, timeout:float=10.0) -> bytes` | `connection.py:254`. The pooled path: serialised by the connection's transfer lock, and the worker pumps the loop. Returns `b''` for an empty slot. Raises `ConnectionDeadError`, `TimeoutError`, or `RuntimeError` (rejected by `FTDE`) |
+| `ATEMConnection.download_macro` | `(slot:int, *, timeout:float=10.0) -> bytes` | `connection.py:254`. The pooled path: serialised by the connection's transfer lock, and the worker pumps the loop. Returns `b''` for an empty slot. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False), `TimeoutError`, or `RuntimeError` (rejected by `FTDE`) |
 | `download_macro_bytecode` | `(protocol, slot:int, *, timeout=10.0, progress_callback=None) -> bytes` | `macrotransfer/_io.py:42`. For a **bare** `AtemProtocol`: it pumps `protocol.loop()` itself. `progress_callback` never fires (the protocol suppresses progress for store `0xFFFF`). A fatal `FTDE` surfaces as `TimeoutError` |
 | `upload_macro_bytecode` | `(protocol, slot:int, name:str, description:str, bytecode:bytes, *, timeout=10.0) -> None` | `_io.py:105`. Does **not** pump the loop; on a pooled connection pass `conn.protocol`, and the worker pumps. Raises `RuntimeError` (not connected, or fatal `FTDE`) or `TimeoutError`. Name and description are packed `64s`/`128s` (truncated, with no guaranteed NUL). There is **no upload method on `ATEMConnection` or `ATEM`** |
 | `decode_macro_bytecode` | `(raw:bytes, mx:dict=None) -> list[dict]` | each op is `{'id': <ASC XML op id>, <attr>: str, …}`. `mx` is accepted but unused |
@@ -630,7 +630,7 @@ The top-level `atemwire` exports `Profile`, `ApplyOptions` and `ApplyResult`.
 | properties | `root`, `major_version`, `minor_version`, `product`, `video_mode` | `video_mode` is the raw XML string |
 | `Profile.macros()` | `-> list[{index, name, description, ops}]` | ops in the §3.2 dict form |
 | `Profile.apply` | `(atem, options:ApplyOptions=None) -> ApplyResult` | Takes an `ATEM`, anything with `.send`, or an `AtemProtocol` (wrapped so `send` is synchronous). Setters only queue. It blocks only for a 3 s sleep after a video-mode change and for macro uploads (10 s each, which **need someone pumping the loop**). Sections run in order: video_mode, inputs, settings_flags, color_generators, aux, transition, upstream_keyers, downstream_keys, fade_to_black, media_players, audio, multiview (placeholder), macros, camera_control (placeholder), hyperdecks, talkback (placeholder), program_preview. There is no model or version guard, and no try/except around sections: a non-`ValueError` raised by a macro encoder aborts the whole apply |
-| `download_media_pool_images` | `(atem, progress_callback=None, cancel_check=None, timeout_per_slot=30.0, cache_get=None, cache_put=None) -> list[{slot, name, png_bytes, from_cache}]` | `download_still` per used slot → `atem_to_rgb` → Pillow PNG (the `[profile]` extra). Not called by `from_atem` |
+| `download_media_pool_images` | `(atem, progress_callback=None, cancel_check=None, timeout_per_slot=30.0, cache_get=None, cache_put=None) -> list[{slot, name, png_bytes, from_cache}]` | `download_still` per used slot → `atem_to_rgb` → Pillow PNG (the `[profile]` extra). Not called by `from_atem`. A slot that fails is skipped. Since `1572508` it refuses when not `is_ready` and stops (a partial list) once the session goes |
 
 **`SaveOptions`** (all default True): `mes: list[MixEffectOptions]` (×4), `downstream_keys`,
 `color_generators`, `fairlight`, `camera_control`, `media_pool_metadata`, `media_pool_images`
@@ -909,7 +909,7 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
 10, the split-mono bullet of item 8, the float and `sourceId` bullets of item 9, items 15, 16,
-18 and 19, and part of item 17 were fixed after 1.3.0 and still apply to it.
+18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1031,6 +1031,14 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
     only as a download timing out with "lock never granted". *Fixed in `312c7cf`:* both states
     are stored and raise `change:lock-state`; the transfer engine still reacts to releases only
     (bmdwire#15). The key is still bare, so stores 0 and `0xFFFF` overwrite each other.
+20. **Transfers started during a re-handshake wait out their timeout** (1.3.0).
+    `download_still`, `download_macro` and `clear_still` check only `is_connected`, which stays
+    True through the gap (item 2). One started then queues into the session being replaced and
+    waits 30 s, 10 s or 5 s; the still's timeout blames "another client" for the lock, since the
+    lane reset emptied the lock table. `download_media_pool_images` waits that out for every
+    remaining slot. *Fixed in `1572508`:* the three raise `ConnectionDeadError` at once while
+    `is_ready` is False, and the image capture refuses up front and stops when the session goes.
+    `send()` still checks `is_connected` (bmdwire#8).
 
 ## Counts
 

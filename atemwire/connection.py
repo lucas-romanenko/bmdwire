@@ -232,9 +232,13 @@ class ATEMConnection:
         is dequeued so it cannot fire much later against a slot an
         operator may have since reused.
         """
-        if not self.is_connected:
+        # is_ready, not is_connected: during a transport re-handshake the
+        # worker is alive but the session is being replaced, and a clear
+        # queued into it waited out its whole timeout (bmdwire#8).
+        if not self.is_ready:
             raise ConnectionDeadError(
-                f"clear_still: connection to {self.ip_address} is not ready")
+                f"clear_still: connection to {self.ip_address} is not ready "
+                f"(no session, or the session is being re-established)")
         ip = self.ip_address
         protocol = self._protocol
         done = threading.Event()
@@ -299,9 +303,14 @@ class ATEMConnection:
         the transfer so the connection's transfer lane can't stay wedged
         for later callers).
         """
-        if not self.is_connected:
+        # is_ready, not is_connected: a transfer started during a transport
+        # re-handshake queued its lock and transfer requests into the
+        # session being replaced and waited out its whole timeout, blaming
+        # "another client" for a lock nobody held (bmdwire#8).
+        if not self.is_ready:
             raise ConnectionDeadError(
-                f"download: connection to {self.ip_address} is not ready")
+                f"download: connection to {self.ip_address} is not ready "
+                f"(no session, or the session is being re-established)")
         # Captured up front: a disconnect racing the timeout wait clears
         # self.ip_address, and the error would read "on None".
         ip = self.ip_address
