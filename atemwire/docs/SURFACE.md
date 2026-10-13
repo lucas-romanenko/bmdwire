@@ -723,10 +723,11 @@ Readiness and identity:
 - Goodbye: `close_session()` sends a SYN with `0x04`, fire-and-forget.
 - **There is no client keepalive.** `TiRq` is sent once, on ready. Silence is fine because ACKs
   flow from the UDP thread.
-- **Reconnect:** after 5 s with no packets, the transport re-SYNs and delivers `None`. The protocol
-  then raises `disconnected` and **empties `mixerstate`**; when the new dump completes, `connected`
-  fires again. Meanwhile `ATEMConnection.is_connected` **stays True**; since `edb5fa0`,
-  `is_ready` and `ATEM.connected` go False for the gap (§5.4 item 2).
+- **Reconnect:** after 5 s with no packets, the transport re-SYNs and delivers `None` (since
+  `2797515`, 5 s since the last packet accepted from the switcher or the last SYN; §5.4 item
+  15). The protocol then raises `disconnected` and **empties `mixerstate`**; when the new dump
+  completes, `connected` fires again. Meanwhile `ATEMConnection.is_connected` **stays True**;
+  since `edb5fa0`, `is_ready` and `ATEM.connected` go False for the gap (§5.4 item 2).
 - Environment: `ATEMWIRE_PACKET_TRACE=1|true|yes|on` turns on the `atemwire.trace.packet` and
   `atemwire.trace.drain` loggers. No other environment variable is read.
 
@@ -903,8 +904,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
-10, the split-mono bullet of item 8 and the float bullet of item 9 were fixed after 1.3.0
-and still apply to it.
+10, the split-mono bullet of item 8, the float bullet of item 9 and item 15 were fixed after
+1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -987,6 +988,12 @@ and still apply to it.
     - On a bare protocol it needs a separate pump.
 14. **Unverified writes.** Every "restored upstream" class (20 of the 82) and `CKMs` ("not
     Wireshark-validated") have byte-pinned layouts but no hardware verification in this fork.
+15. **The silence timeout counts the client's own packets** (1.3.0). The UDP thread re-SYNs
+    when `select()` has slept 5 s, and `select()` also wakes for every packet the client sends
+    and for datagrams it then drops (foreign peer, malformed). A client sending at least once
+    every 5 s to a switcher that has gone silent never times out: no `disconnected`, `is_ready`
+    stays True over stale state, and commands go nowhere. *Fixed in `2797515`:* the window runs
+    from the last datagram accepted from the switcher, or the last SYN (bmdwire#11).
 
 ## Counts
 

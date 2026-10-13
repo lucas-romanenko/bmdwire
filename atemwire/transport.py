@@ -361,6 +361,18 @@ class UdpProtocol(BaseProtocol):
         self.rx_packet_count: int = 0
         self.tx_packet_count: int = 0
 
+        # The silence clock: when the switcher was last heard from (a
+        # datagram _receive_packet_low accepted) or, if later, when the
+        # last SYN went out, so every handshake gets a full window. The UDP
+        # thread re-handshakes once ``timeout`` has passed since. It used
+        # to time out only when select() had slept the whole window, and
+        # select() also wakes for every packet we send and for datagrams
+        # we then drop: a client sending at least once per window to a
+        # switcher that had gone silent never timed out (bmdwire#11).
+        # Kept apart from ``last_rx_monotonic``, which callers read as
+        # "last packet from the switcher" and connect() must not reset.
+        self._last_heard: float = time.monotonic()
+
     def queue_trigger(self):
         """Paced send (default) or aggressive drain (if aggressive_drain=True).
 
@@ -410,14 +422,16 @@ class UdpProtocol(BaseProtocol):
 
     def _udp_thread_loop(self):
         while True:
-            readable, _, _ = select.select([self.sock, self.thread_queue], [], [], self.timeout)
-            if not readable:
-                # Timeout
+            # Measured from _last_heard, not from select()'s last return:
+            # our own sends and dropped datagrams wake select() too.
+            remaining = self.timeout - (time.monotonic() - self._last_heard)
+            if remaining <= 0:
                 self.log.error("Timeout reading from ATEM")
                 self.state = UdpProtocol.STATE_CLOSED
                 self.connect()
                 self.thread_recv_queue.put(None)
                 continue
+            readable, _, _ = select.select([self.sock, self.thread_queue], [], [], remaining)
             for queue in readable:
                 if queue is self.sock:
                     packet = self._receive_packet_low()
@@ -617,6 +631,7 @@ class UdpProtocol(BaseProtocol):
                 )
 
         self.last_rx_monotonic = time.monotonic()
+        self._last_heard = self.last_rx_monotonic
         self.rx_packet_count += 1
 
         if TRACE_ENABLED:
@@ -838,6 +853,8 @@ class UdpProtocol(BaseProtocol):
         # the next full reconnect. Clear it and the traffic flag.
         self.received_packets.clear()
         self.had_traffic = False
+        # A fresh SYN gets a full silence window.
+        self._last_heard = time.monotonic()
 
         # Create first syn packet
         syn = Packet()
