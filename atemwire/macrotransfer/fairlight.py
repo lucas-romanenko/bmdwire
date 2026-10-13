@@ -43,10 +43,10 @@ _MIX_TYPE_TO_INT = {v: k for k, v in _MIX_TYPE_NAMES.items()}
 _FAIRLIGHT_MIX_TYPE_TRAILING_MARKER = 0x000C
 
 # Fader gain conversion: the bytecode stores `gain_db × 65536` as a 4-byte
-# i32 LE. Software Control's XML stores `gain_int / 65536` as a float
-# string with full precision (e.g. -5243 ↔ "-0.0800018"). Verified by
-# recording single-CFSP-volume macros on a live ATEM and matching the
-# bytecode against the saved XML.
+# i32 LE. Software Control's XML stores `gain_int / 65536` to six
+# significant digits (_fmt_scalar: -5243 ↔ "-0.0800018", the silenced
+# -21474836 ↔ "-327.68"). Verified by recording single-CFSP-volume macros
+# on a live ATEM and matching the bytecode against the saved XML.
 
 _FAIRLIGHT_GAIN_DIVISOR = 65536.0
 
