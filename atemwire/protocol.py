@@ -298,6 +298,15 @@ class AtemProtocol:
     def save_field_data(self, fieldname, contents):
         raw = contents
         wire_code = fieldname.decode()
+        if wire_code == '*XFC' and not _is_tcp_transport(self.transport):
+            # The OpenSwitcher TCP relay's transfer-complete event; no ATEM
+            # sends it over UDP. Handled here it indexed the transfer queue:
+            # with none queued for the store, a KeyError lost the rest of
+            # the packet; with one, it popped a real transfer in flight and
+            # could raise a spurious 'upload-done' (bmdwire#14). Dropped
+            # before parsing, so a short one can't raise either.
+            self.log.debug('Ignoring *XFC on a UDP session (a TCP-relay event)')
+            return
         # Look up the Recv class by wire code via the registry built in
         # atemwire.messages. If a parser is registered we instantiate it
         # and use the pretty key from FIELDNAME_PRETTY; if no parser
@@ -497,7 +506,7 @@ class AtemProtocol:
             self.log.debug('Proxy transfer complete')
 
             # Remove current item from the transfer queue
-            queue = self.transfer_queue[contents.store]
+            queue = self.transfer_queue.get(contents.store) or []
             self.transfer_queue[contents.store] = queue[1:]
 
             if contents.upload:
