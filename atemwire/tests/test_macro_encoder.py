@@ -128,7 +128,7 @@ def test_encode_fairlight_strip_fader_gain_camera1():
          'sourceId': '18446744073709486336',
          'gain': '-0.05'},
     ])
-    # source=1, marker=0x4346, sourceId=0xFFFFFFFFFFFF0000 (i64 LE),
+    # source=1, marker=0x4346, sourceId=0xFFFFFFFFFFFF0100 (i64 LE),
     # gain = round(-0.05 × 65536) = -3277
     expected_params = (
         struct.pack('<H', 1)                # source

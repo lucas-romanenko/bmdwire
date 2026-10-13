@@ -908,8 +908,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
-10, the split-mono bullet of item 8, the float bullet of item 9, items 15, 16, 18 and 19, and
-part of item 17 were fixed after 1.3.0 and still apply to it.
+10, the split-mono bullet of item 8, the float and `sourceId` bullets of item 9, items 15, 16,
+18 and 19, and part of item 17 were fixed after 1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -965,6 +965,9 @@ part of item 17 were fixed after 1.3.0 and still apply to it.
    - Fly-key `MiddleCentre` raises, despite a comment saying it is accepted. *Fixed in
      `b89fcb7`:* it encodes as 5, the byte ASC's own recorded macro holds (bmdwire#10).
    - A missing `MacroSleep.frames` encodes as 0.
+   - A Fairlight strip op with no `sourceId` encodes `0xFFFFFFFFFFFF0000`, an address no capture
+     shows; the stereo strip is `0xFFFFFFFFFFFF0100` (ASC's `18446744073709486336`). *Fixed in
+     `9b53248`:* that is the default now (bmdwire#16).
 10. **Unit traps:**
     - **Unclamped values:** stinger clip/gain (×10). CACK values are ×1000 and unclamped.
     - **`CICP`/`CILP`/`CIXP`/`CMCP`/`CMLP` take dB/ms floats**, while `CFMP`/`CFSP`/`CEBP` take
