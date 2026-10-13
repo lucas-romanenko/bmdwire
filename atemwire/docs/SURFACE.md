@@ -903,7 +903,7 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
-10 were fixed after 1.3.0 and still apply to it.
+10 and the split-mono bullet of item 8 were fixed after 1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -937,7 +937,11 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
      first. Apply can't simply be pointed at the right channel. Save writes the same
      `AudioSource id` for both halves (a per-input sentinel: −256 if `FAIP` says mono, else
      −65280) and records no subchannel, so only element order tells them apart. The ASC reference
-     export has no split input, so how ASC marks the second half is unknown.
+     export has no split input, so how ASC marks the second half is unknown. *Fixed in
+     `d86ed31`:* ASC's export of an input in Dual Mono (bmdwire#9) writes `DualMono` and an id per
+     half, the strip's wire address as a signed i64: −256 channel 0, −255 channel 1, −65280
+     stereo. Save writes those, in subchannel order, and apply sends each strip to the channel its
+     id names, the XLR's −256 included (channel 0, not −1).
    - It clears every HyperDeck slot saved as 0.0.0.0 by default.
    - `externalPortType` is saved from `InPr.source_ports`, not `external_port_type`.
    - A non-`ValueError` from a macro op encoder (a bad IP gives `OSError`, an out-of-range value
