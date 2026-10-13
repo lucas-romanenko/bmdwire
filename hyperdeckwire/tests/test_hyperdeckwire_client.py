@@ -527,3 +527,29 @@ def test_a_line_break_is_refused_before_sending(call):
         call(hd)
     assert sock.sent == b''
     assert hd._sock is sock                      # still connected
+
+
+# --- #21: a refused connection fails connect() -----------------------------
+
+@pytest.mark.parametrize('greeting, code', [
+    (b'120 connection failed\r\n', 120),         # BMD's text (Dec 2024)
+    (b'120 connection rejected\r\n', 120),
+    (b'122 authentication required\r\n', 122),
+], ids=['120-failed', '120-rejected', '122'])
+def test_a_1xx_greeting_fails_connect(greeting, code):
+    sock = _FakeSocket([greeting])
+    hd = Hyperdeck('1.2.3.4', socket_factory=lambda *_a, **_kw: sock)
+    with pytest.raises(HyperdeckError) as excinfo:
+        hd.connect()
+    assert excinfo.value.code == code
+    assert hd._sock is None
+    assert sock.closed
+    assert hd.model == ''
+
+
+def test_an_unexpected_greeting_fails_connect():
+    sock = _FakeSocket([b'200 ok\r\n'])
+    hd = Hyperdeck('1.2.3.4', socket_factory=lambda *_a, **_kw: sock)
+    with pytest.raises(OSError, match='unexpected greeting'):
+        hd.connect()
+    assert hd._sock is None

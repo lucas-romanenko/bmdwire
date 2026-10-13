@@ -168,7 +168,13 @@ class Hyperdeck:
         self.close()
 
     def connect(self) -> None:
-        """Open the TCP connection and drain the greeting (500 connection info)."""
+        """Open the TCP connection and drain the greeting (500 connection info).
+
+        A deck that refuses the connection answers ``120 connection
+        failed`` and closes the socket; that raises :class:`HyperdeckError`,
+        as does any other 1xx greeting. A greeting that is neither 1xx nor
+        500 raises ``OSError``. Either way the socket is closed.
+        """
         # connect() over an already-connected
         # instance must not overwrite _sock and leak the old socket.
         if self._sock is not None:
@@ -177,13 +183,22 @@ class Hyperdeck:
                                           timeout=self.connect_timeout)
         self._sock.settimeout(self.read_timeout)
         self._buf = b''
+        self._greeting = None
         # The unit sends a 500 connection info: block immediately on
         # accept. It IS a 5xx code, but it's a one-time synchronous
         # greeting, not the kind of asynchronous notification we
         # normally want to skip during a request — read it with
         # skip_async=False so it doesn't get drained into the void.
         try:
-            self._greeting = self._read_response(skip_async=False)
+            greeting = self._read_response(skip_async=False)
+            # A refused connection used to "connect", with an empty model
+            # and protocol version, and fail on the first call with a
+            # ConnectionError that said nothing about why (bmdwire#21).
+            if greeting.is_error():
+                raise HyperdeckError(greeting.code, greeting.text)
+            if greeting.code != 500:
+                raise OSError(f'unexpected greeting: {greeting!r}')
+            self._greeting = greeting
         except Exception:
             # A failed greeting read must not leak
             # the just-opened socket until GC — close + clear before
