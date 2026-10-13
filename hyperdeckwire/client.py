@@ -302,12 +302,18 @@ class Hyperdeck:
         The protocol has no request ids: the answer is the next
         non-asynchronous response. So:
 
+        - Responses that arrived before the command is sent are not its
+          answer. They are read and dropped first (logged at warning;
+          asynchronous ones at debug). A stray answer that arrives after
+          the command is sent can't be told from the real one.
         - A timeout closes the connection before ``TimeoutError`` is
           raised, since the late answer would otherwise be taken as the
           next command's and every answer after it would be one behind.
           Later calls raise ``OSError('not connected')`` until
           :meth:`connect`.
         """
+        if self._sock is not None:
+            self._drop_unrequested()
         self._send_line(command)
         try:
             return self._read_response(timeout=timeout)
@@ -316,6 +322,40 @@ class Hyperdeck:
             # next command's (bmdwire#18).
             self.close()
             raise
+
+    def _drop_unrequested(self) -> None:
+        """Read and drop every complete response that has already arrived:
+        those in ``_buf`` and whatever the socket has ready now, read
+        without blocking. A partial response at the end of ``_buf`` stays.
+        Before this, a response nobody asked for (a timed-out command's
+        late answer, a deck answering twice) was returned to the next
+        request, and every answer after it was one behind (bmdwire#19).
+        """
+        self._sock.settimeout(0)
+        try:
+            while True:
+                try:
+                    chunk = self._sock.recv(4096)
+                except (BlockingIOError, InterruptedError, socket.timeout):
+                    break
+                if not chunk:
+                    raise ConnectionError('peer closed connection')
+                self._buf += chunk
+        finally:
+            self._sock.settimeout(self.read_timeout)
+        while b'\n' in self._buf:
+            kept = self._buf
+            try:
+                # A zero timeout reads only what _buf already holds.
+                resp = self._read_response(timeout=0, skip_async=False)
+            except TimeoutError:
+                self._buf = kept
+                break
+            if resp.is_async():
+                logger.debug('hyperdeck async: %s', resp)
+            else:
+                logger.warning('hyperdeck: dropping a response no command '
+                               'was waiting for: %s', resp)
 
     def _check_ok(self, command: str,
                   timeout: Optional[float] = None) -> Response:

@@ -20,6 +20,7 @@ What's pinned here:
   - Action commands assemble their argument strings as documented.
 """
 
+import logging
 import socket
 from typing import List, Optional
 
@@ -50,6 +51,11 @@ class _FakeSocket:
     successive ``recv`` calls (one chunk per call), or ``SILENCE``. The
     fake also captures everything ``sendall`` wrote in ``sent`` so tests
     can assert on the exact wire bytes the client emitted.
+
+    The script is what the deck sends LATER, in answer to what the client
+    does. What has already arrived is ``_inbox`` (``arrive()`` adds to
+    it): with ``settimeout(0)`` (a non-blocking read) ``recv`` returns
+    only that, and raises ``BlockingIOError`` when it is empty.
     """
 
     def __init__(self, script: List[bytes], clock=None):
@@ -59,6 +65,10 @@ class _FakeSocket:
         self.closed = False
         self._timeout: Optional[float] = None
         self._clock = clock
+
+    def arrive(self, data: bytes):
+        """Data the deck has already sent, waiting in the socket."""
+        self._inbox += data
 
     # --- socket surface --------------------------------------------------
 
@@ -74,6 +84,8 @@ class _FakeSocket:
         if self.closed:
             return b''
         if not self._inbox:
+            if self._timeout == 0:
+                raise BlockingIOError('nothing ready')
             if not self._script:
                 # Mimic real blocking — but for tests, just return empty
                 # to signal EOF rather than hang forever.
@@ -461,3 +473,38 @@ def test_after_a_timeout_a_reconnect_gets_its_own_answers(clock):
     resp = hd.request('ping')
     assert (resp.code, resp.text) == (200, 'ok')
     assert hd.transport_info() == {'status': 'play'}
+
+
+# --- #19: a response nobody asked for is dropped ---------------------------
+
+def test_a_stray_answer_in_the_buffer_is_dropped(caplog):
+    # The stray 200 ok came in the same read as the greeting.
+    hd, [sock] = _deck([[GREETING + b'200 ok\r\n', TRANSPORT_PLAY]])
+    with caplog.at_level(logging.WARNING, logger='hyperdeckwire.client'):
+        assert hd.transport_info() == {'status': 'play'}
+    assert sock.sent == b'transport info\n'
+    assert 'no command was waiting for' in caplog.text
+
+
+def test_a_stray_answer_waiting_in_the_socket_is_dropped():
+    hd, [sock] = _deck([[GREETING, TRANSPORT_PLAY]])
+    sock.arrive(b'200 ok\r\n')
+    assert hd.transport_info() == {'status': 'play'}
+    assert sock.sent == b'transport info\n'
+
+
+def test_the_drain_does_not_take_the_real_answer():
+    # Nothing has arrived: the non-blocking read finds nothing, and the
+    # answer, which the deck sends only after the command, is the reply.
+    hd, [sock] = _deck([[GREETING, TRANSPORT_PLAY]])
+    assert hd.transport_info() == {'status': 'play'}
+
+
+def test_a_partial_response_is_left_for_the_read():
+    # Half an asynchronous message has arrived; its rest comes with the
+    # answer. The drain leaves it, and the read skips it as before.
+    hd, [sock] = _deck([[GREETING, b'cord\r\n\r\n200 ok\r\n']])
+    sock.arrive(b'508 transport info:\r\nstatus: re')
+    resp = hd.request('ping')
+    assert (resp.code, resp.text) == (200, 'ok')
+    assert sock.sent == b'ping\n'
