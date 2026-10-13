@@ -21,9 +21,10 @@ def _mpfe(is_used=True, name='Still', hash_bytes=b'\x11' * 16):
     return types.SimpleNamespace(is_used=is_used, name=name, hash=hash_bytes)
 
 
-def _conn(slots, download=None, connected=True):
+def _conn(slots, download=None, connected=True, ready=None):
     ns = types.SimpleNamespace()
     ns.is_connected = connected
+    ns.is_ready = connected if ready is None else ready
     ns.mixerstate = {
         'mediaplayer-file-info': slots,
         'video-mode': None,
@@ -51,6 +52,39 @@ def test_requires_ready_connection():
     conn = _conn({}, connected=False)
     with pytest.raises(RuntimeError, match='not ready'):
         download_media_pool_images(conn)
+
+
+def test_requires_a_current_session():
+    # bmdwire#8: connected (worker alive) but mid re-handshake.
+    conn = _conn({0: _mpfe()}, connected=True, ready=False)
+    with pytest.raises(RuntimeError, match='not ready'):
+        download_media_pool_images(conn)
+    assert conn._download_calls == []
+
+
+def test_a_conn_without_is_ready_falls_back_to_is_connected():
+    conn = _conn({0: _mpfe(name='A')}, download=lambda slot: b'\x00' * 16)
+    del conn.is_ready
+    conn.mixerstate['video-mode'] = types.SimpleNamespace(get_resolution=lambda: (2, 2))
+    out = download_media_pool_images(conn)
+    assert [e['slot'] for e in out] == [0]
+
+
+def test_capture_stops_when_the_session_goes():
+    # The connection stops being ready after the first slot: the capture
+    # stops there instead of sitting out a timeout on every remaining slot.
+    def download(slot):
+        conn.is_ready = False                     # re-handshake starts
+        return b'\x00' * 16
+
+    conn = _conn({0: _mpfe(name='A'), 1: _mpfe(name='B'), 2: _mpfe(name='C')},
+                 download=download)
+    conn.mixerstate['video-mode'] = types.SimpleNamespace(get_resolution=lambda: (2, 2))
+
+    out = download_media_pool_images(conn)
+
+    assert conn._download_calls == [0]
+    assert [e['slot'] for e in out] == [0]        # the partial list
 
 
 def test_cache_hit_skips_wire_entirely():

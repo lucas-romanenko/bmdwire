@@ -340,8 +340,8 @@ def test_download_transfer_fails_fast_on_fatal_rejection():
             self.aborted += 1
 
     p = _P()
-    ns = types.SimpleNamespace(is_connected=True, ip_address='10.0.0.1', _protocol=p,
-                               _transfer_serial_lock=threading.Lock())
+    ns = types.SimpleNamespace(is_connected=True, is_ready=True, ip_address='10.0.0.1',
+                               _protocol=p, _transfer_serial_lock=threading.Lock())
     ns._download_transfer = ATEMConnection._download_transfer.__get__(ns)
     with pytest.raises(RuntimeError, match='rejected by the switcher'):
         ATEMConnection.download_still(ns, 3, timeout=5.0)

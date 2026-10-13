@@ -25,6 +25,7 @@ The fix verified here:
   * The ``on_died`` callback fires once on unexpected worker exit.
 """
 
+import threading
 import time
 
 import pytest
@@ -394,6 +395,34 @@ def test_is_ready_follows_a_transport_rehandshake(
     finally:
         conn.disconnect()
     assert conn.is_ready is False
+
+
+def test_transfers_are_refused_during_the_rehandshake_gap(
+    reset_pool, fake_protocol_factory, short_connect_timeout,
+):
+    """bmdwire#8: a transfer started while the transport re-handshakes
+    fails at once instead of queueing into the session being replaced and
+    sitting out its whole timeout (30 s for a still)."""
+    instances = fake_protocol_factory()
+    conn = ATEMConnection('atem_test')
+    assert conn.connect('1.2.3.4')
+    try:
+        proto = instances[-1]
+        gone = threading.Event()
+        # Registered after ATEMConnection's own handler, so it runs once
+        # is_ready has gone False.
+        proto.on('disconnected', gone.set)
+        _rehandshake_start(proto)
+        assert gone.wait(2.0)
+        assert conn.is_connected is True and conn.is_ready is False
+
+        for call in (lambda: conn.download_still(0),
+                     lambda: conn.download_macro(0),
+                     lambda: conn.clear_still(0)):
+            with pytest.raises(ConnectionDeadError, match='re-established'):
+                call()
+    finally:
+        conn.disconnect()
 
 
 def test_facade_and_probe_report_the_rehandshake_gap(

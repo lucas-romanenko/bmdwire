@@ -48,9 +48,12 @@ class _FakeProto:
         self.aborted += 1
 
 
-def _conn(proto, connected=True):
+def _conn(proto, connected=True, ready=None):
     ns = types.SimpleNamespace()
     ns.is_connected = connected
+    # The transfer gates read is_ready; ``ready=False`` with ``connected``
+    # True is a transport re-handshake in progress.
+    ns.is_ready = connected if ready is None else ready
     ns.ip_address = '10.0.0.1'
     ns._protocol = proto
     ns._transfer_serial_lock = threading.Lock()
@@ -118,6 +121,21 @@ def test_dead_connection_raises_before_wire():
     with pytest.raises(ConnectionDeadError):
         ATEMConnection.download_still(_conn(p, connected=False), 0, timeout=0.05)
     assert p.downloads == []
+
+
+@pytest.mark.parametrize('call', [
+    lambda c: ATEMConnection.download_still(c, 0, timeout=0.2),
+    lambda c: ATEMConnection.download_macro(c, 0, timeout=0.2),
+], ids=['download_still', 'download_macro'])
+def test_not_ready_raises_before_wire(call):
+    # bmdwire#8: during a transport re-handshake the worker is alive
+    # (is_connected) but the session is being replaced. A transfer queued
+    # then waited out its whole timeout; it must fail at once instead.
+    p = _FakeProto()
+    with pytest.raises(ConnectionDeadError, match='re-established'):
+        call(_conn(p, connected=True, ready=False))
+    assert p.downloads == []
+    assert p.callbacks == {}                       # no handler registered
 
 
 def test_protocol_abort_transfers_resets_and_unlocks():
@@ -234,6 +252,14 @@ def test_clear_still_dead_connection_raises_before_wire():
     p = _ClearProto()
     with pytest.raises(ConnectionDeadError):
         ATEMConnection.clear_still(_conn(p, connected=False), 4, timeout=0.05)
+    assert p.clears == []
+
+
+def test_clear_still_not_ready_raises_before_wire():
+    p = _ClearProto()
+    with pytest.raises(ConnectionDeadError, match='re-established'):
+        ATEMConnection.clear_still(_conn(p, connected=True, ready=False), 4,
+                                   timeout=0.2)
     assert p.clears == []
 
 
