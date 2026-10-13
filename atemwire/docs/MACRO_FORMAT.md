@@ -612,7 +612,7 @@ corresponding op was recorded).
 | 0x00DA | `MediaPlayerSourceStillIndex`  | `u8 mp, _, u16 LE index`                       | XML-verified      |
 | 0x00E1 | `MediaPlayerSourceStill`       | `u8 mp, _, _, _`                               | XML-verified      |
 | 0x014A | `FairlightAudioMixerInputSourceMixType`     | `u16 LE source, u16 marker(0x4346), i64 LE sourceId, u16 LE state, u16 marker(0x000c)` (state: 1=Off, 2=On, 4=AFV; sourceId is the universal stereo sentinel `0xFFFFFFFFFFFF0100` = i64 -65280) | live-verified |
-| 0x014B | `FairlightAudioMixerInputSourceFaderGain`   | `u16 LE source, u16 marker(0x4346), i64 LE sourceId, i32 LE gain × 65536` (XML scalar = value / 65536, floats with 6 decimals) | live-verified |
+| 0x014B | `FairlightAudioMixerInputSourceFaderGain`   | `u16 LE source, u16 marker(0x4346), i64 LE sourceId, i32 LE gain × 65536` (XML scalar = value / 65536, six significant digits: -21474836 is `-327.68`, silenced) | live-verified |
 | 0x016B | `FairlightAudioMixerMasterOutFaderGain`     | `i32 LE gain × 65536`                          | live-verified     |
 
 The strip ops (0x014A/0x014B) carry a sourceId field — Software Control's
