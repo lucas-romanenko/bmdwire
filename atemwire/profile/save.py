@@ -54,6 +54,8 @@ from atemwire.profile._common import (
     _set_attrs,
 )
 from atemwire.profile._enums import (
+    AUDIO_SOURCE_SPLIT_ID,
+    AUDIO_SOURCE_STEREO_ID,
     DVE_EFFECT_NAMES,
     EQ_FREQ_RANGE_NAMES,
     EQ_SHAPE_NAMES,
@@ -61,6 +63,7 @@ from atemwire.profile._enums import (
     TRANS_STYLE_NAMES,
     USK_TYPE_NAMES,
     WIPE_PATTERN_NAMES,
+    audio_source_id,
 )
 from atemwire.profile._xml import (
     _ext_port_type_name,
@@ -606,9 +609,18 @@ def _build_fairlight(root: ET.Element, mx: dict) -> None:
     for src_id in sorted(audio_inputs.keys()):
         ai = audio_inputs[src_id]
         is_mono = (getattr(ai, 'split', 2) == 1)
+        # A dual-mono input reports two split strips, left (subchannel 0)
+        # and right (1); write them in that order, as ASC does, not in
+        # packet arrival order.
+        strips = sorted(strips_by_source.get(src_id, []),
+                        key=lambda s: _strip_subchannel(s[0]))
+        n_halves = sum(1 for _, sp in strips if _is_split_strip(sp))
+        if n_halves > 1:
+            configuration = 'DualMono'
+        else:
+            configuration = 'Mono' if is_mono else 'Stereo'
         ai_e = ET.SubElement(inputs_e, 'AudioInput')
-        _set_attrs(ai_e, configuration='Mono' if is_mono else 'Stereo',
-                   id=src_id)
+        _set_attrs(ai_e, configuration=configuration, id=src_id)
 
         # Optional Analog level — only on inputs with analog hardware.
         level = getattr(ai, 'level', 0)
@@ -616,7 +628,6 @@ def _build_fairlight(root: ET.Element, mx: dict) -> None:
             an = ET.SubElement(ai_e, 'Analog')
             an.set('level', 'Mic' if level == 1 else 'ProLine')
 
-        strips = strips_by_source.get(src_id, [])
         # Default: emit one synthetic strip with sensible defaults if FASP
         # hasn't arrived yet (matches Software Control's blank-default
         # output). Use the right id-int form for stereo vs mono.
@@ -625,12 +636,15 @@ def _build_fairlight(root: ET.Element, mx: dict) -> None:
 
         for strip_id_str, sp in strips:
             src_e = ET.SubElement(ai_e, 'AudioSource')
-            # ATEM Software Control writes a signed-i64 stereo/mono
-            # sentinel for the AudioSource id rather than a per-strip
-            # value; this mirrors that behaviour (-65280 stereo, -256
-            # mono). The macro encoder in macrotransfer treats either
-            # convention as the universal sentinel.
-            sid = -256 if is_mono else -65280
+            # The id is the strip's wire address as ASC writes it
+            # (_enums.audio_source_id): -255/-256 for a split half by
+            # subchannel, -256 for a mono input, -65280 for stereo.
+            if _is_split_strip(sp):
+                sid = audio_source_id(_strip_subchannel(strip_id_str))
+            elif is_mono:
+                sid = AUDIO_SOURCE_SPLIT_ID
+            else:
+                sid = AUDIO_SOURCE_STEREO_ID
             volume = getattr(sp, 'volume', -10000) if sp else -10000
             gain = getattr(sp, 'gain', 0) if sp else 0
             pan = getattr(sp, 'pan', 0) if sp else 0
@@ -672,6 +686,19 @@ def _build_fairlight(root: ET.Element, mx: dict) -> None:
                talkbackGain=-10,
                talkbackMute=True,
                sidetoneGain=-10)
+
+
+def _is_split_strip(sp) -> bool:
+    """A FASP strip that is one half of a split input (is_split 0xff)."""
+    return sp is not None and getattr(sp, 'is_split', 0x01) == 0xff
+
+
+def _strip_subchannel(strip_id: str) -> int:
+    """The subchannel in a '<source>.<subchannel>' strip id."""
+    try:
+        return int(strip_id.split('.', 1)[1])
+    except (AttributeError, IndexError, ValueError):
+        return 0
 
 
 def _build_eq_bands(parent: ET.Element, mx: dict, source_id) -> None:
