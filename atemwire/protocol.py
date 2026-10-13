@@ -37,6 +37,26 @@ def _is_tcp_transport(transport) -> bool:
 # while another session holds the store is simply dropped by the switcher.
 LOCK_REREQUEST_SECONDS = 1.0
 
+# A state dump that ends (InCm) without a video mode has lost its first
+# packet for good: the transport takes the first reliable packet that
+# arrives as the session's baseline, so one lost before it is never resent
+# (bmdwire#13). The protocol re-handshakes for a fresh dump at once instead
+# of leaving wait_ready to time out (15 s through ATEMConnection) or the
+# session to run without one, at most this many times in a row, so a
+# switcher whose VidM never parses (SURFACE.md §5.4 item 3) costs a few
+# handshakes, not a loop.
+INCOMPLETE_DUMP_RETRIES = 3
+
+# Fields every switcher sends early in its dump; the ones missing at InCm
+# are named in the log.
+_CORE_DUMP_FIELDS = ('video-mode', 'topology', 'product-name')
+
+
+class IncompleteStateDump(ConnectionError):
+    """The state dump ended without a video mode. Raised from
+    ``save_field_data`` and handled by ``loop()`` like transport
+    corruption: goodbye, re-handshake, fresh dump."""
+
 
 class AtemProtocol:
     STRUCT_FIELD = struct.Struct('!H2x 4s')
@@ -126,6 +146,9 @@ class AtemProtocol:
         # delivered; this is what "ready" means (see atemwire.ready).
         self.connected = False
         self.initialized = False
+        # Consecutive dumps that ended without a video mode; see
+        # INCOMPLETE_DUMP_RETRIES.
+        self._incomplete_dumps = 0
 
         self.locks = {}
         # Stores whose unlock we have SENT but whose LKST release echo has
@@ -203,14 +226,17 @@ class AtemProtocol:
         try:
             for fieldname, data in self.decode_packet(packet.data):
                 self.save_field_data(fieldname, data)
-        except ConnectionError:
+        except ConnectionError as e:
             # The old handler claimed "closing connection" but closed
             # nothing: the session stayed ESTABLISHED with a gutted
             # mixerstate the ATEM never re-dumps. Say goodbye and
             # re-handshake so a fresh full state dump arrives
-            # (2026-07-06).
+            # (2026-07-06). decode_packet raises a bare ConnectionError
+            # on a zero-length field; save_field_data raises
+            # IncompleteStateDump, which says why.
             self.log.error(
-                'Protocol corruption — forcing a clean session reconnect')
+                f'{str(e) or "Protocol corruption"} — forcing a clean '
+                f'session reconnect')
             self._raise('disconnected')
             self.mixerstate = {}
             self.connected = False
@@ -485,6 +511,8 @@ class AtemProtocol:
             # guaranteed AttributeError on this (unused-in-production) path.
             self._transfer_trigger(contents.store)
             return
+        elif key == 'InCm':
+            self._check_dump_complete()
 
         if key in self.FIELDNAME_UNIQUE:
             idxes = self.FIELDNAME_UNIQUE[key].unpack_from(raw, 0)
@@ -513,6 +541,26 @@ class AtemProtocol:
                 self.initialized = True
                 self._raise('connected')
         self._raise('change', key, contents)
+
+    def _check_dump_complete(self):
+        """At ``InCm``: raise ``IncompleteStateDump`` when the dump had no
+        video mode, unless INCOMPLETE_DUMP_RETRIES re-handshakes in a row
+        have already failed to get one; then log it and carry on, as the
+        session did before."""
+        if 'video-mode' in self.mixerstate:
+            self._incomplete_dumps = 0
+            return
+        missing = ', '.join(k for k in _CORE_DUMP_FIELDS if k not in self.mixerstate)
+        if self._incomplete_dumps < INCOMPLETE_DUMP_RETRIES:
+            self._incomplete_dumps += 1
+            raise IncompleteStateDump(
+                f'State dump ended without {missing}, so its first packet '
+                f'was probably lost (re-handshake {self._incomplete_dumps} '
+                f'of {INCOMPLETE_DUMP_RETRIES})')
+        self._incomplete_dumps = 0
+        self.log.error(
+            f'State dump ended without {missing} after '
+            f'{INCOMPLETE_DUMP_RETRIES} re-handshakes; carrying on without it')
 
     def make_unique_dict(self, content, path):
         result = {}
