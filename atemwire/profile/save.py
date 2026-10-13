@@ -970,7 +970,9 @@ def download_media_pool_images(
 
     Returns a list of ``{slot: int, name: str, png_bytes: bytes}``.
     Slots that fail to download are skipped (logged); the caller gets a
-    partial list with the successful ones.
+    partial list with the successful ones. If the connection stops being
+    ready part way (a transport re-handshake), the capture stops there
+    and the list holds the slots done before it.
 
     ``progress_callback(slot, completed, total)`` fires after each slot
     finishes (whether downloaded fresh or served from cache).
@@ -1005,7 +1007,9 @@ def download_media_pool_images(
             "download_media_pool_images needs an ATEM/ATEMConnection "
             "(native download_still); got "
             f"{type(atem).__name__}")
-    if not getattr(conn, 'is_connected', False):
+    # is_ready where the connection has it (ATEMConnection, and the facade's
+    # raw); anything else with download_still falls back to is_connected.
+    if not getattr(conn, 'is_ready', getattr(conn, 'is_connected', False)):
         raise RuntimeError("download_media_pool_images: connection not ready")
 
     mx = _resolve_mixerstate(atem)
@@ -1053,6 +1057,14 @@ def download_media_pool_images(
                 from_cache = True
 
         if png_bytes is None:
+            if not getattr(conn, 'is_ready', True):
+                # The session is being re-established: every download
+                # would be refused, or (before bmdwire#8) sit out its whole
+                # timeout. Stop instead of trying each remaining slot.
+                logger.warning(
+                    "media-pool image capture stopped at slot %d (%d/%d): "
+                    "the connection is not ready", slot, n, total)
+                break
             try:
                 ycbcra = conn.download_still(slot, timeout=timeout_per_slot)
             except Exception as exc:  # noqa: BLE001
