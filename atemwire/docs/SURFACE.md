@@ -714,7 +714,9 @@ Readiness and identity:
 
 - The switcher is on UDP **9910**. The handshake is a SYN with `0x01` and session id `0x1337`; the
   switcher answers with a SYN (`0x02` = accepted) and the client ACKs it. The session id is then
-  adopted from the switcher. The handshake ACK is sent from `loop()`, so it needs pumping.
+  adopted from the switcher. The handshake ACK is sent from `loop()`, so it needs pumping. Since
+  `25e94d7`, a re-handshake drops packets carrying the replaced session's id, and while the SYN
+  is out, anything but its reply (§5.4 item 16).
 - Every reliable packet is ACKed with the contiguous high-water mark, by the transport's **own
   UDP thread**. A session therefore survives an unpumped loop; events only wait.
 - Duplicates are dropped. Out-of-order packets are parked (up to 512 ahead). Retransmission is
@@ -904,8 +906,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
-10, the split-mono bullet of item 8, the float bullet of item 9 and item 15 were fixed after
-1.3.0 and still apply to it.
+10, the split-mono bullet of item 8, the float bullet of item 9 and items 15 and 16 were fixed
+after 1.3.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -994,6 +996,14 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
     every 5 s to a switcher that has gone silent never times out: no `disconnected`, `is_ready`
     stays True over stale state, and commands go nowhere. *Fixed in `2797515`:* the window runs
     from the last datagram accepted from the switcher, or the last SYN (bmdwire#11).
+16. **A re-handshake adopts the old session's packets** (1.3.0). The switcher goes on resending
+    the replaced session for ~5 s, and only the handshake checks the session id. Each stale
+    packet restarts the silence window; the first reliable one becomes the new session's ACK
+    baseline and delivery cursor, so the new dump (starting again at low sequence numbers) is
+    dropped as duplicates and `connected` doesn't come until the next timeout; and one arriving
+    just after the handshake ACK can be adopted as the session id. *Fixed in `25e94d7`:*
+    packets carrying the replaced session's switcher-assigned id are dropped before any receive
+    state sees them, and so is anything but the SYN reply while the SYN is out (bmdwire#12).
 
 ## Counts
 
