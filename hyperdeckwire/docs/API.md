@@ -82,7 +82,35 @@ finally:
 
 Multiple simultaneous 9993 connections to one unit work, but BMD's docs
 note "a limited number of clients may connect at a time" — beyond that
-the unit responds `120 connection failed` and closes the socket.
+the unit responds `120 connection failed` and closes the socket, and
+`connect()` raises `HyperdeckError(120, 'connection failed')`. Any other
+1xx greeting raises `HyperdeckError` too, and a greeting that is neither
+1xx nor `500` raises `OSError('unexpected greeting: …')`; the socket is
+closed either way. Before bmdwire#21, `connect()` returned normally with an
+empty `model` and the first call failed with `ConnectionError`.
+
+### One answer per command
+
+The protocol has no request ids: a command's answer is simply the next
+non-asynchronous response. `request()`, which every method goes through,
+keeps answers with their commands:
+
+- **Responses that arrived before a command is sent are dropped**, not
+  returned as its answer, and logged at warning (asynchronous ones at
+  debug). A stray answer that arrives *after* the command is sent can't
+  be told from the real one.
+- **A timeout closes the connection.** `request()` closes the socket, then
+  raises `TimeoutError`; later calls raise `OSError('not connected')` until
+  you call `connect()` again. Left open, the late answer would be taken as
+  the next command's, and every answer after it would be one behind.
+- **A command with a line break in it raises `ValueError`** before anything
+  is sent. The deck ends a command at the line break, so a clip name or
+  record prefix carrying one would otherwise be sent as a second command
+  (`clips_add('a.mov\nclips clear')` clears the timeline). No value in the
+  protocol can hold one.
+
+These are bmdwire#18, #19 and #20; before them, a late or stray answer put
+every later answer one behind for the life of the connection.
 
 ## Read commands
 
@@ -380,7 +408,7 @@ is `HyperdeckSetupError`. `opener=` takes any object with
 | 103 | unsupported | command not on this firmware/SKU |
 | 111 | remote control disabled | tried a write without remote-enable |
 | 112 | clip not found | seeking a non-existent clip id |
-| 120 | connection failed | too many connections |
+| 120 | connection failed | too many connections (raised by `connect()`) |
 | 150 | invalid state | e.g. `play` during a record |
 
 ```python
@@ -398,8 +426,10 @@ with Hyperdeck(ip) as hd:
 
 Connection-level errors (TCP refused, timeout, peer-closed) raise the
 underlying `OSError` / `ConnectionError` / `TimeoutError` straight from
-the socket. Protocol-level framing failures raise `OSError` with a
-diagnostic message ("malformed response head: ...").
+the socket. A read timeout also closes the connection (see "One answer
+per command"). Protocol-level framing failures raise `OSError` with a
+diagnostic message ("malformed response head: ..."). A command containing
+CR or LF raises `ValueError`.
 
 ## Asynchronous notifications
 

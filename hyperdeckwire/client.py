@@ -168,7 +168,13 @@ class Hyperdeck:
         self.close()
 
     def connect(self) -> None:
-        """Open the TCP connection and drain the greeting (500 connection info)."""
+        """Open the TCP connection and drain the greeting (500 connection info).
+
+        A deck that refuses the connection answers ``120 connection
+        failed`` and closes the socket; that raises :class:`HyperdeckError`,
+        as does any other 1xx greeting. A greeting that is neither 1xx nor
+        500 raises ``OSError``. Either way the socket is closed.
+        """
         # connect() over an already-connected
         # instance must not overwrite _sock and leak the old socket.
         if self._sock is not None:
@@ -177,13 +183,22 @@ class Hyperdeck:
                                           timeout=self.connect_timeout)
         self._sock.settimeout(self.read_timeout)
         self._buf = b''
+        self._greeting = None
         # The unit sends a 500 connection info: block immediately on
         # accept. It IS a 5xx code, but it's a one-time synchronous
         # greeting, not the kind of asynchronous notification we
         # normally want to skip during a request — read it with
         # skip_async=False so it doesn't get drained into the void.
         try:
-            self._greeting = self._read_response(skip_async=False)
+            greeting = self._read_response(skip_async=False)
+            # A refused connection used to "connect", with an empty model
+            # and protocol version, and fail on the first call with a
+            # ConnectionError that said nothing about why (bmdwire#21).
+            if greeting.is_error():
+                raise HyperdeckError(greeting.code, greeting.text)
+            if greeting.code != 500:
+                raise OSError(f'unexpected greeting: {greeting!r}')
+            self._greeting = greeting
         except Exception:
             # A failed greeting read must not leak
             # the just-opened socket until GC — close + clear before
@@ -230,6 +245,12 @@ class Hyperdeck:
     # ------------------------------------------------------------------
 
     def _send_line(self, line: str) -> None:
+        # The deck ends a command at the line break, so a value carrying
+        # one (a clip name, a record prefix) was sent as a second command:
+        # 'clips add: name: a.mov\nclips clear' cleared the timeline. No
+        # value in the protocol can hold one (bmdwire#20).
+        if '\n' in line or '\r' in line:
+            raise ValueError(f'line break in a HyperDeck command: {line!r}')
         if self._sock is None:
             raise OSError('not connected')
         self._sock.sendall((line + '\n').encode('utf-8'))
@@ -298,9 +319,66 @@ class Hyperdeck:
 
         Does NOT raise on protocol-level error codes (1xx). Use
         :meth:`_check_ok` (or just inspect the response) for that.
+
+        The protocol has no request ids: the answer is the next
+        non-asynchronous response. So:
+
+        - Responses that arrived before the command is sent are not its
+          answer. They are read and dropped first (logged at warning;
+          asynchronous ones at debug). A stray answer that arrives after
+          the command is sent can't be told from the real one.
+        - A timeout closes the connection before ``TimeoutError`` is
+          raised, since the late answer would otherwise be taken as the
+          next command's and every answer after it would be one behind.
+          Later calls raise ``OSError('not connected')`` until
+          :meth:`connect`.
+        - A command with a line break in it raises ``ValueError`` before
+          anything is sent.
         """
+        if self._sock is not None:
+            self._drop_unrequested()
         self._send_line(command)
-        return self._read_response(timeout=timeout)
+        try:
+            return self._read_response(timeout=timeout)
+        except TimeoutError:
+            # The answer is still owed, and nothing could tell it from the
+            # next command's (bmdwire#18).
+            self.close()
+            raise
+
+    def _drop_unrequested(self) -> None:
+        """Read and drop every complete response that has already arrived:
+        those in ``_buf`` and whatever the socket has ready now, read
+        without blocking. A partial response at the end of ``_buf`` stays.
+        Before this, a response nobody asked for (a timed-out command's
+        late answer, a deck answering twice) was returned to the next
+        request, and every answer after it was one behind (bmdwire#19).
+        """
+        self._sock.settimeout(0)
+        try:
+            while True:
+                try:
+                    chunk = self._sock.recv(4096)
+                except (BlockingIOError, InterruptedError, socket.timeout):
+                    break
+                if not chunk:
+                    raise ConnectionError('peer closed connection')
+                self._buf += chunk
+        finally:
+            self._sock.settimeout(self.read_timeout)
+        while b'\n' in self._buf:
+            kept = self._buf
+            try:
+                # A zero timeout reads only what _buf already holds.
+                resp = self._read_response(timeout=0, skip_async=False)
+            except TimeoutError:
+                self._buf = kept
+                break
+            if resp.is_async():
+                logger.debug('hyperdeck async: %s', resp)
+            else:
+                logger.warning('hyperdeck: dropping a response no command '
+                               'was waiting for: %s', resp)
 
     def _check_ok(self, command: str,
                   timeout: Optional[float] = None) -> Response:
