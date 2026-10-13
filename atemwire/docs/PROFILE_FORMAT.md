@@ -531,7 +531,7 @@ not the wait — implement your own settle if you need it.
     <Limiter enabled="..." threshold="..." attack="..." hold="..." release="..."/>
   </MasterOutDynamicsProcessor>
   <AudioInputs>
-    <AudioInput configuration="Stereo|Mono" id="...">
+    <AudioInput configuration="Stereo|Mono|DualMono" id="...">
       <Analog level="ProLine|Mic"/>     <!-- only on inputs that have analog config -->
       <AudioSource id="-65280" inputGain="..." pan="..." faderGain="..." mixOption="..." delayFrames="...">
         <Equalizer enabled="..." gain="...">
@@ -614,15 +614,26 @@ configuration (i.e. the TRS jack, source 1401). Levels: `ProLine`
 (line) or `Mic`. Maps to `mixerstate['fairlight-audio-input'].level`
 (1=mic, 2=line).
 
-`<AudioSource id="...">` represents one channel within the input. The
-ID is from the `mixerstate['fairlight-strip-properties']` structure:
-- `-65280` = stereo combined ("0xFF00" — the high byte is 0xFF
-  meaning "not split", subchannel byte is 0).
-- `-256` = mono ("0xFFFFFFFF" — both bytes 0xFF).
-- `-768` etc. = split channels.
+`<AudioSource id="...">` is one strip of the input. Its id is the
+strip's 8-byte wire address (the one `CFSP`, `CEBP` and `FASP` carry:
+six `0xFF` bytes, the split byte, the channel byte) read as a signed
+i64. Captured from ATEM Software Control with one input in Dual Mono
+(bmdwire#9, fixture `tests/profile_fairlight_dual_mono_asc.xml`):
 
-For Constellation HD, every AudioSource in the reference uses
-`id="-65280"` (full-width stereo source) or `id="-256"` for mono.
+| id | address | strip | setter `channel` |
+|---|---|---|---|
+| `-65280` | `ff…ff 01 00` | a stereo input's strip | `-1` |
+| `-256` | `ff…ff ff 00` | a dual-mono input's left half; the mono XLR (1301) | `0` |
+| `-255` | `ff…ff ff 01` | a dual-mono input's right half | `1` |
+
+A dual-mono input is `configuration="DualMono"` with two
+`<AudioSource>` elements, left first, each with its own fader, pan, EQ
+and dynamics. Save writes that when the input reports two split strips
+(`FASP.is_split == 0xff`, strip ids `"<source>.0"` and `"<source>.1"`),
+in subchannel order; apply sends each `<AudioSource>` to the channel its
+id names (`_enums.audio_source_channel`). Apply doesn't change an
+input's configuration (atemwire has no command for it), so a dual-mono
+profile restores onto an input that is already in Dual Mono.
 
 | AudioSource attr | Source | Op |
 |------------------|--------|-----|
@@ -802,10 +813,11 @@ Each Op uses a small grammar of attributes:
 - Audio-op `gain` is in dB but **specially encoded**: `-327.68`
   represents the wire's `-32768/100`, which is the silenced sentinel
   value (≡ `-inf` in the declarative `<AudioSource>` representation).
-- Audio-op `sourceId` is a 64-bit unsigned integer that encodes the
-  same concept as the `<AudioSource id>` attribute, but in a different
-  representation: `18446744073709486336` = `0xFFFFFFFFFFFF0000` is the
-  unsigned 64-bit reading of the same -65280 value (full-width stereo).
+- Audio-op `sourceId` is the `<AudioSource id>` value read unsigned:
+  `18446744073709486336` = `0xFFFFFFFFFFFF0100` is -65280 (a stereo
+  strip), and a dual-mono input's halves are `18446744073709551360`
+  (-256, left) and `18446744073709551361` (-255, right), as ASC
+  recorded them (bmdwire#9).
 
 **Macro round-trip uses bytecode upload (partial-upload policy) as of
 2026-04-29.**
