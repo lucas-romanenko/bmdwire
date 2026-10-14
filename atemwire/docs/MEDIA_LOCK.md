@@ -83,3 +83,37 @@ one) did not hold on this hardware.
   every frame held the store a quarter second longer than the transfer
   needed. The decode still blocks the worker for those 250 ms; moving it
   into the C extension is the remaining improvement.
+
+## What ATEM Software Control does with the media pool
+
+A Wireshark capture on the ASC machine, 2026-10-14: ATEM Software Control
+connecting to the same model (firmware 9.2.1, 1080p25) with 20 stills in
+the pool, 8 different pictures, then saving a profile.
+
+* **On connecting, ASC downloads every used still in full**, one after
+  another, starting 0.75 s after its hello (once the dump is in): 20
+  transfers of 8.32 MB, about 5,940 `FTDa` chunks of about 1,400 bytes
+  each, **1.78 to 1.82 s apiece from `FTSU` to `FTDC`**, with 17 to 39 ms
+  (median 24) from one `FTDC` to the next `FTSU`. It downloads repeated
+  pictures too: 20 transfers for 8 pictures.
+* It takes the **whole store** for each still, `LOCK store=0 state=1`
+  (the last byte varied: `0x64`, `0xff`), and releases it with
+  `LOCK store=0 state=0` after each `FTDC`. It never sent a `PLCK`.
+* Every `FTDa` is acknowledged with an `FTUA`; its second field is
+  nonzero and varies, where atemwire sends 0. Up to 153 chunks were in
+  flight before an acknowledgement.
+* `FTSU`'s last four bytes were `00 ef 67 70` for a still and
+  `03 xx xx 00` for a macro (atemwire sends `00 d0 9b 8c` for a still).
+* **Saving the profile, 61 s in, downloaded only the macros**: the six
+  used macro slots (three name-only, no ops), in 0.5 s, and **no still**.
+  ASC's quick save writes the stills it downloaded on connecting.
+
+So a still comes off this switcher at its own pace, about 1.8 s for 1080p,
+for ATEM Software Control as for atemwire (a client of this package,
+bmdctl, measured 1.80 to 1.83 s on the same pool). The wire floor above
+holds for one session too. Nothing in the capture is a faster transfer:
+the whole-store lock, the acknowledgement's second field and `FTSU`'s
+suffix cost the same time. A client that wants a quick save keeps the
+stills it has downloaded, which is what `download_media_pool_images`'s
+`cache_get` and `cache_put` are for (WebATEM 2.1.0 keeps them on disk by
+hash), rather than looking for a faster download.
