@@ -18,6 +18,11 @@
 # x86_64 and aarch64, macOS arm64 and x86_64, Windows x86_64 on CPython
 # 3.10–3.14, so a pip install never needs a compiler. Re-publish an
 # existing tag with "Run workflow" and the tag name.
+#
+# Once the release is on PyPI, `port-issue` opens "Port bmdwire v<version>"
+# in bmdctl, the Go port, with the release notes (see the job). It needs
+# the repository secret BMDCTL_ISSUE_TOKEN, and the GitHub release made
+# within 30 minutes of the publish finishing.
 name: Publish to PyPI
 
 on:
@@ -117,3 +122,81 @@ jobs:
           # version). A tag-triggered run keeps failing on a duplicate, so
           # a tag made without a version bump is caught loudly.
           skip-existing: ${{ github.event_name == 'workflow_dispatch' }}
+
+  # bmdctl (github.com/lucas-romanenko/bmdctl, private) is the Go port of
+  # this library. Once a release is on PyPI, open "Port bmdwire v<version>"
+  # there, labelled `port`, whose body is the release's notes and a link
+  # to it; skip if an issue of that title exists already, open or closed.
+  # The notes' bare #N become lucas-romanenko/bmdwire#N, since in bmdctl
+  # #N is bmdctl's own. The GitHub release is made by hand after this
+  # workflow (see the top), so the job waits up to 30 minutes for it, then
+  # fails: make the release and re-run the job. BMDCTL_ISSUE_TOKEN is a
+  # fine-grained token with access to lucas-romanenko/bmdctl only and
+  # Issues: read and write (Metadata: read comes with it).
+  port-issue:
+    name: Port issue in bmdctl
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      TITLE: Port bmdwire ${{ github.event.inputs.tag || github.ref_name }}
+      BMDCTL: lucas-romanenko/bmdctl
+    steps:
+      - name: Look for the issue in bmdctl
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.BMDCTL_ISSUE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::the repository secret BMDCTL_ISSUE_TOKEN is not set"
+            exit 1
+          fi
+          url=$(gh api --paginate "repos/$BMDCTL/issues?state=all&per_page=100" \
+            --jq '.[] | select(.pull_request == null and .title == env.TITLE) | .html_url' | sed -n 1p)
+          if [ -n "$url" ]; then
+            echo "\"$TITLE\" exists already: $url" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Wait for the GitHub release
+        if: steps.existing.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 60); do
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > release.json 2> error.txt; then
+              exit 0
+            fi
+            if ! grep -q 'HTTP 404' error.txt; then
+              cat error.txt >&2
+              exit 1
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "::error::no GitHub release for $TAG after 30 minutes: make it, then re-run this job"
+              exit 1
+            fi
+            echo "no release for $TAG yet; waiting"
+            sleep 30
+          done
+      - name: Open the issue
+        if: steps.existing.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.BMDCTL_ISSUE_TOKEN }}
+        run: |
+          {
+            printf '[bmdwire %s](%s) is on PyPI. Its release notes:\n\n' "$TAG" "$(jq -r .html_url release.json)"
+            jq -r '.body // ""' release.json |
+              perl -pe 's{(?<![\w/&#])#(\d+)\b}{lucas-romanenko/bmdwire#$1}g'
+          } > body.md
+          if ! gh api "repos/$BMDCTL/labels/port" --silent 2> /dev/null; then
+            gh api "repos/$BMDCTL/labels" --silent -f name=port -f color=9A9E9F \
+              -f description="A bmdwire release or change to port"
+          fi
+          url=$(gh api "repos/$BMDCTL/issues" -f title="$TITLE" -F body=@body.md \
+            -f 'labels[]=port' --jq .html_url)
+          echo "Opened $url" | tee -a "$GITHUB_STEP_SUMMARY"
