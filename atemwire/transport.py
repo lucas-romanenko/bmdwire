@@ -376,6 +376,10 @@ class UdpProtocol(BaseProtocol):
         # when what it hasn't acknowledged is resent (RESEND_AFTER).
         self._acked_through = None
         self._resend_due = None
+        # When receive_packet next returns a Wakeup for the protocol's own
+        # timed work (wake_at); set from the protocol's thread.
+        self._wake_due = None
+        self._wake_lock = threading.Lock()
 
         self.thread_queue = SocketQueue()
         self.thread_recv_queue = Queue()
@@ -478,8 +482,12 @@ class UdpProtocol(BaseProtocol):
                 continue
             if self._resend_due is not None:
                 remaining = max(0.0, min(remaining, self._resend_due - time.monotonic()))
+            wake = self._wake_due
+            if wake is not None:
+                remaining = max(0.0, min(remaining, wake - time.monotonic()))
             readable, _, _ = select.select([self.sock, self.thread_queue], [], [], remaining)
             self._resend_unacked()
+            self._fire_wake()
             for queue in readable:
                 if queue is self.sock:
                     packet = self._receive_packet_low()
@@ -839,6 +847,22 @@ class UdpProtocol(BaseProtocol):
                         or attempt == UdpProtocol.SEND_RETRIES - 1):
                     raise
                 time.sleep(0.001)
+
+    def wake_at(self, when):
+        """Have receive_packet return a Wakeup at ``when`` (monotonic): the
+        protocol's timed work, which its packets alone can't drive (the
+        switcher's pings never reach it). The earliest of several wins."""
+        with self._wake_lock:
+            if self._wake_due is None or when < self._wake_due:
+                self._wake_due = when
+        self.thread_queue.put(None)              # select() takes the new timeout
+
+    def _fire_wake(self):
+        with self._wake_lock:
+            if self._wake_due is None or time.monotonic() < self._wake_due:
+                return
+            self._wake_due = None
+        self.thread_recv_queue.put(Wakeup())
 
     def _on_ack(self, number):
         """The switcher has our reliable packets through ``number``: the

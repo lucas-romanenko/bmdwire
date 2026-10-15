@@ -33,9 +33,33 @@ def _is_tcp_transport(transport) -> bool:
 
 # A lock request (LOCK / PLCK) with no LKOB back after this long is sent
 # again on the next trigger. Measured: a granted request answers in ~1 ms;
-# a queued PLCK answers the moment the holder releases; a full LOCK sent
-# while another session holds the store is simply dropped by the switcher.
+# a queued one (PLCK, and a full LOCK too: ATEM Software Control's, in a
+# capture of 2026-10-15) the moment the holder releases.
 LOCK_REREQUEST_SECONDS = 1.0
+
+# Another client's turn. A request of another client's that waited for
+# the store is granted the moment we release it, and the switcher grants a
+# request of ours sent soon after too (two sessions asking within ~150 ms
+# can both get LKOB; MEDIA_LOCK.md). Our transfer then aborts theirs with
+# FTDE 6, and ATEM Software Control, which tries each still once when it
+# connects and again only when the media pool changes, is left without
+# its thumbnails (a capture, 2026-10-15: 20 stills, 20 FTDE 6, while a
+# client of this package downloaded back to back; 1.5.0 sent the release
+# and the next request in one packet). A request handed the store at our
+# release isn't announced at all (no LKST either way), and a PLCK of ours
+# is granted beside another client's LOCK even half a second into its
+# turn, its transfer aborted (a second capture, the same day). So after a
+# per-frame release with more work queued for the store, the next request
+# waits for the store to be announced free (LKST), then LOCK_COURTESY more
+# (a frame, for anyone else to take it); a store another client is seen
+# holding (its LKST) is not asked for until announced free. No
+# announcement means someone was handed the store: we wait, as long as
+# anyone is seen at work (another session's FTDC, any LKST), and ask only
+# after LOCK_QUIET with no sign of anyone. bmdwire 1.4.0 waited the same
+# way for the release's echo, by accident: its long waits in a restore
+# were WebATEM refreshing each new still's thumbnail.
+LOCK_COURTESY = 0.06
+LOCK_QUIET = 10.0
 
 # A state dump that ends (InCm) without a video mode has lost its first
 # packet for good: the transport takes the first reliable packet that
@@ -174,6 +198,13 @@ class AtemProtocol:
         # Cleared by the LKOB, by the store's LKST release broadcast (the
         # pounce re-requests anyway), and by every lane reset.
         self._lock_requested = {}
+        # store -> [since, announced]: for a store we released and have more
+        # work for (LOCK_COURTESY), when we released it or last saw anyone
+        # at work, and when it was announced free (None until it is).
+        self._yielding = {}
+        # Stores another client holds, from its LKST until its release's:
+        # we don't ask for them meanwhile (LOCK_COURTESY).
+        self._foreign_held = set()
         self.mode = None
         self.transfer_queue = {}
         self.transfer_id = 42
@@ -221,7 +252,9 @@ class AtemProtocol:
         if isinstance(packet, Wakeup):
             # Caller-side wake-up to drain a pending outbound command — the
             # worker thread (ATEMConnection._run) will pick up the queue
-            # right after this returns. No state to mutate here.
+            # right after this returns — or the transport's, for the lock
+            # yield (wake_at): a store left free may be asked for now.
+            self._service_yields()
             return
         self.connected = True
         if isinstance(packet, TransferQueueFlushed):
@@ -336,8 +369,13 @@ class AtemProtocol:
             # and silent, so mixerstate['lock-state'] only ever showed the
             # last release (bmdwire#15). The packet doesn't name the holder:
             # held by someone else is state=True while self.locks.get(store)
-            # is falsy.
-            pass
+            # is falsy. Held by someone else, we don't ask for it until they
+            # release it (LOCK_COURTESY), and a store we were leaving free
+            # is theirs now.
+            if not self.locks.get(contents.store):
+                self._foreign_held.add(contents.store)
+                if contents.store in self._yielding:
+                    self._yielding[contents.store] = [time.monotonic(), None]
         elif key == 'lock-state' and self.locks.get(contents.store):
             # A release broadcast while we hold the store is the late echo
             # of our own previous release: the switcher announces lock
@@ -349,6 +387,22 @@ class AtemProtocol:
                            f'our own earlier release, announced late')
         elif key == 'lock-state':
             self.log.debug(contents)
+            self._foreign_held.discard(contents.store)
+            # A release announced, ours or another client's: the store is
+            # seen free, and a request waits LOCK_COURTESY more for anyone
+            # else to take it. Another client releasing and taking the store
+            # again for its next transfer (ASC does, in one packet) is
+            # announced as a release then a lock, often in one packet: a
+            # request sent on the release would be granted alongside theirs
+            # and abort their transfer (Studio ATEM, 2026-10-15).
+            y = self._yielding.get(contents.store)
+            now = time.monotonic()
+            if y is None and self.transfer_queue.get(contents.store) and self._can_wake():
+                self._yielding[contents.store] = [now, now]
+                self._wake_at(now + LOCK_COURTESY)
+            elif y is not None and y[1] is None:
+                y[1] = now
+                self._wake_at(now + LOCK_COURTESY)
             # The lock is free: whatever request we had outstanding is
             # either about to be granted (a queued PLCK — the switcher
             # grants it directly, sometimes without even broadcasting the
@@ -491,8 +545,10 @@ class AtemProtocol:
                 # this is another session's transfer (watcher, uploader, a
                 # sibling operator) finishing. Expected on a shared setup.
                 self.log.debug("FTDC for another session's transfer — ignoring")
+                self._someone_at_work()
                 return
             if contents.transfer != self.transfer.tid:
+                self._someone_at_work()
                 return
             # Remove current item from the transfer queue
             store = self.transfer.store
@@ -649,6 +705,8 @@ class AtemProtocol:
         self.transfer_buffer_bytes = 0
         self.locks = {}
         self._lock_requested.clear()
+        self._yielding.clear()
+        self._foreign_held.clear()
 
     def release_locks_now(self):
         """Give back every store lock we hold, SYNCHRONOUSLY, for teardown.
@@ -686,6 +744,7 @@ class AtemProtocol:
                                exc_info=True)
             self.locks[store] = False
         self._lock_requested.clear()
+        self._yielding.clear()
 
     def abort_transfers(self):
         """Best-effort reset of the transfer state machine, for callers that
@@ -700,9 +759,11 @@ class AtemProtocol:
         self.transfer_requested = False
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
-        # A lock request in flight must not outlive the abort: the queue it
-        # was for is gone, and the next caller's request must not wait on it.
+        # A lock request in flight, or a store left free, must not outlive
+        # the abort: the queue it was for is gone, and the next caller's
+        # request must not wait on it.
         self._lock_requested.clear()
+        self._yielding.clear()
         for lock in list(self.locks):
             if self.locks[lock]:
                 try:
@@ -872,13 +933,11 @@ class AtemProtocol:
         LOCKED and its preview fetches starve (observed live 2026-07-07 on a
         freshly rebooted switcher). ASC holds per frame; now so do we.
 
-        The release and the next transfer's lock request go out in ONE
-        packet, as ATEM Software Control sends them between the stills of a
-        restore and the frames of a download (captures, 2026-10-14 and
-        2026-10-15): the switcher processes the release, then grants the
-        request in under a millisecond, with no wait for the release's LKST
-        echo, which arrives a frame later. The request is the switcher's
-        to queue if another client asked first, as a PLCK is queued.
+        With more work queued for the store, its next lock request waits
+        for the store's next LKST (see LOCK_COURTESY): another client that
+        was waiting gets the store at our release, and a request of ours
+        soon after would abort its transfer. 1.5.0 sent the release and the
+        next request in one packet, as ASC sends them; that shut ASC out.
         ``request_next=False`` sends the release alone and leaves the next
         request to the store's release broadcast (the pounce): after an
         FTDE 6 another session is queued for the store, and asking again
@@ -892,35 +951,49 @@ class AtemProtocol:
         if store != 0xffff and self.locks.get(store):
             self.log.info(f'Releasing lock {store} (per-frame)')
             self.locks[store] = False
-            release = LockCommand(store, False)
+            try:
+                self.send_commands([LockCommand(store, False)])
+            except Exception:
+                self.log.exception('per-frame unlock send failed')
             if not request_next:
-                try:
-                    self.send_commands([release])
-                except Exception:
-                    self.log.exception('per-frame unlock send failed')
                 return  # the store's release broadcast continues the queue
-            self._transfer_trigger(store, release=release)
-            return
+            if self.transfer_queue.get(store) and self._can_wake():
+                # The trigger below defers the request and asks to be woken.
+                self._yielding[store] = [time.monotonic(), None]
         self._transfer_trigger(store)
 
-    def _transfer_trigger(self, store, retry=False, release=None):
-        # ``release``, a per-frame unlock (_release_then_continue), goes in
-        # the same packet as whatever this sends next: the next lock
-        # request, the other releases, or alone if nothing follows.
-        pending = [release] if release is not None else []
+    def _can_wake(self):
+        return hasattr(self.transport, 'wake_at')
 
-        def send(commands):
-            nonlocal pending
-            self.send_commands(pending + list(commands))
-            pending = []
+    def _wake_at(self, when):
+        wake = getattr(self.transport, 'wake_at', None)
+        if wake is not None:
+            wake(when)
 
-        try:
-            self._transfer_trigger_inner(store, retry, send)
-        finally:
-            if pending:
-                self.send_commands(pending)
+    def _yield_due(self, store):
+        """When a store we are leaving free may be asked for again."""
+        since, announced = self._yielding[store]
+        if announced is not None:
+            return announced + LOCK_COURTESY
+        return since + LOCK_QUIET
 
-    def _transfer_trigger_inner(self, store, retry, send):
+    def _someone_at_work(self):
+        """Another session's transfer ended: a store we wait for, not yet
+        announced free, is busy, and LOCK_QUIET starts again."""
+        now = time.monotonic()
+        for y in self._yielding.values():
+            if y[1] is None:
+                y[0] = now
+
+    def _service_yields(self):
+        """Ask for each store we left free whose yield is over."""
+        for store in list(self._yielding):
+            if not self.transfer_queue.get(store):
+                del self._yielding[store]
+            elif not self.transfer_requested and not self.locks.get(store):
+                self._transfer_trigger(store)
+
+    def _transfer_trigger(self, store, retry=False):
         next = None
 
         self.log.info(f'transfer trigger for store {store} (retry={retry})')
@@ -945,11 +1018,24 @@ class AtemProtocol:
                 if self.locks[lock]:
                     self.log.info('Releasing lock {}'.format(lock))
                     cmd = LockCommand(lock, False)
-                    send([cmd])
+                    self.send_commands([cmd])
             return
 
         # Request a lock if needed
         if next.store != 0xffff and (next.store not in self.locks or not self.locks[next.store]):
+            if next.store in self._foreign_held:
+                # Another client's turn: its release's LKST asks for us.
+                self.log.debug(f'Store {next.store} is another client\'s: '
+                               f'asking once they release it')
+                return
+            if next.store in self._yielding:
+                due = self._yield_due(next.store)
+                if time.monotonic() < due:
+                    self.log.debug(f'Leaving store {next.store} free a moment '
+                                   f'for other clients')
+                    self._wake_at(due)
+                    return
+                del self._yielding[next.store]
             asked = self._lock_requested.get(next.store)
             if asked is not None and time.monotonic() - asked < LOCK_REREQUEST_SECONDS:
                 self.log.debug(
@@ -966,7 +1052,7 @@ class AtemProtocol:
             else:
                 cmd = PartialLockCommand(next.store, next.slot)
             self._lock_requested[next.store] = time.monotonic()
-            send([cmd])
+            self.send_commands([cmd])
             return
 
         # A transfer request is already running, don't start a new one
@@ -985,7 +1071,7 @@ class AtemProtocol:
                 self.transfer_queue[next.store] = queue[1:]
             self.log.info(
                 'Clearing {}:{} under store lock'.format(next.store, next.slot))
-            send([ClearStillCommand(slot=next.slot)])
+            self.send_commands([ClearStillCommand(slot=next.slot)])
             self._raise('clear-dispatched', next.store, next.slot)
             self._release_then_continue(next.store)
             return
@@ -1039,4 +1125,4 @@ class AtemProtocol:
                 description=self.transfer.description,
             ))
             self.transfer.metadata_sent = True
-        send(outbound)
+        self.send_commands(outbound)
