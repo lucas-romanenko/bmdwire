@@ -29,6 +29,15 @@ class TransferTask:
 
         self.name = None
         self.description = None
+        # FTFD (name, description, MD5) goes out with the first FTCD budget
+        # of each attempt, before the data, as ATEM Software Control sends
+        # it; cleared when the upload is (re)requested.
+        self.metadata_sent = False
+        # Bytes of ``data`` already cut into chunks in this attempt. Chunks
+        # used to be cut by slicing them off the front of ``data``, which
+        # copied the rest each time (some 25 GB for the ~6,000 chunks of a
+        # 1080p still) and left a retried upload without its start.
+        self.offset = 0
 
     def calculate_hash(self):
         hasher = hashlib.md5(self.data)
