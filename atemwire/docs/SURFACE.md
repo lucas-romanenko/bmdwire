@@ -500,7 +500,9 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   repeated within 1.0 s (`LOCK_REREQUEST_SECONDS`). There is no timer-driven retry: a dropped
   request is re-sent only on the next event. Since `bd6ae77` the release and the next request go
   in one packet, as ATEM Software Control sends them, and a release broadcast while the store is
-  held changes nothing; after an FTDE 6 the release goes alone (§5.4 item 21).
+  held changes nothing; after an FTDE 6 the release goes alone (§5.4 item 21). Since `5827626`
+  the release goes alone and the next request waits for the store to be announced free and a
+  frame more, never while another client holds it (§5.4 item 26).
 - **`FTDE` status handling:**
   - 1 (try again): re-send the request with the same tid.
   - 5 (no lock): re-request the lock.
@@ -915,7 +917,8 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
 10, the split-mono bullet of item 8, the float and `sourceId` bullets of item 9, items 15, 16,
 18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
-were fixed after 1.4.0 and still apply to it.
+were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
+it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1076,6 +1079,16 @@ were fixed after 1.4.0 and still apply to it.
     the switcher sees no gap, and an upload loses a chunk without a word. *Fixed in `bd6ae77`:*
     `ENOBUFS` and `EAGAIN` are retried for up to 20 ms, and a reliable packet still refused keeps
     its number and its copy for retransmission.
+26. **Another client's turn is cut short** (1.5.0). The release and the next lock request go in
+    one packet (item 21). Another client's request waiting for the store is handed it at the
+    release, unannounced; the next request is granted beside it (a `PLCK` beside a `LOCK`) and
+    its transfer aborts theirs with `FTDE 6`. ATEM Software Control, which tries each still once
+    when it connects, is left without its thumbnails (`docs/MEDIA_LOCK.md`, "Sharing the store
+    with ATEM Software Control"). *Fixed in `5827626`:* the release goes alone; the next request
+    waits for the store to be announced free (`LKST`) and `LOCK_COURTESY` (60 ms) more, never
+    while another client is seen holding the store, and with no announcement waits while anyone
+    is seen at work, asking after `LOCK_QUIET` (10 s) of quiet. `UdpProtocol.wake_at` wakes the
+    protocol for it.
 
 ## Counts
 
