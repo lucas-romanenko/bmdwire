@@ -397,11 +397,11 @@ class AtemProtocol:
             # and abort their transfer (TEST ATEM 2, 2026-10-15).
             y = self._yielding.get(contents.store)
             now = time.monotonic()
-            if y is None and self.transfer_queue.get(contents.store) and self._can_wake():
+            if y is None and self._can_wake():
                 self._yielding[contents.store] = [now, now]
-                self._wake_at(now + LOCK_COURTESY)
             elif y is not None and y[1] is None:
                 y[1] = now
+            if contents.store in self._yielding and self.transfer_queue.get(contents.store):
                 self._wake_at(now + LOCK_COURTESY)
             # The lock is free: whatever request we had outstanding is
             # either about to be granted (a queued PLCK — the switcher
@@ -955,11 +955,16 @@ class AtemProtocol:
                 self.send_commands([LockCommand(store, False)])
             except Exception:
                 self.log.exception('per-frame unlock send failed')
+            if self._can_wake():
+                # Every release, whether or not more work is queued now: a
+                # caller that queues its transfers one at a time (WebATEM's
+                # media pool watcher queues the next still after decoding the
+                # last) asks again a moment after the release, with nothing
+                # queued at it, and that request must wait its turn too. The
+                # trigger defers it and asks to be woken.
+                self._yielding[store] = [time.monotonic(), None]
             if not request_next:
                 return  # the store's release broadcast continues the queue
-            if self.transfer_queue.get(store) and self._can_wake():
-                # The trigger below defers the request and asks to be woken.
-                self._yielding[store] = [time.monotonic(), None]
         self._transfer_trigger(store)
 
     def _can_wake(self):
@@ -986,10 +991,12 @@ class AtemProtocol:
                 y[0] = now
 
     def _service_yields(self):
-        """Ask for each store we left free whose yield is over."""
+        """Ask for each store we left free whose yield is over; forget a
+        yield that is over with nothing waiting on it."""
         for store in list(self._yielding):
             if not self.transfer_queue.get(store):
-                del self._yielding[store]
+                if time.monotonic() >= self._yield_due(store):
+                    del self._yielding[store]
             elif not self.transfer_requested and not self.locks.get(store):
                 self._transfer_trigger(store)
 
