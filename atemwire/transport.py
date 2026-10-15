@@ -229,6 +229,20 @@ class BaseProtocol:
             return True
         return False
 
+    def drain_queue(self):
+        """Send every queued packet now, back to back: an upload budget
+        as ATEM Software Control sends it. The switcher's FTCD budget is the
+        flow control; it grants the next once it has these. queue_trigger
+        reports the drained queue (TransferQueueFlushed) on its next call,
+        as for a queue it emptied itself."""
+        if self.send_queue:
+            self.queue_enabled = True
+        while self.send_queue:
+            p = self.send_queue.popleft()
+            self._send_packet(p)
+            if self.queue_callback is not None:
+                self.queue_callback(len(self.send_queue), len(p.data) - 4)
+
 
 class UdpProtocol(BaseProtocol):
     STATE_CLOSED = 0
@@ -265,6 +279,23 @@ class UdpProtocol(BaseProtocol):
     # replay is exactly what wedged a production switcher live on 2026-06-12).
     RETRANSMIT_MAX_BURST = 128
 
+    # Our reliable packets the switcher has not acknowledged for this long
+    # are sent again, from the first unacknowledged one (go-back-N, capped
+    # by RETRANSMIT_MAX_BURST). The switcher asks for a packet it finds
+    # missing only when a later one arrives; the last packet of an upload
+    # budget has none after it until the next budget, which the switcher
+    # grants only once it has that packet, so its loss stalled the upload
+    # until the caller's timeout. The switcher resends its own the same
+    # way, every ~80 ms; it acknowledges ours within milliseconds (every
+    # 16 packets of an upload), so 250 ms is a loss, not a slow ACK.
+    RESEND_AFTER = 0.25
+
+    # A send the kernel refuses for a moment (a full buffer: ENOBUFS, which
+    # macOS returns rather than blocking, or EAGAIN) is tried again, 1 ms
+    # apart, this many times, before the packet counts as lost on the wire.
+    SEND_RETRY_ERRNOS = frozenset({errno.ENOBUFS, errno.EAGAIN})
+    SEND_RETRIES = 20
+
     def __init__(self, ip, port=9910, timeout=5, *, aggressive_drain=False):
         super().__init__()
         self.ip = ip
@@ -273,15 +304,21 @@ class UdpProtocol(BaseProtocol):
 
         # Aggressive drain: on each queue_trigger, empty the whole send_queue
         # in batches (instead of batch_size packets per incoming ATEM packet).
-        # Bypasses the ATEM's ACK pacing — lifts upload throughput from
-        # ~300 KB/s to ~3 MB/s on 1080p stills. Only makes sense when the
-        # caller is pushing a lot of outbound (bulk upload); for normal
-        # control traffic the default paced behavior is correct.
+        # It lifted upload throughput from ~300 KB/s to ~3 MB/s on 1080p
+        # stills. Uploads, the only packets queued, now drain each budget
+        # whole as they are queued (drain_queue), so it changes nothing;
+        # kept for callers that pass it.
         self.aggressive_drain = aggressive_drain
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(self.timeout)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024 * 16)
+        try:
+            # Room for an upload budget sent back to back (768 chunks of
+            # ~1.4 KB); the system may cap it lower, which is fine.
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024 * 4)
+        except OSError:
+            pass
 
         self.thread = threading.Thread(None, self._udp_thread, "atem-udp", daemon=True)
 
@@ -334,6 +371,11 @@ class UdpProtocol(BaseProtocol):
 
         self.received_packets = collections.deque(maxlen=1024)
         self.retransmission_buffer = {}
+        # The switcher's acknowledgement of our reliable packets (the
+        # highest sequence it has, gap-free; None until its first ACK), and
+        # when what it hasn't acknowledged is resent (RESEND_AFTER).
+        self._acked_through = None
+        self._resend_due = None
 
         self.thread_queue = SocketQueue()
         self.thread_recv_queue = Queue()
@@ -434,7 +476,10 @@ class UdpProtocol(BaseProtocol):
                 self.connect()
                 self.thread_recv_queue.put(None)
                 continue
+            if self._resend_due is not None:
+                remaining = max(0.0, min(remaining, self._resend_due - time.monotonic()))
             readable, _, _ = select.select([self.sock, self.thread_queue], [], [], remaining)
+            self._resend_unacked()
             for queue in readable:
                 if queue is self.sock:
                     packet = self._receive_packet_low()
@@ -456,10 +501,10 @@ class UdpProtocol(BaseProtocol):
                             # leaves a zombie connection whose worker
                             # blocks forever while is_connected stays True
                             # and send() silently drops (2026-07-06).
-                            # Drop the packet — reliable traffic is
-                            # recovered by the retransmit machinery (the
-                            # ATEM requests the sequence gap; we serve it
-                            # from retransmission_buffer).
+                            # Only an ACK or a handshake packet gets here:
+                            # a reliable one keeps its sequence number in
+                            # _send_packet_low and is resent. ACKs go out
+                            # again with the next packet.
                             self.log.error(
                                 f"Transient send error (packet dropped, "
                                 f"thread stays up): {e}")
@@ -524,7 +569,21 @@ class UdpProtocol(BaseProtocol):
             # recovers the gap.
             self.log.error(f"dropping unserializable packet ({e}): {packet!r}")
             return
-        sent = self.sock.sendto(raw, (self.ip, self.port))
+        reliable = not packet.flags & (UdpProtocol.FLAG_SYN | UdpProtocol.FLAG_ACK)
+        try:
+            sent = self._sendto(raw)
+        except OSError as e:
+            if not reliable or e.errno not in TRANSIENT_SEND_ERRNOS:
+                raise
+            # A reliable packet the network refused: it keeps its sequence
+            # number and its place in retransmission_buffer below, so the
+            # switcher finds the gap (or the resend timer fires) and it goes
+            # again. Dropped with its number unused, as it used to be, the
+            # next packet took the number: no gap anywhere, and an upload
+            # missing a chunk without a word.
+            self.log.error(f"send of seq {packet.sequence_number} failed ({e}); "
+                           f"kept for retransmission")
+            sent = len(raw)
         self.tx_packet_count += 1
         if TRACE_ENABLED:
             data_len = len(packet.data) if packet.data else 0
@@ -560,6 +619,8 @@ class UdpProtocol(BaseProtocol):
             self.retransmission_buffer.pop(
                 (self.local_sequence_number - UdpProtocol.RETRANSMIT_WINDOW)
                 % 0x8000, None)
+            if self._resend_due is None:
+                self._resend_due = time.monotonic() + UdpProtocol.RESEND_AFTER
 
         if packet.label == "_handshake":
             # Clear temporary session id, use the session id received in the first packet from the remote
@@ -652,6 +713,9 @@ class UdpProtocol(BaseProtocol):
         self.last_rx_monotonic = time.monotonic()
         self._last_heard = self.last_rx_monotonic
         self.rx_packet_count += 1
+
+        if packet.flags & UdpProtocol.FLAG_ACK:
+            self._on_ack(packet.acknowledgement_number)
 
         if TRACE_ENABLED:
             data_len = len(packet.data) if packet.data else 0
@@ -764,6 +828,48 @@ class UdpProtocol(BaseProtocol):
         while ((self.ack_number + 1) & 0x7FFF) in self.received_packets:
             self.ack_number = (self.ack_number + 1) & 0x7FFF
 
+    def _sendto(self, raw):
+        """sendto, tried again for a moment while the kernel refuses it
+        (SEND_RETRY_ERRNOS); any other error, or the last refusal, raises."""
+        for attempt in range(UdpProtocol.SEND_RETRIES):
+            try:
+                return self.sock.sendto(raw, (self.ip, self.port))
+            except OSError as e:
+                if (e.errno not in UdpProtocol.SEND_RETRY_ERRNOS
+                        or attempt == UdpProtocol.SEND_RETRIES - 1):
+                    raise
+                time.sleep(0.001)
+
+    def _on_ack(self, number):
+        """The switcher has our reliable packets through ``number``: the
+        resend timer starts again while some remain unacknowledged."""
+        if self._acked_through == number:
+            return
+        self._acked_through = number
+        outstanding = (self.local_sequence_number - number) & 0x7FFF
+        if outstanding == 0 or outstanding >= UdpProtocol.RETRANSMIT_WINDOW:
+            # All acknowledged (or an ACK from before a wrap or a reconnect).
+            self._resend_due = None
+        else:
+            self._resend_due = time.monotonic() + UdpProtocol.RESEND_AFTER
+
+    def _resend_unacked(self):
+        """Resend what the switcher hasn't acknowledged in RESEND_AFTER,
+        from the first unacknowledged packet."""
+        if self._resend_due is None or time.monotonic() < self._resend_due:
+            return
+        self._resend_due = None
+        if self.state != UdpProtocol.STATE_ESTABLISHED or self._acked_through is None:
+            return
+        first = (self._acked_through + 1) & 0x7FFF
+        outstanding = (self.local_sequence_number - self._acked_through) & 0x7FFF
+        if outstanding == 0 or outstanding >= UdpProtocol.RETRANSMIT_WINDOW:
+            return
+        self.log.warning(f"no ACK for seq {first} through {self.local_sequence_number} "
+                         f"in {UdpProtocol.RESEND_AFTER} s: resending")
+        self._retransmit_from(first)
+        self._resend_due = time.monotonic() + UdpProtocol.RESEND_AFTER
+
     def _retransmit_from(self, request_seq):
         """Resend every buffered packet from ``request_seq`` through the
         latest sent sequence, in order, marked FLAG_RETRANSMISSION
@@ -798,7 +904,7 @@ class UdpProtocol(BaseProtocol):
                 continue
             pkt.flags |= UdpProtocol.FLAG_RETRANSMISSION
             try:
-                self.sock.sendto(pkt.to_bytes(), (self.ip, self.port))
+                self._sendto(pkt.to_bytes())
             except OSError as exc:
                 self.log.error(f"retransmit of seq {seq} failed: {exc}")
                 break
@@ -873,6 +979,8 @@ class UdpProtocol(BaseProtocol):
         # Buffered packets carry the OLD session id — never serve them
         # for a retransmit request in the new session.
         self.retransmission_buffer.clear()
+        self._acked_through = None
+        self._resend_due = None
         # received_packets drives BOTH the retransmission dup-drop and the
         # contiguous-ACK high-water walk. Stale sequence numbers from the OLD
         # session (an in-place reconnect reuses this object) would let the new

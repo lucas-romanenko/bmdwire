@@ -118,7 +118,9 @@ class AtemProtocol:
         :param aggressive_drain: if True and the transport is UDP, enable
             bulk-upload throughput mode on the transport (drains the whole
             send queue per queue_trigger instead of one ACK-paced batch).
-            Only meaningful for UDP; TCP and USB ignore the flag.
+            Only meaningful for UDP; TCP and USB ignore the flag. Uploads,
+            the only packets queued, now send each budget whole whatever
+            the flag (_queue_chunks), so it changes nothing.
         """
         if ip is None and usb is None:
             raise ValueError("Need either an ip or usb port")
@@ -150,15 +152,17 @@ class AtemProtocol:
         # INCOMPLETE_DUMP_RETRIES.
         self._incomplete_dumps = 0
 
+        # store -> True while we hold its lock: from the LKOB until we send
+        # the release, whatever LKST says meanwhile. The switcher announces
+        # lock changes once a frame, so the release broadcast of the frame
+        # we just gave back can arrive AFTER the LKOB for the next request
+        # sent with that release (ATEM Software Control's restore capture,
+        # 2026-10-15). Reading that late broadcast as losing the new grant
+        # is what once looked like the switcher eating a request sent
+        # during a release: we skipped the next release, and our next
+        # request came from the holder, which the switcher ignores. See
+        # docs/MEDIA_LOCK.md.
         self.locks = {}
-        # Stores whose unlock we have SENT but whose LKST release echo has
-        # not yet arrived. A lock request that reaches the switcher while
-        # its own unlock is still in flight is silently eaten — and with
-        # the lock then free, no further LKST ever arrives to pounce on:
-        # dead air until the caller's timeout (observed live 2026-07-07,
-        # back-to-back downloads). _transfer_trigger defers requests for
-        # these stores; the LKST echo clears the entry and re-triggers.
-        self._lock_release_pending = set()
         # store -> monotonic time of the last lock request (LOCK / PLCK)
         # sent with no LKOB back yet. ``download()`` calls _transfer_trigger
         # once per queued task, and before this existed every call re-sent
@@ -334,14 +338,17 @@ class AtemProtocol:
             # held by someone else is state=True while self.locks.get(store)
             # is falsy.
             pass
+        elif key == 'lock-state' and self.locks.get(contents.store):
+            # A release broadcast while we hold the store is the late echo
+            # of our own previous release: the switcher announces lock
+            # changes once a frame, after the LKOB it sent for the request
+            # that went out with that release. Our hold ends only when we
+            # release it (an FTDE 5 says so if it somehow ended), so nothing
+            # changes here; stored and raised below like any other.
+            self.log.debug(f'{contents} while we hold store {contents.store}: '
+                           f'our own earlier release, announced late')
         elif key == 'lock-state':
-            if contents.store in self.locks and self.locks[contents.store]:
-                # Remove the lock if we held it
-                del self.locks[contents.store]
             self.log.debug(contents)
-            # Our per-frame unlock is now confirmed processed — requests
-            # for this store are safe to send again.
-            self._lock_release_pending.discard(contents.store)
             # The lock is free: whatever request we had outstanding is
             # either about to be granted (a queued PLCK — the switcher
             # grants it directly, sometimes without even broadcasting the
@@ -369,6 +376,14 @@ class AtemProtocol:
             self.transfer_budget.size = self.transfer_budget.size // 8 * 8
             if old != self.transfer_budget.size:
                 self.log.debug(f"Adjusted transfer chunk size from {old} to {self.transfer_budget.size}")
+            if (self.transfer is not None and self.transfer.upload
+                    and not self.transfer.metadata_sent):
+                # FTFD with the first budget, before the data, as ATEM
+                # Software Control sends it (restore capture, 2026-10-15;
+                # MACRO_FORMAT.md found both orders work for macros). It
+                # used to wait for the send queue to drain after the last
+                # chunk, a round trip per upload.
+                self._send_file_metadata()
             self._queue_chunks()
             return
         elif key == 'file-transfer-data':
@@ -442,7 +457,7 @@ class AtemProtocol:
                 # second control page on the same switcher.
                 store = self.transfer.store
                 self._lock_requested.pop(store, None)
-                self._release_then_continue(store)
+                self._release_then_continue(store, request_next=False)
             else:
                 # Fatal for THIS transfer (e.g. code 2 = rejected mode/slot):
                 # retrying the same request would fail identically forever.
@@ -633,7 +648,6 @@ class AtemProtocol:
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
         self.locks = {}
-        self._lock_release_pending.clear()
         self._lock_requested.clear()
 
     def release_locks_now(self):
@@ -671,7 +685,6 @@ class AtemProtocol:
                 self.log.debug('teardown lock release failed for store %s', store,
                                exc_info=True)
             self.locks[store] = False
-        self._lock_release_pending.clear()
         self._lock_requested.clear()
 
     def abort_transfers(self):
@@ -687,10 +700,8 @@ class AtemProtocol:
         self.transfer_requested = False
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
-        # A pending release-echo wait must not outlive the abort: the queue
-        # it was deferring for is gone, and the next caller's fresh request
-        # must not be deferred against a stale mark.
-        self._lock_release_pending.clear()
+        # A lock request in flight must not outlive the abort: the queue it
+        # was for is gone, and the next caller's request must not wait on it.
         self._lock_requested.clear()
         for lock in list(self.locks):
             if self.locks[lock]:
@@ -794,31 +805,39 @@ class AtemProtocol:
 
         chunk_size = self.transfer_budget.size
         self.log.debug(f'Queue {self.transfer_budget.count} chunks of {chunk_size}')
+        data = memoryview(self.transfer.data)
         for i in range(0, self.transfer_budget.count):
-            if len(self.transfer.data) == 0:
+            start = self.transfer.offset
+            if start >= len(data):
                 break
 
-            chunk = self.transfer.data[0:chunk_size]
+            chunk = data[start:start + chunk_size]
             used = chunk_size
             if chunk[-8:] == b'\xFE\xFE\xFE\xFE\xFE\xFE\xFE\xFE':
-                chunk = self.transfer.data[0:chunk_size - 8]
+                chunk = data[start:start + chunk_size - 8]
                 used -= 8
             elif chunk[-16:-8] == b'\xFE\xFE\xFE\xFE\xFE\xFE\xFE\xFE':
-                chunk = self.transfer.data[0:chunk_size - 16]
+                chunk = data[start:start + chunk_size - 16]
                 used -= 16
-            self.transfer.data = self.transfer.data[used:]
+            self.transfer.offset = start + used
 
             self.transfer_budget.count -= 1
             if self.transfer_budget.count == 0:
                 self.log.debug('Transfer budget ran out')
                 self.transfer_budget = None
 
-            cmd = TransferDataCommand(self.transfer.tid, chunk)
+            cmd = TransferDataCommand(self.transfer.tid, bytes(chunk))
             packet = Packet()
             packet.flags = UdpProtocol.FLAG_RELIABLE
             packet.data = cmd.get_command()
             self.transport.queue_packet(packet)
-        self.transport.queue_trigger()
+        # The whole budget at once, back to back, as ATEM Software Control
+        # sends it: the budget (FTCD) is the switcher's flow control, 768
+        # chunks of a 1080p still at a time on a Constellation, and it
+        # grants the next only once it has these. Paced at five chunks per
+        # packet from the switcher (queue_trigger), a still took 23 s to
+        # upload where ASC takes 0.5 s (docs/MEDIA_LOCK.md).
+        self.transport.drain_queue()
 
     def _queue_flushed(self):
         self.log.info('Queue flushed')
@@ -827,15 +846,22 @@ class AtemProtocol:
             # task (same guard FTDa/FTDE already carry).
             self.log.debug('Queue flushed with no transfer in flight — ignoring')
             return
-        if len(self.transfer.data):
+        if self.transfer.offset < len(self.transfer.data):
             self._queue_chunks()
             return
+        if not self.transfer.metadata_sent:
+            # Not sent with the first budget (no FTCD came before the data
+            # drained); the switcher needs it to finish the transfer.
+            self._send_file_metadata()
+
+    def _send_file_metadata(self):
         self.log.info('Sending file metadata')
         cmd = TransferFileDataCommand(self.transfer.tid, self.transfer.hash,
                                       name=self.transfer.name, description=self.transfer.description)
         self.send_commands([cmd])
+        self.transfer.metadata_sent = True
 
-    def _release_then_continue(self, store):
+    def _release_then_continue(self, store, request_next=True):
         """Per-frame lock discipline (ASC parity, 2026-07-07).
 
         Called when a transfer finishes (FTDC) or dies fatally (FTDE with a
@@ -846,13 +872,18 @@ class AtemProtocol:
         LOCKED and its preview fetches starve (observed live 2026-07-07 on a
         freshly rebooted switcher). ASC holds per frame; now so do we.
 
-        The next queued transfer is NOT started here: our own unlock's LKST
-        echo (~20ms) re-triggers via the lock-state handler's pounce path —
-        sequencing the re-request after the release is processed, since a
-        request that lands while an unlock is in flight is silently dropped
-        by the switcher. Between those frames, any other client can win the
-        lock; our next request then waits for THEIR release broadcast. The
-        macro store (0xffff) is lock-exempt and continues directly.
+        The release and the next transfer's lock request go out in ONE
+        packet, as ATEM Software Control sends them between the stills of a
+        restore and the frames of a download (captures, 2026-10-14 and
+        2026-10-15): the switcher processes the release, then grants the
+        request in under a millisecond, with no wait for the release's LKST
+        echo, which arrives a frame later. The request is the switcher's
+        to queue if another client asked first, as a PLCK is queued.
+        ``request_next=False`` sends the release alone and leaves the next
+        request to the store's release broadcast (the pounce): after an
+        FTDE 6 another session is queued for the store, and asking again
+        at once is what deadlocked two sessions. The macro store (0xffff)
+        is lock-exempt and continues directly.
         """
         # The finished task is dealt with — clear it so a duplicate FTDC or
         # straggler FTDa during the echo window can't match its tid and
@@ -860,18 +891,36 @@ class AtemProtocol:
         self.transfer = None
         if store != 0xffff and self.locks.get(store):
             self.log.info(f'Releasing lock {store} (per-frame)')
-            try:
-                self.send_commands([LockCommand(store, False)])
-                # Requests sent while this unlock is in flight get eaten by
-                # the switcher — defer them until the LKST echo confirms.
-                self._lock_release_pending.add(store)
-            except Exception:
-                self.log.exception('per-frame unlock send failed')
             self.locks[store] = False
-            return  # LKST echo continues the queue
+            release = LockCommand(store, False)
+            if not request_next:
+                try:
+                    self.send_commands([release])
+                except Exception:
+                    self.log.exception('per-frame unlock send failed')
+                return  # the store's release broadcast continues the queue
+            self._transfer_trigger(store, release=release)
+            return
         self._transfer_trigger(store)
 
-    def _transfer_trigger(self, store, retry=False):
+    def _transfer_trigger(self, store, retry=False, release=None):
+        # ``release``, a per-frame unlock (_release_then_continue), goes in
+        # the same packet as whatever this sends next: the next lock
+        # request, the other releases, or alone if nothing follows.
+        pending = [release] if release is not None else []
+
+        def send(commands):
+            nonlocal pending
+            self.send_commands(pending + list(commands))
+            pending = []
+
+        try:
+            self._transfer_trigger_inner(store, retry, send)
+        finally:
+            if pending:
+                self.send_commands(pending)
+
+    def _transfer_trigger_inner(self, store, retry, send):
         next = None
 
         self.log.info(f'transfer trigger for store {store} (retry={retry})')
@@ -896,21 +945,11 @@ class AtemProtocol:
                 if self.locks[lock]:
                     self.log.info('Releasing lock {}'.format(lock))
                     cmd = LockCommand(lock, False)
-                    self.send_commands([cmd])
+                    send([cmd])
             return
 
         # Request a lock if needed
         if next.store != 0xffff and (next.store not in self.locks or not self.locks[next.store]):
-            if next.store in self._lock_release_pending:
-                # Our own unlock for this store is still in flight — a
-                # request sent now would be silently eaten by the switcher
-                # and nothing would ever wake us (the lock ends up free, so
-                # no further LKST arrives). The release echo clears the
-                # pending mark and re-triggers via the pounce path.
-                self.log.debug(
-                    f'Deferring lock request for {next.store} until the '
-                    f'release echo lands')
-                return
             asked = self._lock_requested.get(next.store)
             if asked is not None and time.monotonic() - asked < LOCK_REREQUEST_SECONDS:
                 self.log.debug(
@@ -927,7 +966,7 @@ class AtemProtocol:
             else:
                 cmd = PartialLockCommand(next.store, next.slot)
             self._lock_requested[next.store] = time.monotonic()
-            self.send_commands([cmd])
+            send([cmd])
             return
 
         # A transfer request is already running, don't start a new one
@@ -946,7 +985,7 @@ class AtemProtocol:
                 self.transfer_queue[next.store] = queue[1:]
             self.log.info(
                 'Clearing {}:{} under store lock'.format(next.store, next.slot))
-            self.send_commands([ClearStillCommand(slot=next.slot)])
+            send([ClearStillCommand(slot=next.slot)])
             self._raise('clear-dispatched', next.store, next.slot)
             self._release_then_continue(next.store)
             return
@@ -976,6 +1015,10 @@ class AtemProtocol:
             cmd = TransferDownloadRequestCommand(self.transfer.tid, self.transfer.store, self.transfer.slot)
             self.log.info('Requesting download of {}:{}'.format(next.store, next.slot))
         self.transfer_requested = True
+        if self.transfer.upload:
+            # Each attempt sends its metadata and its data from the start.
+            self.transfer.metadata_sent = False
+            self.transfer.offset = 0
         outbound = [cmd]
         # Zero-length upload (e.g. clearing a macro slot via the
         # FTSD(len=0)+FTFD pattern that BMD uses for empty macros in
@@ -995,4 +1038,5 @@ class AtemProtocol:
                 name=self.transfer.name,
                 description=self.transfer.description,
             ))
-        self.send_commands(outbound)
+            self.transfer.metadata_sent = True
+        send(outbound)
