@@ -496,27 +496,12 @@ class UdpProtocol(BaseProtocol):
                 elif queue is self.thread_queue:
                     item = queue.get()
                     if item is None:
-                        # Defensive: tolerate a stray wake sentinel on the
-                        # send queue (no current producer).
+                        # wake_at's sentinel: select() returned, so the
+                        # next one takes the new timeout.
                         continue
                     try:
-                        self._send_packet_low(item)
+                        self._send_on_udp_thread(item)
                     except OSError as e:
-                        if e.errno in TRANSIENT_SEND_ERRNOS:
-                            # A momentary network hiccup (VPN blip, ICMP
-                            # unreachable burst, full socket buffer) must
-                            # not kill the transport thread: a dead thread
-                            # leaves a zombie connection whose worker
-                            # blocks forever while is_connected stays True
-                            # and send() silently drops (2026-07-06).
-                            # Only an ACK or a handshake packet gets here:
-                            # a reliable one keeps its sequence number in
-                            # _send_packet_low and is resent. ACKs go out
-                            # again with the next packet.
-                            self.log.error(
-                                f"Transient send error (packet dropped, "
-                                f"thread stays up): {e}")
-                            continue
                         self.log.error(e)
                         # Queue a None to signal the socket died
                         self.thread_recv_queue.put(None)
@@ -525,8 +510,34 @@ class UdpProtocol(BaseProtocol):
                     self.thread_recv_queue.put(None)
                     raise RuntimeError("Unexpected result from select()")
 
+    def _send_on_udp_thread(self, packet):
+        try:
+            self._send_packet_low(packet)
+        except OSError as e:
+            if e.errno not in TRANSIENT_SEND_ERRNOS:
+                raise
+            # A momentary network hiccup (VPN blip, ICMP unreachable
+            # burst, full socket buffer) must not kill the transport
+            # thread: a dead thread leaves a zombie connection whose
+            # worker blocks forever while is_connected stays True and
+            # send() silently drops (2026-07-06). Only an ACK or a
+            # handshake packet gets here: a reliable one keeps its
+            # sequence number in _send_packet_low and is resent. ACKs go
+            # out again with the next packet.
+            self.log.error(
+                f"Transient send error (packet dropped, thread stays up): {e}")
+
     def _send_packet(self, packet):
-        self.thread_queue.put(packet)
+        if threading.current_thread() is self.thread:
+            # The UDP thread is thread_queue's only reader, and a put waits
+            # while the socketpair under it is full: a few hundred entries,
+            # fewer than an upload budget drain_queue puts at once. Its own
+            # packets (the ACK for each reliable packet received, a SYN
+            # after a timeout) queued behind a budget had it wait on itself
+            # for good, and the upload with it (2026-10-15). They go now.
+            self._send_on_udp_thread(packet)
+        else:
+            self.thread_queue.put(packet)
         self.packet_success += 1
 
     def close_session(self):
@@ -853,8 +864,9 @@ class UdpProtocol(BaseProtocol):
         protocol's timed work, which its packets alone can't drive (the
         switcher's pings never reach it). The earliest of several wins."""
         with self._wake_lock:
-            if self._wake_due is None or when < self._wake_due:
-                self._wake_due = when
+            if self._wake_due is not None and self._wake_due <= when:
+                return                           # select() wakes sooner anyway
+            self._wake_due = when
         self.thread_queue.put(None)              # select() takes the new timeout
 
     def _fire_wake(self):
