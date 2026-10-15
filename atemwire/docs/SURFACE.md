@@ -1095,6 +1095,18 @@ it; item 27 was fixed after 1.5.1.
     queued at the release, and its next request goes out at once, beside another client's,
     aborting it as before. *Fixed in `1b30449`:* every per-frame release starts the wait, after an
     FTDE 6 too, and so does any client's announced release.
+28. **The UDP thread can wait on itself for good** (1.5.0). `thread_queue` is a `SocketQueue`:
+    each put writes a byte to a socketpair (278 fit on Linux) that only the UDP thread reads.
+    `drain_queue` puts a whole upload budget, up to 768 chunks, at once, and the UDP thread queued
+    its own packets too, the ACK for every reliable packet received among them. A packet arriving
+    mid-budget (another session's lock or transfer broadcast, say) left both threads waiting in
+    `SocketQueue.put` for good: the upload stops, and a caller's timeout never runs if its pump is
+    the protocol thread. *Fixed in `81955c1`:* what the UDP thread sends goes to the socket at once.
+29. **A caller's Wakeup runs the trigger in every yield** (1.5.2). `_service_yields` ran on
+    every `Wakeup`, a caller's included, and triggered each store with work queued before its
+    turn was due: two INFO lines per `Wakeup`, 100 a second under WebATEM's pump. *Fixed in
+    `81955c1`:* the trigger runs once the turn is due; before it, the protocol only wakes for the
+    due time again.
 
 ## Counts
 
