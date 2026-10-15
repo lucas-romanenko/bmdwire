@@ -26,6 +26,15 @@ one) did not hold on this hardware.
   on `LKOB`, not only on the release broadcast.
 * A `LOCK` (full store) or `PLCK` sent by a session that **already holds**
   the store gets no answer.
+* A `LOCK` sent while another session holds the store is **queued** too,
+  like a `PLCK` (ATEM Software Control's, 2026-10-15; this package's
+  comments used to say it was dropped). Handed the store at the holder's
+  release, the requester gets `LKOB` and **nothing is announced**, no
+  `LKST` either way.
+* A `PLCK` is granted beside another session's `LOCK`, even half a second
+  into its turn; the `FTSU` that follows aborts the other's transfer in
+  progress with `FTDE 6` (see "Sharing the store with ATEM Software
+  Control").
 * A `LOCK state=0` from a session that does not hold the store does
   nothing visible (this was tested only while a foreign client held it).
 
@@ -180,5 +189,47 @@ holder, which the switcher ignores (see "Requests and grants"). Waiting
 for the echo hid it, at a frame per transfer at best and up to 6.6 s
 measured, during a 20-still restore by bmdctl, which mirrors this code.
 Since `bd6ae77` atemwire holds the lock from `LKOB` to its own release, as
-ASC does, and sends the release and the next request in one packet.
+ASC does. That commit also sent the release and the next request in one
+packet, as ASC does; that shut ASC out, and since `5827626` the next
+request waits its turn (below).
+
+## Sharing the store with ATEM Software Control
+
+Three tests on 2026-10-15, ATEM Software Control connecting to the same
+switcher while a client of this package downloaded stills back to back,
+two of them captured on the ASC machine.
+
+* When it connects, ASC fetches every used still for its thumbnails, one
+  at a time, each under a whole-store `LOCK`. A `LOCK` sent while the
+  other client held the store was queued and handed to ASC at that
+  client's release, with `LKOB` and no `LKST`.
+* With 1.5.0 the other client then asked again at once (its release and
+  next request in one packet), or within half a second: its `PLCK` was
+  granted beside ASC's `LOCK`, and its `FTSU` aborted ASC's download in
+  progress, 230 to 500 ms in, with `FTDE 6`.
+* ASC reacts to the 6 as the notes above say a client should: it
+  releases and asks again in one packet, is queued, and is handed the
+  store at the next release, to be aborted again. **But it tries each
+  still once**: after the 6 it moves on to the next. After 20 stills and
+  20 `FTDE 6` it released the store and asked for nothing more, its
+  thumbnails left empty. It fetched them again only when the media pool
+  changed (a still cleared from another client).
+* Between its own stills ASC releases and asks again in one packet; the
+  switcher announces that as a release and a lock, often in one packet.
+* What lets ASC have its turn (`5827626`): after a release with more
+  work queued, ask again only once the store is announced free, and a
+  frame later (`LOCK_COURTESY`, 60 ms), so a lock announced right behind
+  the release (another client's next transfer) cancels the request;
+  never ask while another client is seen holding the store; and with no
+  announcement at all (the store handed to a waiting request), wait as
+  long as anyone is seen at work, another session's `FTDC` or any `LKST`,
+  asking after `LOCK_QUIET` (10 s) of quiet. With it ASC loaded all 20
+  thumbnails while the other client downloaded; the download paused 38 s
+  for ASC's 20 and went on. Alone, 20 uploads take 14.2 s, against
+  12.7 s with 1.5.0 and about 12 s for ASC.
+* atemwire 1.4.0 waited for its own release's `LKST` echo before asking
+  again, so it waited out a client handed the store too, by accident.
+  bmdctl, which mirrors this code, saw that as unexplained pauses of 2 to
+  6.6 s between stills in a restore: WebATEM, open on the same switcher,
+  was downloading each newly uploaded still for its thumbnail.
 

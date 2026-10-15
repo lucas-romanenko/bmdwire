@@ -43,6 +43,7 @@ def _protocol_holding(*stores):
     p.transport = _FakeTransport()
     p.locks = {s: True for s in stores}
     p._lock_requested = set()
+    p._yielding = {}
     return p
 
 

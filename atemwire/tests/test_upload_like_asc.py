@@ -2,17 +2,22 @@
 """Uploads as ATEM Software Control sends them (its restore capture,
 2026-10-15; docs/MEDIA_LOCK.md).
 
-Between two transfers ASC sends the release and the next lock request in
-one packet, and the switcher grants it in under a millisecond; it sends
-FTFD with the first FTCD budget, before the data; and it sends each budget
-whole, back to back. Twenty 1080p stills took it about 12 s. atemwire
-waited for the release's LKST echo before asking again (up to 6.6 s on
-the same switcher), sent FTFD after the last chunk, and sent five chunks
-per packet from the switcher, so a still took 23 s.
+ASC sends FTFD with the first FTCD budget, before the data, and each
+budget whole, back to back. Twenty 1080p stills took it about 12 s.
+atemwire sent FTFD after the last chunk and five chunks per packet from
+the switcher, so a still took 23 s.
 
-The lock request it used to defer was never eaten by the switcher: the
-release broadcast of the frame given back arrives a frame later, after the
-LKOB for the new request, and atemwire read it as losing the new grant.
+Between two transfers ASC sends the release and the next lock request in
+one packet. 1.5.0 did the same, and shut ASC out: another client's
+request waiting for the store is handed it at our release, unannounced,
+and a request of ours soon after is granted beside it and aborts its
+transfer (FTDE 6). So the next request waits for the store to be
+announced free and LOCK_COURTESY more; not announced, someone has it, and
+we wait while anyone is seen at work, asking after LOCK_QUIET of quiet.
+
+The lock request atemwire deferred until 1.5.0 was never eaten by the
+switcher: a release broadcast arriving after the LKOB for a new request
+was read as losing the new grant.
 
 The transport half: a send the kernel refuses is retried and, failing
 that, keeps its sequence number so it is resent; and what the switcher
@@ -24,7 +29,7 @@ import struct
 
 import pytest
 
-from atemwire.protocol import AtemProtocol
+from atemwire.protocol import LOCK_COURTESY, LOCK_QUIET, AtemProtocol
 from atemwire.transport import BaseProtocol, Packet, UdpProtocol
 
 CHUNK = 1392                     # the switcher's 1396, in whole 8-byte words
@@ -50,6 +55,21 @@ def proto():
 
 def names(packet):
     return [type(c).__name__ for c in packet]
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    c = Clock()
+    monkeypatch.setattr('atemwire.protocol.time.monotonic', c)
+    return c
 
 
 def grant(p, store=0):
@@ -118,31 +138,127 @@ def _download(p, slot):
 
 
 @pytest.mark.parametrize('make', [_upload, _download], ids=['uploads', 'downloads'])
-def test_the_release_and_the_next_request_share_a_packet(proto, make):
+def test_the_store_is_left_free_until_the_release_is_seen(proto, clock, make):
     _first_of_two_done(proto, make)
-    handover = proto.packets[-1]
-    assert names(handover) == ['LockCommand', 'PartialLockCommand']
-    assert handover[0].state is False and handover[1].slot == 2
-    # Granted at once, as the switcher does: no wait for an LKST.
+    assert names(proto.packets[-1]) == ['LockCommand'], 'the release alone'
+    assert proto.packets[-1][0].state is False
+    asked = len(proto.packets)
+    lkst(proto, 0, False)                        # the release announced
+    clock.t += LOCK_COURTESY / 2
+    proto._service_yields()
+    assert len(proto.packets) == asked, 'asked before anyone could take it'
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+    assert proto.packets[-1][0].slot == 2
     grant(proto)
-    assert proto.transfer.slot == 2
-    assert proto.transfer_requested is True
+    assert proto.transfer.slot == 2 and proto.transfer_requested is True
 
 
-def test_a_clear_next_takes_the_whole_store_in_the_same_packet(proto):
+def test_without_an_announcement_we_ask_after_lock_quiet(proto, clock):
+    _first_of_two_done(proto, _upload)
+    asked = len(proto.packets)
+    clock.t += LOCK_QUIET * 0.9
+    proto._service_yields()
+    assert len(proto.packets) == asked
+    clock.t += LOCK_QUIET * 0.2
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
+def test_a_store_handed_to_another_client_waits_while_it_works(proto, clock):
+    # Not announced free after our release: someone waiting was handed it.
+    # Their transfers ending (FTDC, another session's id) keep us waiting.
+    _first_of_two_done(proto, _upload)
+    asked = len(proto.packets)
+    for _ in range(3):
+        clock.t += LOCK_QUIET * 0.6
+        proto.save_field_data(b'FTDC', struct.pack('>HBB', 0x6c02, 1, 2))
+        proto._service_yields()
+    assert len(proto.packets) == asked, 'asked while another client worked'
+    lkst(proto, 0, False)                        # done: announced free
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
+def test_another_clients_turn_lasts_until_they_release(proto, clock):
+    # ASC's request waited for the store and was granted at our release.
+    # A request of ours now would be granted too and abort ASC's transfer
+    # with FTDE 6 (the capture of 2026-10-15), so we ask once ASC lets go.
+    _first_of_two_done(proto, _upload)
+    asked = len(proto.packets)
+    lkst(proto, 0, True)                         # taken, not by us
+    clock.t += LOCK_QUIET * 2
+    proto._service_yields()
+    assert len(proto.packets) == asked, 'asked while another client held it'
+    lkst(proto, 0, False)                        # they let go
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
+def test_a_store_another_client_holds_is_not_asked_for(proto, clock):
+    lkst(proto, 0, True)                         # someone else's
+    proto.download(0, 3)
+    assert proto.packets == []
+    lkst(proto, 0, False)
+    assert proto.packets == [], 'a frame for them to take it again'
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
+def test_another_client_releasing_and_retaking_keeps_its_turn(proto, clock):
+    # ASC releases one still and takes the store for its next in one
+    # packet; the switcher announces a release and a lock together. A
+    # request sent on the release would abort ASC's next transfer.
+    lkst(proto, 0, True)
+    proto.download(0, 3)
+    lkst(proto, 0, False)
+    lkst(proto, 0, True)
+    clock.t += LOCK_COURTESY * 2
+    proto._service_yields()
+    assert proto.packets == []
+
+
+def test_someone_taking_the_store_in_the_courtesy_gets_their_turn(proto, clock):
+    _first_of_two_done(proto, _upload)
+    lkst(proto, 0, False)                        # our release, announced
+    lkst(proto, 0, True)                         # and taken a frame later
+    clock.t += LOCK_COURTESY * 2
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['LockCommand'], 'no request in their turn'
+
+
+def test_the_yield_wakes_the_protocol(proto, clock):
+    woken = []
+    proto.transport.wake_at = woken.append
+    _first_of_two_done(proto, _upload)
+    assert woken == [clock.t + LOCK_QUIET]
+    lkst(proto, 0, False)
+    assert woken[-1] == clock.t + LOCK_COURTESY
+
+
+def test_a_clear_next_takes_the_whole_store_after_the_yield(proto, clock):
     _upload(proto, 1)
     proto.queue_clear(0, 5)
     grant(proto)
     tid = proto.transfer.tid
     budget(proto, 10)
     done(proto, tid)
-    handover = proto.packets[-1]
-    assert names(handover) == ['LockCommand', 'LockCommand']
-    assert [c.state for c in handover] == [False, True]
+    assert names(proto.packets[-1]) == ['LockCommand']
+    clock.t += LOCK_QUIET
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['LockCommand'] and proto.packets[-1][0].state is True
 
 
-def test_a_late_release_announcement_keeps_the_new_grant(proto):
+def test_a_late_release_announcement_keeps_the_new_grant(proto, clock):
+    # The announcement can come after LOCK_QUIET, and so after the LKOB
+    # for the next request.
     _first_of_two_done(proto, _upload)
+    clock.t += LOCK_QUIET
+    proto._service_yields()
     grant(proto)
     tid = proto.transfer.tid
     sent = len(proto.packets)
@@ -158,12 +274,14 @@ def test_a_late_release_announcement_keeps_the_new_grant(proto):
     assert proto.locks[0] is False
 
 
-def test_ftde_6_still_leaves_the_request_to_the_release_broadcast(proto):
+def test_ftde_6_still_leaves_the_request_to_the_release_broadcast(proto, clock):
     _upload(proto, 1)
     grant(proto)
     proto.save_field_data(b'FTDE', struct.pack('>HBx', proto.transfer.tid, 6))
     assert names(proto.packets[-1]) == ['LockCommand'], 'another session is queued: no request with it'
     lkst(proto, 0, False)
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
     assert names(proto.packets[-1]) == ['PartialLockCommand']
 
 
@@ -310,3 +428,18 @@ def test_the_switchers_acks_are_read(udp):
     udp.sock.recvfrom = lambda n: (ack.to_bytes(), ('127.0.0.1', 9910))
     udp._receive_packet_low()
     assert udp._acked_through == 2
+
+
+def test_wake_at_hands_the_protocol_a_wakeup_when_due(udp, monkeypatch):
+    from atemwire.transport import Wakeup
+    now = [500.0]
+    monkeypatch.setattr('atemwire.transport.time.monotonic', lambda: now[0])
+    udp.wake_at(501.0)
+    udp.wake_at(502.0)                           # the earliest wins
+    udp._fire_wake()
+    assert udp.thread_recv_queue.empty(), 'not before it is due'
+    now[0] = 501.0
+    udp._fire_wake()
+    assert isinstance(udp.thread_recv_queue.get_nowait(), Wakeup)
+    udp._fire_wake()
+    assert udp.thread_recv_queue.empty(), 'once'
