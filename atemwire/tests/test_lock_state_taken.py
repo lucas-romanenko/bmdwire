@@ -21,6 +21,14 @@ def _lkst(store, state):
     return struct.pack('>H?B', store, state, 0)
 
 
+@pytest.fixture(autouse=True)
+def _no_courtesy(monkeypatch):
+    # These tests are about the pounce itself: a release prompting the next
+    # request. The frame it waits first (LOCK_COURTESY) is
+    # test_upload_like_asc.py's.
+    monkeypatch.setattr('atemwire.protocol.LOCK_COURTESY', 0.0)
+
+
 @pytest.fixture
 def proto():
     p = AtemProtocol('127.0.0.1')
