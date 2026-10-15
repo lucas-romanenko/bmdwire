@@ -918,7 +918,7 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 10, the split-mono bullet of item 8, the float and `sourceId` bullets of item 9, items 15, 16,
 18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
-it.
+it; item 27 was fixed after 1.5.1.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1089,6 +1089,12 @@ it.
     while another client is seen holding the store, and with no announcement waits while anyone
     is seen at work, asking after `LOCK_QUIET` (10 s) of quiet. `UdpProtocol.wake_at` wakes the
     protocol for it.
+27. **A transfer queued after the release doesn't wait its turn** (1.5.1). Item 26's fix starts
+    the wait only after a release with more work queued. A caller that queues its transfers one at
+    a time (WebATEM's media pool watcher, the next still after decoding the last) has nothing
+    queued at the release, and its next request goes out at once, beside another client's,
+    aborting it as before. *Fixed in `1b30449`:* every per-frame release starts the wait, after an
+    FTDE 6 too, and so does any client's announced release.
 
 ## Counts
 

@@ -227,6 +227,13 @@ two of them captured on the ASC machine.
   thumbnails while the other client downloaded; the download paused 38 s
   for ASC's 20 and went on. Alone, 20 uploads take 14.2 s, against
   12.7 s with 1.5.0 and about 12 s for ASC.
+* That has to follow every release, work queued or not (`1b30449`).
+  WebATEM's media pool watcher queues one still at a time, the next
+  after decoding the last, so nothing is queued at the release; 1.5.1
+  yielded only when something was, and the watcher's next request went
+  out a moment after the release, beside ASC's. With the yield after
+  every release, ASC loaded all 20 thumbnails while a client downloaded
+  as the watcher does.
 * atemwire 1.4.0 waited for its own release's `LKST` echo before asking
   again, so it waited out a client handed the store too, by accident.
   bmdctl, which mirrors this code, saw that as unexplained pauses of 2 to
