@@ -498,7 +498,9 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   (`LOCK(store, False)`), and the `LKST` echo starts the next queued task. If another session's
   release is seen while work is queued, the lock is re-requested at once. A lock request is not
   repeated within 1.0 s (`LOCK_REREQUEST_SECONDS`). There is no timer-driven retry: a dropped
-  request is re-sent only on the next event.
+  request is re-sent only on the next event. Since `bd6ae77` the release and the next request go
+  in one packet, as ATEM Software Control sends them, and a release broadcast while the store is
+  held changes nothing; after an FTDE 6 the release goes alone (§5.4 item 21).
 - **`FTDE` status handling:**
   - 1 (try again): re-send the request with the same tid.
   - 5 (no lock): re-request the lock.
@@ -509,7 +511,8 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   Statuses 1, 5 and 6 never reach callers.
 - **Upload pacing:** the switcher grants budgets with `FTCD(size, count)`. Chunks go out as `FTDa`
   (an RLE header word is never split), then `FTFD(name, description, md5)` once the send queue
-  drains. Download chunks are acked one by one with `FTUA(tid, 0)`.
+  drains. Download chunks are acked one by one with `FTUA(tid, 0)`. Since `bd6ae77` `FTFD` goes
+  with the first budget and each budget is sent whole as it is granted (§5.4 items 22 and 23).
 - **The protocol layer has no timeouts.** A transfer ends on `FTDC`, a fatal `FTDE`, or
   `abort_transfers()`. Timeouts live in the callers below.
 - Lane control: `AtemProtocol.abort_transfers()` clears the lane and releases held locks;
@@ -520,7 +523,7 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
 | operation | entry point | parameters | behaviour |
 |---|---|---|---|
 | **download** | `ATEMConnection.download_still` (`connection.py:188`); on the facade, `atem.raw.download_still` | `(slot:int, *, timeout:float=30.0, progress_callback:Callable[[float],None]=None) -> bytes` | Blocking and serialised per connection. Flow: `PLCK(0,slot)` → `LKOB` → `FTSU` → `FTDa`×N/`FTUA` → `FTDC` → unlock. Returns the **RLE-decoded YCbCrA 4:2:2 frame** (w×h×4 bytes; actually a `bytearray`). Convert it with `imaging.atem_to_rgb`. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False, §5.4 item 20), `RuntimeError` (fatal `FTDE`) or `TimeoutError` (after `abort_transfers`) |
-| **upload** | **no high-level entry point**. Only `AtemProtocol.upload` (`protocol.py:682`) | `(store, index, data, compress=True, compressed=False, name=None, description=None, size=None, task=None) -> None` | Non-blocking: it only queues, and someone must pump `loop()`. `data` is a YCbCrA frame from `imaging.rgb_to_atem`. The MD5 is taken over the uncompressed frame. Flow: `PLCK` → `LKOB` → `FTSD(mode 1 = RLE)` → `FTCD` → `FTDa`… → `FTFD` → `FTDC` → `upload-done(store, slot)`. Progress arrives as `upload-progress(store, slot, percent, done, total)`. `size` is unused. `compressed=True` needs `compress=False`. `aggressive_drain=True` (constructor only, so not reachable through the pool) drains 10 packets per trigger instead of 5. The working reference caller is in WebATEM: `atem_control/uploader.py` (its own `AtemProtocol(ip, aggressive_drain=True)`, pumps until `upload-done`, then checks the `MPfe` hash) |
+| **upload** | **no high-level entry point**. Only `AtemProtocol.upload` (`protocol.py:682`) | `(store, index, data, compress=True, compressed=False, name=None, description=None, size=None, task=None) -> None` | Non-blocking: it only queues, and someone must pump `loop()`. `data` is a YCbCrA frame from `imaging.rgb_to_atem`. The MD5 is taken over the uncompressed frame. Flow: `PLCK` → `LKOB` → `FTSD(mode 1 = RLE)` → `FTCD` → `FTDa`… → `FTFD` → `FTDC` → `upload-done(store, slot)`. Progress arrives as `upload-progress(store, slot, percent, done, total)`. `size` is unused. `compressed=True` needs `compress=False`. `aggressive_drain=True` (constructor only, so not reachable through the pool) drains 10 packets per trigger instead of 5; since `bd6ae77` each budget is sent whole on any connection and it changes nothing (§5.4 item 22). The working reference caller is in WebATEM: `atem_control/uploader.py` (its own `AtemProtocol(ip, aggressive_drain=True)`, pumps until `upload-done`, then checks the `MPfe` hash) |
 | **clear (locked)** | `ATEM.clear_still` / `ATEMConnection.clear_still` (`connection.py:196`); underneath, `AtemProtocol.queue_clear(store, index)` / `dequeue_clear(task)` | `(slot:int, *, timeout:float=5.0) -> None` | `LOCK(0,True)` → `LKOB` → `CSTL` → `clear-dispatched` → unlock. Returns once the clear has been **dispatched**, not confirmed; watch `MPfe.is_used` to confirm. Use this, not the bare `media.clear_still` op (§1.8). Raises `ConnectionDeadError` when not connected (since `1572508`, when not `is_ready`) or `TimeoutError` |
 | capture | `media.capture_still(conn)` | — | single packet `Capt`, listed for completeness |
 
@@ -721,7 +724,9 @@ Readiness and identity:
   UDP thread**. A session therefore survives an unpumped loop; events only wait.
 - Duplicates are dropped. Out-of-order packets are parked (up to 512 ahead). Retransmission is
   **only on the switcher's request** (go-back-N, max 128). There is no client-side retransmit
-  timer, and the switcher's ACK number is never read.
+  timer, and the switcher's ACK number is never read. Since `bd6ae77` it is read, and what it
+  hasn't acknowledged in 250 ms is resent; a reliable packet the kernel refuses keeps its
+  sequence number (§5.4 items 24 and 25).
 - Goodbye: `close_session()` sends a SYN with `0x04`, fire-and-forget.
 - **There is no client keepalive.** `TiRq` is sent once, on ready. Silence is fine because ACKs
   flow from the UDP thread.
@@ -909,7 +914,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they still apply to
 1.2.0 and earlier, including the 1.1.0 that WebATEM pins. The fly-key bullets of items 9 and
 10, the split-mono bullet of item 8, the float and `sourceId` bullets of item 9, items 15, 16,
-18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it.
+18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
+were fixed after 1.4.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1039,6 +1045,37 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
     remaining slot. *Fixed in `1572508`:* the three raise `ConnectionDeadError` at once while
     `is_ready` is False, and the image capture refuses up front and stops when the session goes.
     `send()` still checks `is_connected` (bmdwire#8).
+21. **The next lock request waits for the release's broadcast** (1.4.0). After each transfer the
+    release goes out and the next request waits for its `LKST` echo, a frame later at best and
+    up to 6.6 s on a Constellation during a 20-still restore (bmdctl, which mirrors this code:
+    73 s for the restore, ATEM Software Control 12 s). The wait guarded against a request
+    "eaten" while a release was in flight. What happened instead: the switcher broadcasts lock
+    changes once a frame, after the `LKOB` for the new request, and the lock-state handler took
+    the release broadcast as losing the new grant, then skipped the next release and asked again
+    as the holder, which the switcher ignores (`docs/MEDIA_LOCK.md`). *Fixed in `bd6ae77`:* the
+    release and the next request go in one packet, as ASC sends them, and a release broadcast
+    while the store is held changes nothing. After an FTDE 6 the release still goes alone.
+22. **Uploads go five chunks per packet from the switcher** (1.4.0). A photographic 1080p still
+    (about 5,940 chunks: RLE barely shortens it) takes about 23 s; with `aggressive_drain`, about
+    3 s (WebATEM's figure). `FTFD` waits for the send queue to drain after the last chunk.
+    *Fixed in `bd6ae77`:* each `FTCD` budget is sent whole as it is granted, and `FTFD` goes with
+    the first, as ASC sends them (0.5 s a still); `aggressive_drain` no longer changes anything.
+23. **Upload chunks are sliced off the front of the data** (1.4.0). Each slice copies the rest,
+    some 25 GB for a 1080p still, and an upload retried after FTDE 1 goes on from where the
+    last attempt stopped, without its start or a second `FTFD`. *Fixed in `bd6ae77`:* chunks are
+    cut at an offset, reset with the `FTFD` on each attempt.
+24. **A lost packet with nothing after it is never resent** (1.4.0). Retransmission is only on
+    the switcher's request, which a later packet's gap prompts. The last packet of a burst (an
+    upload budget's last chunk; `FTFD` after the data) has nothing after it until the switcher
+    answers, so its loss stalls the transfer until the caller's timeout. *Fixed in `bd6ae77`:*
+    the switcher's ACK number is read, and what it hasn't acknowledged in 250 ms
+    (`UdpProtocol.RESEND_AFTER`) is resent from the first unacknowledged packet.
+25. **A reliable packet the kernel refuses is lost without a gap** (1.4.0). On a transient send
+    error (`ENOBUFS`, which macOS returns for a full buffer; `EAGAIN`; a route flap) the UDP
+    thread drops the packet before its sequence number is used, so the next packet takes it:
+    the switcher sees no gap, and an upload loses a chunk without a word. *Fixed in `bd6ae77`:*
+    `ENOBUFS` and `EAGAIN` are retried for up to 20 ms, and a reliable packet still refused keeps
+    its number and its copy for retransmission.
 
 ## Counts
 
