@@ -47,12 +47,10 @@ def test_lock_taken_does_not_touch_the_transfer_machinery(proto):
     # lock request out: nothing is sent, nothing forgotten, nothing granted.
     proto.transfer_queue[0] = [TransferTask(0, 3)]
     proto._lock_requested[0] = 123.0
-    proto._lock_release_pending.add(0)
     proto.save_field_data(b'LKST', _lkst(0, True))
     assert proto.sent == []
     assert proto.locks == {}
     assert proto._lock_requested == {0: 123.0}
-    assert proto._lock_release_pending == {0}
     assert proto.transfer_requested is False
 
 
@@ -61,6 +59,21 @@ def test_our_own_lock_stays_ours(proto):
     proto.save_field_data(b'LKST', _lkst(0, True))
     assert proto.locks == {0: True}
     assert proto.mixerstate['lock-state'].state is True
+
+
+def test_a_release_announced_while_we_hold_the_store_is_our_own_late(proto):
+    # The switcher announces lock changes once a frame: the release of the
+    # frame we gave back arrives after the LKOB for the request we sent
+    # with it (ASC's restore capture, 2026-10-15). It must not cost us the
+    # new grant, or we skip the next release and ask as the holder, which
+    # the switcher ignores.
+    proto.transfer_queue[0] = [TransferTask(0, 3)]
+    proto.locks[0] = True
+    proto.save_field_data(b'LKST', _lkst(0, False))
+    assert proto.locks == {0: True}
+    assert proto.sent == [], 'no pounce: we hold it'
+    assert proto.mixerstate['lock-state'].state is False, 'still stored, as announced'
+    assert [c.state for c in proto.seen] == [False]
 
 
 def test_taken_then_released(proto):
