@@ -386,8 +386,9 @@ def acquire_connection(ip_address: str):
     This is the only way application code (outside atemwire's own internals)
     should get a connection. Opening ``AtemProtocol(ip)`` directly is reserved
     for a dedicated bulk-upload process, which runs SEPARATELY from the
-    pool's process and needs ``aggressive_drain=True`` transport
-    tuning the pool can't provide. (Long-lived observers such as a media-pool
+    pool's process. (It used to need ``aggressive_drain=True`` for speed,
+    which the pool can't pass; uploads now send each budget whole on any
+    connection.) (Long-lived observers such as a media-pool
     watcher should ride THIS pooled connection via ``get_instance`` rather
     than open a second socket; every extra session costs the switcher a slot.)
 

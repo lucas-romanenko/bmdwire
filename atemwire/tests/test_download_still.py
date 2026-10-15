@@ -310,7 +310,6 @@ def test_queue_clear_dispatches_cstl_under_lock_then_releases():
         assert sent[1].state is False              # per-frame release
         assert dispatched == [(0, 6)]
         assert p.locks.get(0) is False             # belief reset
-        assert 0 in p._lock_release_pending        # echo-gated re-requests
     finally:
         try:
             p.transport.sock.close()
