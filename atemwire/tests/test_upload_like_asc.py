@@ -267,6 +267,43 @@ def test_the_yield_wakes_the_protocol(proto, clock):
     assert woken[-1] == clock.t + LOCK_COURTESY
 
 
+def test_a_pumps_wakeups_in_the_yield_ask_nothing(proto, clock, monkeypatch):
+    # WebATEM's pump puts a Wakeup on every tick: 50 a second, each one a
+    # trigger and two INFO lines through a 37 s turn (2026-10-15).
+    woken = []
+    proto.transport.wake_at = woken.append
+    _first_of_two_done(proto, _upload)
+    asked = len(proto.packets)
+    triggers = []
+    real = proto._transfer_trigger
+    monkeypatch.setattr(proto, '_transfer_trigger',
+                        lambda *a, **k: (triggers.append(a), real(*a, **k)))
+    for _ in range(50):
+        clock.t += 0.02
+        proto._service_yields()
+    assert triggers == [] and len(proto.packets) == asked
+    clock.t += LOCK_QUIET
+    proto._service_yields()
+    assert len(triggers) == 1
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
+def test_a_yield_moved_by_someone_at_work_is_woken_for_again(proto, clock):
+    woken = []
+    proto.transport.wake_at = woken.append
+    _first_of_two_done(proto, _upload)
+    asked = len(proto.packets)
+    clock.t += LOCK_QUIET * 0.5
+    proto.save_field_data(b'FTDC', struct.pack('>HBB', 0x6c02, 1, 2))
+    clock.t += LOCK_QUIET * 0.5                  # the first wake comes
+    proto._service_yields()
+    assert len(proto.packets) == asked
+    assert woken[-1] == clock.t + LOCK_QUIET * 0.5
+    clock.t += LOCK_QUIET * 0.5
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
 def test_a_clear_next_takes_the_whole_store_after_the_yield(proto, clock):
     _upload(proto, 1)
     proto.queue_clear(0, 5)
@@ -470,3 +507,12 @@ def test_wake_at_hands_the_protocol_a_wakeup_when_due(udp, monkeypatch):
     assert isinstance(udp.thread_recv_queue.get_nowait(), Wakeup)
     udp._fire_wake()
     assert udp.thread_recv_queue.empty(), 'once'
+
+
+def test_wake_at_wakes_the_udp_thread_only_for_a_sooner_time(udp):
+    udp.wake_at(501.0)
+    udp.wake_at(502.0)
+    udp.wake_at(501.0)
+    assert udp.thread_queue.qsize() == 1
+    udp.wake_at(500.5)
+    assert udp.thread_queue.qsize() == 2

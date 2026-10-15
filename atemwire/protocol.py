@@ -992,12 +992,22 @@ class AtemProtocol:
 
     def _service_yields(self):
         """Ask for each store we left free whose yield is over; forget a
-        yield that is over with nothing waiting on it."""
+        yield that is over with nothing waiting on it. A Wakeup comes from
+        callers too (WebATEM's pump sends one every 20 ms): a yield not yet
+        over is only woken for again, its time perhaps moved by someone at
+        work, so the trigger runs once per turn, not once per tick."""
+        now = time.monotonic()
         for store in list(self._yielding):
+            due = self._yield_due(store)
             if not self.transfer_queue.get(store):
-                if time.monotonic() >= self._yield_due(store):
+                if now >= due:
                     del self._yielding[store]
-            elif not self.transfer_requested and not self.locks.get(store):
+            elif (self.transfer_requested or self.locks.get(store)
+                    or store in self._foreign_held):
+                continue                         # their release asks for us
+            elif now < due:
+                self._wake_at(due)
+            else:
                 self._transfer_trigger(store)
 
     def _transfer_trigger(self, store, retry=False):
