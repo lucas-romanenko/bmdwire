@@ -155,6 +155,33 @@ def test_the_store_is_left_free_until_the_release_is_seen(proto, clock, make):
     assert proto.transfer.slot == 2 and proto.transfer_requested is True
 
 
+def test_a_transfer_queued_after_the_release_waits_too(proto, clock):
+    # WebATEM's media pool watcher queues one still at a time, the next
+    # after decoding the last: nothing is queued at the release, and the
+    # request that follows a moment later must wait its turn as well.
+    _download(proto, 1)
+    grant(proto)
+    done(proto, proto.transfer.tid)
+    assert names(proto.packets[-1]) == ['LockCommand']
+    clock.t += 0.25                              # the decode
+    _download(proto, 2)
+    assert names(proto.packets[-1]) == ['LockCommand'], 'asked before the store was seen free'
+    lkst(proto, 0, False)
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
+def test_after_ftde_6_the_store_is_theirs_until_seen_free(proto, clock):
+    _upload(proto, 1)
+    grant(proto)
+    proto.save_field_data(b'FTDE', struct.pack('>HBx', proto.transfer.tid, 6))
+    asked = len(proto.packets)
+    clock.t += LOCK_COURTESY * 3
+    proto._service_yields()
+    assert len(proto.packets) == asked
+
+
 def test_without_an_announcement_we_ask_after_lock_quiet(proto, clock):
     _first_of_two_done(proto, _upload)
     asked = len(proto.packets)
