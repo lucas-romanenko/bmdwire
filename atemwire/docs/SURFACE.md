@@ -1107,6 +1107,12 @@ it; item 27 was fixed after 1.5.1.
     turn was due: two INFO lines per `Wakeup`, 100 a second under WebATEM's pump. *Fixed in
     `81955c1`:* the trigger runs once the turn is due; before it, the protocol only wakes for the
     due time again.
+30. **A receive buffer size the system refuses fails the connect** (1.5.3). `UdpProtocol` asked
+    for a 16 MB `SO_RCVBUF` with a bare `setsockopt`. Linux caps the request silently and Windows
+    takes it, but macOS 12 refuses anything above `kern.ipc.maxsockbuf` with errno 55
+    (`ENOBUFS`): the constructor raised, and no switcher could be connected from that system.
+    *Fixed in `c08f830`:* the request steps down 16, 8, 4, 1 MB and keeps the first size taken,
+    or the system's default if it takes none.
 
 ## Counts
 
