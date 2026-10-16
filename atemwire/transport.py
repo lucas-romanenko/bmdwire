@@ -312,7 +312,13 @@ class UdpProtocol(BaseProtocol):
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(self.timeout)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024 * 16)
+        # macOS refuses more than kern.ipc.maxsockbuf with errno 55 (ENOBUFS) instead of capping.
+        for megabytes in (16, 8, 4, 1):
+            try:
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024 * megabytes)
+                break
+            except OSError:
+                pass
         try:
             # Room for an upload budget sent back to back (768 chunks of
             # ~1.4 KB); the system may cap it lower, which is fine.
