@@ -304,6 +304,42 @@ def test_a_yield_moved_by_someone_at_work_is_woken_for_again(proto, clock):
     assert names(proto.packets[-1]) == ['PartialLockCommand']
 
 
+def test_a_caller_that_times_out_still_waits_its_turn(proto, clock):
+    # WebATEM's media pool gives a download 15 s, then abort_transfers() and
+    # a retry. The switcher handed the store to ASC at our release,
+    # unannounced: the retry must wait for ASC, not ask beside it.
+    _first_of_two_done(proto, _download)
+    asked = len(proto.packets)
+    clock.t += 15
+    proto.save_field_data(b'FTDC', struct.pack('>HBB', 0x6c02, 1, 2))   # ASC at work
+    proto.abort_transfers()                      # the caller's timeout
+    _download(proto, 2)                          # and its retry
+    proto._service_yields()
+    assert len(proto.packets) == asked, 'asked in the middle of their turn'
+    lkst(proto, 0, False)                        # they let go
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
+def test_an_abort_holding_the_lock_leaves_the_store_its_turn(proto, clock):
+    # A transfer stalls holding the lock; the caller gives up and the abort
+    # releases it. Whoever waited for the store is handed it, as at any
+    # release, and the retry waits for its turn.
+    _download(proto, 1)
+    grant(proto)
+    proto.abort_transfers()
+    assert names(proto.packets[-1]) == ['LockCommand']
+    assert proto.packets[-1][0].state is False
+    asked = len(proto.packets)
+    _download(proto, 1)
+    assert len(proto.packets) == asked, 'asked before anyone could take it'
+    lkst(proto, 0, False)
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    assert names(proto.packets[-1]) == ['PartialLockCommand']
+
+
 def test_a_clear_next_takes_the_whole_store_after_the_yield(proto, clock):
     _upload(proto, 1)
     proto.queue_clear(0, 5)
