@@ -759,11 +759,13 @@ class AtemProtocol:
         self.transfer_requested = False
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
-        # A lock request in flight, or a store left free, must not outlive
-        # the abort: the queue it was for is gone, and the next caller's
-        # request must not wait on it.
+        # A lock request in flight must not outlive the abort: the queue it
+        # was for is gone. Another client's turn does: a caller that timed
+        # out waiting for it (WebATEM's media pool gives a download 15 s)
+        # retries at once, and the switcher may have handed the store over
+        # unannounced at our last release, so the retry still waits. A lock
+        # released here leaves the store its turn as any release does.
         self._lock_requested.clear()
-        self._yielding.clear()
         for lock in list(self.locks):
             if self.locks[lock]:
                 try:
@@ -771,6 +773,8 @@ class AtemProtocol:
                 except Exception:
                     pass
                 self.locks[lock] = False
+                if self._can_wake():
+                    self._yielding[lock] = [time.monotonic(), None]
 
     def download(self, store, index):
         # The native interleaved download: transfers ride the normal packet
