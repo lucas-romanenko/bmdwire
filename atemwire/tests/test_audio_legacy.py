@@ -232,3 +232,36 @@ def test_legacy_audio_from_the_wire(proto):
         ('1.0', 'On', 0.0, 25.0)
     assert (mic['strip_id'], mic['short_name'], mic['mix_type'], mic['volume_db']) == \
         ('1301.0', 'Mic1', 'Off', None)
+
+
+# --- AMLv --------------------------------------------------------------------
+
+_UNITY = 128 * 65536        # 2^23: 0 dB on the meter scale
+
+
+def _amlv(master, monitor, inputs):
+    """``inputs`` is ``[(source, (lvlL, lvlR, peakL, peakR)), ...]``: the
+    sources' u16s, padded to 4 bytes, then their four u32s each."""
+    out = struct.pack('>H2x', len(inputs)) + struct.pack('>8I', *master, *monitor)
+    out += struct.pack(f'>{len(inputs)}H', *(s for s, _ in inputs))
+    out += bytes(-len(out) % 4)
+    for _, levels in inputs:
+        out += struct.pack('>4I', *levels)
+    return out
+
+
+@pytest.mark.parametrize('sources', [(1, 2), (1, 2, 1001)], ids=['even', 'odd (padded)'])
+def test_amlv_decodes_master_monitor_and_inputs(proto, sources):
+    half = _UNITY // 2                                     # -6.02 dB
+    inputs = [(s, (_UNITY, half, 0, _UNITY * 2)) for s in sources]
+    seen = []
+    proto.on('change:audio-meter-levels', seen.append)
+    proto.save_field_data(b'AMLv', _amlv((_UNITY,) * 4, (half, half, 0, 0), inputs))
+    lv = proto.mixerstate['audio-meter-levels']             # bare: one packet, every input
+    assert seen == [lv]
+    assert lv.count == len(sources)
+    assert lv.master == (0.0, 0.0, 0.0, 0.0)
+    assert [round(x, 2) for x in lv.monitor] == [-6.02, -6.02, -60, -60]
+    assert set(lv.input) == set(sources)                    # keyed by int source
+    for s in sources:
+        assert [round(x, 2) for x in lv.input[s]] == [0.0, -6.02, -60, 6.02]
