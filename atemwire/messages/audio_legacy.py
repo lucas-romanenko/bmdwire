@@ -528,3 +528,46 @@ def legacy_audio_solo(mx) -> dict:
         return {'any_soloed': False, 'strip_id': None}
     return {'any_soloed': True,
             'strip_id': f"{safe_int(getattr(node, 'solo_source', 0), 0)}.0"}
+
+
+# =============================================================================
+# Diagnostics
+# -----------------------------------------------------------------------------
+# No legacy switcher has been on the wire here, so AtemProtocol logs the first
+# AMIP per source and the first AMMO, AMmO and AMLv a connection receives, at
+# INFO, raw and decoded, prefixed "legacy-audio:", and the mixer it found at
+# each connect. A log from a legacy unit is then enough to confirm the layouts
+# above or correct them. Only legacy switchers send these four packets, so a
+# Fairlight one logs none of them (its mixer line is DEBUG).
+# =============================================================================
+
+LEGACY_AUDIO_DIAGNOSTIC_KEYS = frozenset({
+    'audio-input', 'audio-mixer-master-properties',
+    'audio-mixer-monitor-properties', 'audio-meter-levels',
+})
+
+
+def _diagnostic_value(value):
+    if isinstance(value, float):
+        return round(value, 1)
+    if isinstance(value, tuple):
+        return tuple(_diagnostic_value(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _diagnostic_value(v) for k, v in value.items()}
+    return value
+
+
+def legacy_audio_diagnostic(contents) -> str:
+    """One line for the log: the code, the source for AMIP, the payload in
+    hex and every decoded attribute, plus dB for a volume and the plug's
+    name. AMLv levels are rounded to 0.1 dB."""
+    values = {k: _diagnostic_value(v) for k, v in vars(contents).items()
+              if k not in ('raw', 'strip_id')}
+    if 'volume' in values:
+        values['volume_db'] = legacy_volume_to_db(values['volume'])
+    if 'plug' in values:
+        values['plug_name'] = _PLUG_NAMES.get(values['plug'], 'Analog')
+    raw = bytes(getattr(contents, 'raw', b''))
+    where = f' source {contents.index}' if type(contents).CODE == 'AMIP' else ''
+    decoded = ' '.join(f'{k}={v}' for k, v in values.items())
+    return f'{type(contents).CODE}{where}, {len(raw)} bytes: {raw.hex()} -> {decoded}'
