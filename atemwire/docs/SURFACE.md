@@ -187,6 +187,13 @@ All four are restored upstream and not re-exported.
 | `AudioMonitorPropertiesCommand` | `CAMm` | `enabled?`, `volume?:u16`, `mute?`, `solo?`, `solo_source?:u16`, `dim?`, `dim_volume?:u16` | op `set_audio_monitor(conn, **props)` |
 | `SendAudioLevelsCommand` | `SALN` | `enable:bool` | opts in to `AMLv`. Op `enable_audio_levels` |
 
+The ops take wire units. Three helpers in the module convert from the units the state shows
+(§2.4): `legacy_db_to_volume(db)` is `floor(10 ** (dB / 20) * 32768)` clamped to 0–65381, with
+`None`, `-inf` and NaN giving 0 (silence; +6.0 dB gives 65380, since 65381 is +6.00003 dB);
+`legacy_volume_to_db(volume)` is its inverse, two places, `None` for 0; `legacy_pan_to_balance(pan)`
+is pan ±100 × 100, clamped to ±10000. The scales agree with LibAtem and atem-connection; no legacy
+switcher has checked them here.
+
 ### 1.12 camera-control — `messages/camera_control.py`
 
 | name | opcode | params | notes |
@@ -288,12 +295,13 @@ pooled `ATEMConnection` exposes the same dict as `conn.mixerstate`. For each inc
 
 There are two read layers on top of `mixerstate`:
 
-- **Readers**: 88 functions `reader(mx, …)` in `atemwire.messages.<module>` that turn wire values into
+- **Readers**: 93 functions `reader(mx, …)` in `atemwire.messages.<module>` that turn wire values into
   display units, with defaults when a packet hasn't arrived.
 - **`atemwire.state.build_full_state(conn)`**: one dict for the whole switcher (§2.6), built
-  from the readers. It does **not** cover multiviewer, SuperSource, recording, streaming, tally,
-  camera control, the legacy audio mixer, media-pool slots, media-player selection, locks, time
-  or meters. Those exist only in `mixerstate` and the module readers.
+  from the readers. Its audio section is the Fairlight mixer's or the legacy mixer's, whichever
+  the switcher has. It does **not** cover multiviewer, SuperSource, recording, streaming, tally,
+  camera control, media-pool slots, media-player selection, locks, time or meters. Those exist
+  only in `mixerstate` and the module readers.
 
 Indexing abbreviations: **me** = per M/E; **me,keyer** = per keyer; **dsk**; **src** = per source ID
 (u16); **strip** = per Fairlight strip id `"src.sub"`; **slot** = per media/macro/hyperdeck slot;
@@ -363,11 +371,34 @@ brackets where it matters). "Written by" names the §1 command(s) whose effect l
 | `fairlight-strip-delete` | `FASD` | (raw only) | bare | — (never acted on; §5.4) |
 | `fairlight-meter-levels` | `FMLv` | `is_split`, `subchannel`, `index`, `strip_id`, `input:(lvlL, lvlR, peakL, peakR)`, `expander_gr`, `compressor_gr`, `limiter_gr`, `output:(4)`, `level:(4)` (dB floats) | **bare** (last strip wins; listen to `change:fairlight-meter-levels`) | `SFLN` opt-in |
 | `fairlight-master-levels` | `FDLv` | `input:(4)`, `compressor_gr`, `limiter_gr`, `output:(4)`, `level:(4)` (dB) | bare | `SFLN` opt-in |
-| `audio-input` | `AMIP` | `index:u16`, `type:u8`, `number:u8`, `plug:u8` (`plug_name()`: 0 Internal, 1 SDI, 2 HDMI, 3 Component, 4 Composite, 5 SVideo, 32 XLR, 64 AES, 128 RCA), `state:u8`, `volume:u16`, `balance:i16`, `strip_id` | src | `CAMI` |
+| `audio-input` | `AMIP` | `index:u16`, `type:u8 (0 video input, 1 media player, 2 external audio)`, `number:u8`, `plug:u8` (`plug_name()`: 0 Internal, 1 SDI, 2 HDMI, 3 Component, 4 Composite, 5 SVideo, 32 XLR, 64 AES, 128 RCA), `state:u8 (0 Off, 1 On, 2 AFV)`, `volume:u16`, `balance:i16`, `strip_id` (`"<index>.0"`). 16 bytes from ATEM 8.0 firmware, 20 before; the first 16 are read | strip (`"src.0"`) | `CAMI` |
 | `audio-mixer-master-properties` | `AMMO` | `volume:u16`, `afv:bool` | bare | `CAMM` |
-| `audio-mixer-monitor-properties` | `AMmO` | `enabled`, `volume:u16`, `mute`, `solo`, `solo_source:u16`, `dim`, `dim_volume:u16` | bare | `CAMm` |
+| `audio-mixer-monitor-properties` | `AMmO` | `enabled`, `volume:u16`, `mute`, `solo`, `solo_source:u16`, `dim`, `dim_volume:u16` (a level, 0–100.00 ×100 per LibAtem, not a gain) | bare | `CAMm` |
 | `audio-mixer-tally` | `AMTl` | `num`, `tally:{"src.0": bool}` | bare | — |
-| `audio-meter-levels` | `AMLv` | `count`, `master:(4 dB)`, `monitor:(4 dB)`, `input:{src: (4 dB)}` | bare | `SALN` opt-in |
+| `audio-meter-levels` | `AMLv` | `count`, `master:(lvlL, lvlR, peakL, peakR)`, `monitor:(4)`, `input:{src:int: (4)}`; dB = `20·log10(v / 2^23)` of each u32, and 0 is `-60` | **bare** (one packet carries every input; listen to `change:audio-meter-levels`) | `SALN` opt-in |
+
+**Legacy mixer readers** (`messages/audio_legacy.py`), which `build_full_state` uses on a legacy
+switcher (§2.6): `audio_mixer_type(mx)` gives `'fairlight'` once `FAMP` has arrived, `'legacy'`
+once `AMMO` has, and `'unknown'` before either. `legacy_audio_master`, `legacy_audio_strips`,
+`legacy_audio_headphones` and `legacy_audio_solo` read `AMMO`, `AMIP` and `AMmO` into the shapes
+of `fairlight_master`, `fairlight_strips`, `fairlight_headphones` and `fairlight_solo`, less
+what the legacy mixer doesn't have (input gain, EQ, dynamics, delay), which is absent rather
+than zero. Volumes are dB by `legacy_volume_to_db` (§1.11), `None` for silence; pan is balance
+/ 100 (±100, as the Fairlight strips show it; LibAtem and atem-connection show balance as ±50);
+`mix_type` takes the Fairlight names (`'Off'`, `'On'`, `'AudioFollowVideo'`) while `mix_state`
+keeps the legacy wire value. Strip names: a video input's from `InPr`, `MP<n>` for media player
+source 2000 + n, and `XLR`, `AES`, `RCA`, `Mic1`, `Mic2` for sources 1001, 1101, 1201, 1301,
+1302. Headphones are the monitor bus: `dim_level` is `dim_volume` / 100, not dB. None of this
+has met a legacy switcher; it is built from the packet layouts, which agree with LibAtem's and
+atem-connection's.
+
+**Legacy audio in the log.** So that a log from a legacy switcher can confirm the layouts or
+correct them, `AtemProtocol` logs at INFO (logger `AtemProtocol`), prefixed `legacy-audio:`, the
+first `AMIP` per source and the first `AMMO`, `AMmO` and `AMLv` a connection receives, each as
+its payload in hex and every decoded attribute (with `volume_db` and `plug_name`), and at every
+connect the mixer the dump showed (`legacy`, or `unknown` when it had neither `FAMP` nor
+`AMMO`). A Fairlight switcher sends none of the four, and its mixer line is DEBUG. A failure to
+describe a packet is logged at DEBUG and never reaches the packet loop.
 
 ### 2.5 outputs, devices, system
 
@@ -440,11 +471,17 @@ macros: [ {number 1-based, name} ] — FIRST 12 SLOTS ONLY
 lastRunMacro: {index, name}
 auxOutputs: {aux1..auxN: source}            (N from _top, else 6)
 hyperdecks: [ {slot, network_address, input, configured} ]
-audio: {present, master {…, eq_bands[6]}, strips [ {source, channel, subchannel, split,
-        strip_id, name, short_name, mix_type, mix_state, volume_db, input_gain_db, pan,
-        delay_frames, eq_enable, eq_gain_db, eq_bands[6], dynamics_makeup_db, soloed,
-        compressor, limiter, expander, input_type, analog_level} ],
+audio: {mixer 'fairlight'|'unknown', present, master {…, eq_bands[6]}, strips [ {source,
+        channel, subchannel, split, strip_id, name, short_name, mix_type, mix_state, volume_db,
+        input_gain_db, pan, delay_frames, eq_enable, eq_gain_db, eq_bands[6],
+        dynamics_makeup_db, soloed, compressor, limiter, expander, input_type, analog_level} ],
         headphones {present, volume_db, unmuted}, solo {any_soloed, strip_id}}
+     or, on a legacy mixer (AMMO arrived; §2.4):
+       {mixer 'legacy', present (AMMO and an AMIP), master {present, volume_db, afv},
+        strips [ {source, channel -1, subchannel 0, split False, strip_id "src.0", name,
+        short_name, mix_type, mix_state (0/1/2), volume_db, pan, soloed, input_type, plug} ],
+        headphones {present, volume_db, unmuted, enabled, dim, dim_level, solo, solo_source},
+        solo {any_soloed, strip_id}}
 videoMode: {format, id, fps}
 videoModes: [ {id, label} ]
 inputLabels: {inputs: [], outputs: [], media: []}   ({source, long, short})
@@ -871,8 +908,9 @@ simulated switcher state beyond a 1080p50 `video-mode`.
   `atemwire/__init__.py` docstring does not list it among the layers covered by the version
   number.
 - **`build_full_state` omits whole areas.** It covers no multiviewer, SuperSource, recording,
-  streaming, tally, camera control, legacy audio, media-pool slots, media-player selection, locks,
-  time or meters, and lists **only the first 12 macros**.
+  streaming, tally, camera control, media-pool slots, media-player selection, locks, time or
+  meters, and lists **only the first 12 macros**. (Legacy audio was in this list until
+  `3e2f400`; see §5.4 item 33.)
 - **Unused constants.** `FTSD`'s `MODE_WRITE_RLE`, `MODE_WRITE` and `MODE_ERASE` are unused (the
   engine uses literals). `profile/_enums._source_symbol()` is dead code.
 - **`SaveOptions.media_pool_images` and `ApplyOptions.restore_media_pool_images` are never read.**
@@ -918,7 +956,7 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 10, the split-mono bullet of item 8, the float and `sourceId` bullets of item 9, items 15, 16,
 18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
-it; item 27 was fixed after 1.5.1.
+it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1119,6 +1157,19 @@ it; item 27 was fixed after 1.5.1.
     unannounced at our last release, and was granted beside the other client's lock, aborting its
     transfer. *Fixed in `1feedbd`:* the wait outlives the abort, and a lock the abort releases starts
     one.
+32. **An `AMIP` from before ATEM 8.0 firmware ends the connection** (1.5.5). `AudioInputField`
+    unpacked it with `struct.unpack`, which wants exactly 16 bytes; before 8.0 the switcher sends
+    20 (LibAtem's `AudioMixerInputGetCommand` and its `V8` twin). The `struct.error` left
+    `loop()` and ended the worker, so a legacy switcher on older firmware could not stay
+    connected. *Fixed in `626c785`:* `unpack_from` reads the first 16 bytes of either length.
+    Untested on a switcher.
+33. **On a legacy audio mixer the audio section is never present** (1.5.5). `_build_audio` read
+    only the Fairlight packets, so on a switcher with the legacy mixer (a Production Studio 4K, a
+    Television Studio HD) `audio.present` stayed False and a frontend gated on it (WebATEM)
+    waited for good. *Fixed in `3e2f400`:* `audio.mixer` says which mixer it is
+    (`audio_mixer_type`), and on `'legacy'` the section is built from `AMMO`, `AMIP` and `AMmO`
+    in the Fairlight shapes (§2.4, §2.6). The first of each legacy packet is logged raw and
+    decoded (`03fa389`, §2.4) so a user's log can check the layouts. Untested on a switcher.
 
 ## Counts
 
@@ -1133,7 +1184,7 @@ Measured by importing the package, not tallied by hand.
 | **State: `Recv` classes (= distinct incoming opcodes parsed)** | **92** (4 codes, `AiVM`, `FEna`, `FTDa` and `STAB`, are both a command and a state packet) |
 | … parsed state attributes across them | 526 (public, index attributes included) |
 | … known-but-unparsed codes stored raw | 27 |
-| Reader functions `reader(mx, …)` | 88 |
+| Reader functions `reader(mx, …)` | 93 |
 | **Transfer and special operations** | **10**: 5 multi-packet wire flows (still download, still upload, locked still clear, macro download, macro upload); 3 composite flows built on them (profile save, profile apply, media-pool PNG export); 2 offline codecs (macro bytecode, image/RLE conversion) |
 | … macro bytecode op codes (encode + decode) | 146 |
 | … profile: sections saved / applied; control opcodes apply emits | 14 / 10; 43 |
