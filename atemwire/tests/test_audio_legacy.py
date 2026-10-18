@@ -11,6 +11,7 @@ LibAtem's and atem-connection's. A hardware report from a Production Studio
 No hardware: ``AtemProtocol(ip=...)`` creates an unbound UDP socket but
 starts no thread and sends nothing; ``save_field_data`` is driven directly.
 """
+import logging
 import struct
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from atemwire.messages.audio_legacy import (
 )
 from atemwire.protocol import AtemProtocol
 from atemwire.state import build_full_state
+from atemwire.transport import Packet, UdpProtocol
 
 _AMIP_FMT = '>HB 2x B x BB x Hh 2x'     # 16 bytes, ATEM 8.0 firmware on
 
@@ -265,3 +267,97 @@ def test_amlv_decodes_master_monitor_and_inputs(proto, sources):
     assert set(lv.input) == set(sources)                    # keyed by int source
     for s in sources:
         assert [round(x, 2) for x in lv.input[s]] == [0.0, -6.02, -60, 6.02]
+
+
+# --- Diagnostics -------------------------------------------------------------
+
+def _legacy_lines(caplog):
+    return [r.getMessage() for r in caplog.records
+            if r.name == 'AtemProtocol' and r.levelno == logging.INFO
+            and r.getMessage().startswith('legacy-audio:')]
+
+
+def test_first_of_each_legacy_packet_is_logged_raw_and_decoded(proto, caplog):
+    ammo = struct.pack('>H2x?3x', 32768, True)
+    amip1 = _amip(1, plug=1, state=2, volume=16384, balance=-5000)
+    with caplog.at_level(logging.INFO, logger='AtemProtocol'):
+        proto.save_field_data(b'AMMO', ammo)
+        proto.save_field_data(b'AMMO', struct.pack('>H2x?3x', 0, False))
+        proto.save_field_data(b'AMIP', amip1)
+        proto.save_field_data(b'AMIP', _amip(1, volume=0))         # same source
+        proto.save_field_data(b'AMIP', _amip(2, pad=4))            # a new one
+        proto.save_field_data(b'AMmO', bytes(12))
+        proto.save_field_data(b'AMLv', _amlv((_UNITY,) * 4, (0,) * 4, [(1, (_UNITY,) * 4)]))
+        proto.save_field_data(b'AMLv', _amlv((0,) * 4, (0,) * 4, []))
+    lines = _legacy_lines(caplog)
+    assert [line.split(',')[0] for line in lines] == [
+        'legacy-audio: AMMO', 'legacy-audio: AMIP source 1',
+        'legacy-audio: AMIP source 2', 'legacy-audio: AMmO', 'legacy-audio: AMLv',
+    ]
+    assert lines[0] == (f'legacy-audio: AMMO, 8 bytes: {ammo.hex()} -> '
+                        f'volume=32768 afv=True volume_db=0.0')
+    assert lines[1] == (f'legacy-audio: AMIP source 1, 16 bytes: {amip1.hex()} -> '
+                        f'index=1 type=0 number=0 plug=1 state=2 volume=16384 '
+                        f'balance=-5000 volume_db=-6.02 plug_name=SDI')
+    assert lines[2].startswith('legacy-audio: AMIP source 2, 20 bytes: ')
+    assert 'master=(0.0, 0.0, 0.0, 0.0)' in lines[4]
+    assert 'input={1: (0.0, 0.0, 0.0, 0.0)}' in lines[4]
+
+
+def test_a_failing_description_never_costs_the_packet(proto, monkeypatch, caplog):
+    def boom(contents):
+        raise RuntimeError('no')
+    monkeypatch.setattr('atemwire.protocol.legacy_audio_diagnostic', boom)
+    with caplog.at_level(logging.INFO, logger='AtemProtocol'):
+        proto.save_field_data(b'AMIP', _amip(5))
+    assert '5.0' in proto.mixerstate['audio-input']
+    assert _legacy_lines(caplog) == []
+
+
+def _field(code, payload):
+    return struct.pack('>H2x4s', 8 + len(payload), code) + payload
+
+
+def _packet(*fields):
+    pkt = Packet()
+    pkt.flags = UdpProtocol.FLAG_RELIABLE
+    pkt.session = 0x8001
+    pkt.data = b''.join(fields)
+    return Packet.from_bytes(pkt.to_bytes())
+
+
+def _connect_with(proto, *fields):
+    """A state dump of ``fields`` (plus a video mode and InCm), then the
+    packet after it, which makes the transport report the session ready:
+    ``loop()`` raises 'connected' as it does on the wire."""
+    t = proto.transport
+    t.state = UdpProtocol.STATE_ESTABLISHED
+    t.enable_ack = True
+    t.had_traffic = True
+    events = []
+    proto.on('connected', lambda: events.append('connected'))
+    t.thread_recv_queue.put(_packet(_field(b'VidM', bytes([10, 0, 0, 0])), *fields,
+                                    _field(b'InCm', b'\x01\x00\x00\x00')))
+    t.thread_recv_queue.put(_packet(_field(b'Time', bytes(8))))
+    for _ in range(3):
+        if t.thread_recv_queue.empty() and t._stashed_packet is None:
+            break
+        proto.loop()
+    assert events == ['connected']
+
+
+@pytest.mark.parametrize('fields, level, line', [
+    ([_field(b'AMMO', struct.pack('>H2x?3x', 32768, False))],
+     logging.INFO, 'legacy-audio: mixer at connect: legacy'),
+    ([], logging.INFO,
+     'legacy-audio: mixer at connect: unknown (the state dump had neither FAMP nor AMMO)'),
+    ([_field(b'FAMP', bytes(20))], logging.DEBUG, 'Audio mixer at connect: fairlight'),
+], ids=['legacy', 'none', 'fairlight'])
+def test_the_mixer_is_logged_at_connect(proto, caplog, fields, level, line):
+    with caplog.at_level(logging.DEBUG, logger='AtemProtocol'):
+        _connect_with(proto, *fields)
+    found = [(r.levelno, r.getMessage()) for r in caplog.records
+             if 'mixer at connect' in r.getMessage()]
+    assert found == [(level, line)]
+    if level == logging.DEBUG:
+        assert _legacy_lines(caplog) == []      # a Fairlight switcher logs nothing at INFO

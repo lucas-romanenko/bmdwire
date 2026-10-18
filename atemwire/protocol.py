@@ -20,6 +20,11 @@ from atemwire.messages import (
     TransferFileDataCommand,
     TransferUploadRequestCommand,
 )
+from atemwire.messages.audio_legacy import (
+    LEGACY_AUDIO_DIAGNOSTIC_KEYS,
+    audio_mixer_type,
+    legacy_audio_diagnostic,
+)
 from atemwire.imaging import rle_decode
 
 
@@ -175,6 +180,9 @@ class AtemProtocol:
         # Consecutive dumps that ended without a video mode; see
         # INCOMPLETE_DUMP_RETRIES.
         self._incomplete_dumps = 0
+        # (key, AMIP source) of the legacy-audio packets already logged
+        # (messages/audio_legacy.py, "Diagnostics").
+        self._legacy_audio_logged = set()
 
         # store -> True while we hold its lock: from the LKOB until we send
         # the release, whatever LKST says meanwhile. The switcher announces
@@ -247,6 +255,7 @@ class AtemProtocol:
             self.connected = True
             self.initialized = True
             self.send_commands([TimeRequestCommand()])
+            self._log_audio_mixer()
             self._raise('connected')
             return
         if isinstance(packet, Wakeup):
@@ -619,14 +628,41 @@ class AtemProtocol:
             self.mixerstate[key] = contents
             self._raise('change:' + key, contents)
 
+        if key in LEGACY_AUDIO_DIAGNOSTIC_KEYS:
+            self._log_legacy_audio(key, contents)
+
         if key == 'InCm':
             self.transport.mark_next_connected = True
             # TCP proxy fires 'connected' here, on InCm — UDP/USB fire
             # it later via the transport's ConnectionReady sentinel.
             if _is_tcp_transport(self.transport):
                 self.initialized = True
+                self._log_audio_mixer()
                 self._raise('connected')
         self._raise('change', key, contents)
+
+    def _log_legacy_audio(self, key, contents):
+        """Log the first of each legacy-audio packet (per AMIP source) at
+        INFO, raw and decoded (messages/audio_legacy.py, "Diagnostics").
+        Never raises: a log line must not cost the packet loop."""
+        first = (key, getattr(contents, 'index', None))
+        if first in self._legacy_audio_logged:
+            return
+        self._legacy_audio_logged.add(first)
+        try:
+            self.log.info('legacy-audio: %s', legacy_audio_diagnostic(contents))
+        except Exception:
+            self.log.debug('legacy-audio: could not describe %s', key, exc_info=True)
+
+    def _log_audio_mixer(self):
+        """At each connect, say which audio mixer the state dump showed:
+        INFO for a legacy one or none, DEBUG for Fairlight."""
+        mixer = audio_mixer_type(self.mixerstate)
+        if mixer == 'fairlight':
+            self.log.debug('Audio mixer at connect: fairlight')
+            return
+        note = '' if mixer == 'legacy' else ' (the state dump had neither FAMP nor AMMO)'
+        self.log.info('legacy-audio: mixer at connect: %s%s', mixer, note)
 
     def _check_dump_complete(self):
         """At ``InCm``: raise ``IncompleteStateDump`` when the dump had no
