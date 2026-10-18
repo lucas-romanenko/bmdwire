@@ -392,6 +392,14 @@ source 2000 + n, and `XLR`, `AES`, `RCA`, `Mic1`, `Mic2` for sources 1001, 1101,
 has met a legacy switcher; it is built from the packet layouts, which agree with LibAtem's and
 atem-connection's.
 
+**Legacy audio in the log.** So that a log from a legacy switcher can confirm the layouts or
+correct them, `AtemProtocol` logs at INFO (logger `AtemProtocol`), prefixed `legacy-audio:`, the
+first `AMIP` per source and the first `AMMO`, `AMmO` and `AMLv` a connection receives, each as
+its payload in hex and every decoded attribute (with `volume_db` and `plug_name`), and at every
+connect the mixer the dump showed (`legacy`, or `unknown` when it had neither `FAMP` nor
+`AMMO`). A Fairlight switcher sends none of the four, and its mixer line is DEBUG. A failure to
+describe a packet is logged at DEBUG and never reaches the packet loop.
+
 ### 2.5 outputs, devices, system
 
 | state key | opcode | attributes | indexed | written by |
@@ -900,8 +908,9 @@ simulated switcher state beyond a 1080p50 `video-mode`.
   `atemwire/__init__.py` docstring does not list it among the layers covered by the version
   number.
 - **`build_full_state` omits whole areas.** It covers no multiviewer, SuperSource, recording,
-  streaming, tally, camera control, legacy audio, media-pool slots, media-player selection, locks,
-  time or meters, and lists **only the first 12 macros**.
+  streaming, tally, camera control, media-pool slots, media-player selection, locks, time or
+  meters, and lists **only the first 12 macros**. (Legacy audio was in this list until
+  `3e2f400`; see §5.4 item 33.)
 - **Unused constants.** `FTSD`'s `MODE_WRITE_RLE`, `MODE_WRITE` and `MODE_ERASE` are unused (the
   engine uses literals). `profile/_enums._source_symbol()` is dead code.
 - **`SaveOptions.media_pool_images` and `ApplyOptions.restore_media_pool_images` are never read.**
@@ -947,7 +956,7 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 10, the split-mono bullet of item 8, the float and `sourceId` bullets of item 9, items 15, 16,
 18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
-it; item 27 was fixed after 1.5.1.
+it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1148,6 +1157,19 @@ it; item 27 was fixed after 1.5.1.
     unannounced at our last release, and was granted beside the other client's lock, aborting its
     transfer. *Fixed in `1feedbd`:* the wait outlives the abort, and a lock the abort releases starts
     one.
+32. **An `AMIP` from before ATEM 8.0 firmware ends the connection** (1.5.5). `AudioInputField`
+    unpacked it with `struct.unpack`, which wants exactly 16 bytes; before 8.0 the switcher sends
+    20 (LibAtem's `AudioMixerInputGetCommand` and its `V8` twin). The `struct.error` left
+    `loop()` and ended the worker, so a legacy switcher on older firmware could not stay
+    connected. *Fixed in `626c785`:* `unpack_from` reads the first 16 bytes of either length.
+    Untested on a switcher.
+33. **On a legacy audio mixer the audio section is never present** (1.5.5). `_build_audio` read
+    only the Fairlight packets, so on a switcher with the legacy mixer (a Production Studio 4K, a
+    Television Studio HD) `audio.present` stayed False and a frontend gated on it (WebATEM)
+    waited for good. *Fixed in `3e2f400`:* `audio.mixer` says which mixer it is
+    (`audio_mixer_type`), and on `'legacy'` the section is built from `AMMO`, `AMIP` and `AMmO`
+    in the Fairlight shapes (§2.4, §2.6). The first of each legacy packet is logged raw and
+    decoded (`03fa389`, §2.4) so a user's log can check the layouts. Untested on a switcher.
 
 ## Counts
 
