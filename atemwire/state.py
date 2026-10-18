@@ -524,6 +524,10 @@ def _dynamics_block_dict(field, *, with_ratio: bool = False,
 
 from atemwire.helpers import format_rate  # noqa: E402
 from atemwire.messages.color_generator import color_generator  # noqa: E402
+from atemwire.messages.audio_legacy import (  # noqa: E402
+    audio_mixer_type, legacy_audio_headphones, legacy_audio_master,
+    legacy_audio_solo, legacy_audio_strips,
+)
 from atemwire.messages.downstream_keyer import dsk_state  # noqa: E402
 from atemwire.messages.fade_to_black import (  # noqa: E402
     ftb_active, ftb_disabled, ftb_frames_remaining, ftb_in_transition,
@@ -960,15 +964,21 @@ class ATEMStateMixin:
         }
 
     # =========================================================================
-    # Fairlight audio
+    # Audio (Fairlight, or the legacy mixer)
     # =========================================================================
 
     def _build_audio(self, mx) -> dict:
-        """Assemble the Fairlight section of the state dict.
+        """Assemble the audio section of the state dict.
 
-        Shape (the frontend keys off these names):
+        ``mixer`` says which mixer the switcher has, from what it has sent
+        (``audio_mixer_type``): ``'fairlight'`` once FAMP has arrived,
+        ``'legacy'`` once AMMO has, ``'unknown'`` before either. Until one
+        arrives the section is the Fairlight one with ``present`` False.
+
+        Fairlight shape (the frontend keys off these names):
 
             {
+              'mixer': 'fairlight' | 'unknown',
               'present': bool,         # False during the handshake gap
                                        # before FAMP/FASP arrive
               'master': {present, volume_db, eq_enable, eq_gain_db,
@@ -987,7 +997,31 @@ class ATEMStateMixin:
         Master / per-strip EQ band lists are 6 entries each, filtered
         to the strip via the "<source>.<sub>" key the AEBP decoder
         attaches.
+
+        Legacy shape (``mixer == 'legacy'``): the same keys, less what the
+        legacy mixer doesn't have (input gain, EQ, dynamics, delay), which
+        are absent rather than zero:
+
+            {
+              'mixer': 'legacy',
+              'present': bool,         # AMMO and at least one AMIP
+              'master': {present, volume_db, afv},
+              'strips': [{source, channel (-1), subchannel (0), split
+                          (False), strip_id "<source>.0", name,
+                          short_name, mix_type, mix_state (0/1/2),
+                          volume_db, pan, soloed, input_type,
+                          plug}, ...],
+              'headphones': {present, volume_db, unmuted, enabled, dim,
+                             dim_level, solo, solo_source},   # AMmO
+              'solo': {any_soloed, strip_id},                 # AMmO
+            }
+
+        Untested on a legacy switcher; built from the packet layouts.
         """
+        mixer = audio_mixer_type(mx)
+        if mixer == 'legacy':
+            return self._build_legacy_audio(mx)
+
         master = fairlight_master(mx)
         master['eq_bands'] = fairlight_eq_bands(mx, strip_id=None)
 
@@ -1025,12 +1059,30 @@ class ATEMStateMixin:
                 s.pop(k, None)
 
         return {
+            'mixer': mixer,
             # 'present' is the UI's loading gate — the Fairlight state
             # dump arrives after the rest of the handshake completes.
             'present': master['present'] and len(strips) > 0,
             'master': master,
             'strips': strips,
             'headphones': fairlight_headphones(mx),
+            'solo': solo,
+        }
+
+    def _build_legacy_audio(self, mx) -> dict:
+        """The audio section from the legacy mixer's AMMO / AMIP / AMmO
+        (shape in ``_build_audio``)."""
+        master = legacy_audio_master(mx)
+        strips = legacy_audio_strips(mx)
+        solo = legacy_audio_solo(mx)
+        for s in strips:
+            s['soloed'] = (s['strip_id'] == solo['strip_id'])
+        return {
+            'mixer': 'legacy',
+            'present': master['present'] and len(strips) > 0,
+            'master': master,
+            'strips': strips,
+            'headphones': legacy_audio_headphones(mx),
             'solo': solo,
         }
 

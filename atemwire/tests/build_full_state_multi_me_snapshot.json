@@ -15,6 +15,7 @@
       "present": true,
       "volume_db": -3.0
     },
+    "mixer": "fairlight",
     "present": true,
     "solo": {
       "any_soloed": true,

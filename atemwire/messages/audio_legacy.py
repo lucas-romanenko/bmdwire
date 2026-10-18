@@ -8,10 +8,17 @@ Wire packets (incoming only):
     AMmO — monitor bus properties (volume / mute / solo / dim)
     AMIP — per-input channel-strip properties
     AMTl — audio mixer tally state (variable-length)
+
+The readers at the bottom (``legacy_audio_*``) give ``build_full_state``
+the same audio shape the Fairlight readers do, and ``audio_mixer_type``
+says which of the two a switcher has.
 """
 
+import math
 import struct
+from typing import Optional
 
+from atemwire.state import decode_name, safe_bool, safe_int
 from atemwire.messages._dsl import Recv, boolean, u16
 from atemwire.messages._dsl import Send, boolean, i16, string, u8, u16, u32  # noqa: F401  (restored upstream commands)
 
@@ -174,6 +181,13 @@ class AtemMasterEqBandPropertiesField(Recv):
                 f'Q {self.band_q}>')
 
 
+_PLUG_NAMES = {
+    0: 'Internal', 1: 'SDI', 2: 'HDMI',
+    3: 'Component', 4: 'Composite', 5: 'SVideo',
+    32: 'XLR', 64: 'AES', 128: 'RCA',
+}
+
+
 class AudioInputField(Recv):
     """``AMIP`` — input description on the legacy (pre-Fairlight) ATEM
     audio mixer. Exposed in mixerstate as ``audio-input``.
@@ -193,12 +207,7 @@ class AudioInputField(Recv):
         self.strip_id = f'{self.index}.0'
 
     def plug_name(self):
-        lut = {
-            0: 'Internal', 1: 'SDI', 2: 'HDMI',
-            3: 'Component', 4: 'Composite', 5: 'SVideo',
-            32: 'XLR', 64: 'AES', 128: 'RCA',
-        }
-        return lut.get(self.plug, 'Analog')
+        return _PLUG_NAMES.get(self.plug, 'Analog')
 
     def __repr__(self):
         return (f'<audio-input index={self.index} type={self.type} '
@@ -342,3 +351,180 @@ def set_audio_monitor(conn, **props):
 def enable_audio_levels(conn, enable=True):
     """Ask a legacy-audio switcher to stream level packets."""
     conn.send(SendAudioLevelsCommand(bool(enable)))
+
+
+# =============================================================================
+# Units
+# -----------------------------------------------------------------------------
+# Volume on the legacy mixer (AMIP, AMMO, AMmO and the CAMI / CAMM / CAMm
+# writes) is a u16 gain: 32768 is 0 dB, 65381 the top of the fader (+6 dB),
+# 0 silence (-inf). Balance is an i16, ±10000 at the ends, shown as pan ±100
+# the way the Fairlight strips show theirs. The scales are LibAtem's and
+# atem-connection's; no legacy switcher has checked them here.
+# =============================================================================
+
+LEGACY_VOLUME_UNITY = 32768   # 0 dB
+LEGACY_VOLUME_MAX = 65381     # +6 dB
+
+
+def legacy_volume_to_db(volume) -> Optional[float]:
+    """Wire volume (u16) → dB, two places: ``20 * log10(v / 32768)``.
+
+    0 is silence and gives ``None`` (JSON ``null``), as the Fairlight
+    readers give a silenced fader."""
+    v = safe_int(volume, 0)
+    if v <= 0:
+        return None
+    return round(20 * math.log10(v / LEGACY_VOLUME_UNITY), 2)
+
+
+def legacy_db_to_volume(db) -> int:
+    """dB → wire volume (u16): ``floor(10 ** (dB / 20) * 32768)``, clamped
+    to 0..65381. ``None``, ``-inf`` and NaN are silence (0).
+
+    +6.0 dB gives 65380, one step under the top: 65381 is +6.00003 dB."""
+    if db is None:
+        return 0
+    f = float(db)
+    if f != f or f == float('-inf'):
+        return 0
+    v = math.floor(10 ** (min(f, 20.0) / 20) * LEGACY_VOLUME_UNITY)
+    return max(0, min(LEGACY_VOLUME_MAX, v))
+
+
+def legacy_pan_to_balance(pan) -> int:
+    """Pan ±100 (as the strips show it) → wire balance, clamped to ±10000."""
+    return max(-10000, min(10000, int(round(float(pan) * 100))))
+
+
+# =============================================================================
+# Readers
+# -----------------------------------------------------------------------------
+# The legacy counterparts of fairlight.py's readers, in the same shapes so
+# build_full_state's audio section looks the same on either mixer. What the
+# legacy mixer doesn't have (input gain, EQ, dynamics, delay) is left out
+# rather than filled with zeros.
+# =============================================================================
+
+_LEGACY_MIX_OPTION_NAMES = {0: 'Off', 1: 'On', 2: 'AudioFollowVideo'}
+
+# External audio inputs have no input-properties entry to name them by.
+# Source ids from LibAtem's AudioSource; media players are 2001-2004.
+_LEGACY_EXTERNAL_AUDIO_NAMES = {
+    1001: ('XLR', 'XLR'),
+    1101: ('AES', 'AES/EBU'),
+    1201: ('RCA', 'RCA'),
+    1301: ('Mic1', 'Mic 1'),
+    1302: ('Mic2', 'Mic 2'),
+}
+
+
+def audio_mixer_type(mx) -> str:
+    """Which audio mixer the switcher has, from what it has sent:
+    ``'fairlight'`` once ``FAMP`` has arrived, ``'legacy'`` once ``AMMO``
+    has, ``'unknown'`` before either (and on a switcher that sends
+    neither)."""
+    if mx.get('fairlight-master-properties') is not None:
+        return 'fairlight'
+    if mx.get('audio-mixer-master-properties') is not None:
+        return 'legacy'
+    return 'unknown'
+
+
+def legacy_audio_master(mx) -> dict:
+    """Read AMMO into ``{present, volume_db, afv}``: ``fairlight_master``'s
+    keys without the EQ and dynamics ones."""
+    node = mx.get('audio-mixer-master-properties')
+    if node is None:
+        return {'present': False, 'volume_db': 0.0, 'afv': False}
+    return {
+        'present': True,
+        'volume_db': legacy_volume_to_db(getattr(node, 'volume', 0)),
+        'afv': safe_bool(getattr(node, 'afv', False), False),
+    }
+
+
+def legacy_audio_strips(mx) -> list:
+    """One strip per AMIP source, shaped like ``fairlight_strips``' entries.
+
+    Every legacy strip is stereo: ``channel`` -1, ``strip_id``
+    ``"<source>.0"``. ``mix_type`` takes the Fairlight names (``'Off'``,
+    ``'On'``, ``'AudioFollowVideo'``); ``mix_state`` is the legacy wire
+    value (0, 1, 2), not Fairlight's bitfield. ``input_type`` is AMIP's
+    type, which means what FAIP's does (0 video input, 1 media player,
+    2 external audio); ``plug`` is ``AudioInputField.plug_name()``.
+
+    Names as ``fairlight_strips`` gives them: a video input's from
+    input-properties, ``MP<n>`` for a media player, and an external audio
+    input's from its source id. Ordered video inputs, media players,
+    external audio, each by source.
+    """
+    nodes = mx.get('audio-input', {}) or {}
+    inputs = mx.get('input-properties', {}) or {}
+    strips = []
+    for node in nodes.values():
+        source = safe_int(getattr(node, 'index', 0), 0)
+        input_type = safe_int(getattr(node, 'type', 0), 0)
+        state = safe_int(getattr(node, 'state', 0), 0)
+        if input_type == 1 and 2001 <= source <= 2099:
+            short, long = f'MP{source - 2000}', f'Media Player {source - 2000}'
+        elif input_type == 2 and source in _LEGACY_EXTERNAL_AUDIO_NAMES:
+            short, long = _LEGACY_EXTERNAL_AUDIO_NAMES[source]
+        else:
+            ip = inputs.get(source)
+            ip_short = decode_name(getattr(ip, 'short_name', b''), '') if ip else ''
+            ip_long = decode_name(getattr(ip, 'name', b''), '') if ip else ''
+            short = ip_short or ip_long or f'Src{source}'
+            long = ip_long or short
+        strips.append({
+            'source': source,
+            'channel': -1,
+            'subchannel': 0,
+            'split': False,
+            'strip_id': f'{source}.0',
+            'name': long,
+            'short_name': short,
+            'mix_type': _LEGACY_MIX_OPTION_NAMES.get(state, str(state)),
+            'mix_state': state,
+            'volume_db': legacy_volume_to_db(getattr(node, 'volume', 0)),
+            'pan': round(safe_int(getattr(node, 'balance', 0), 0) / 100.0, 2),
+            'input_type': input_type,
+            'plug': _PLUG_NAMES.get(safe_int(getattr(node, 'plug', 0), 0), 'Analog'),
+        })
+    strips.sort(key=lambda s: (s['input_type'], s['source']))
+    return strips
+
+
+def legacy_audio_headphones(mx) -> dict:
+    """Read the monitor bus (AMmO) where ``fairlight_headphones`` reads
+    FMHP: ``present``, ``volume_db``, ``unmuted``, then the monitor's own
+    ``enabled``, ``dim``, ``dim_level``, ``solo`` and ``solo_source``.
+
+    ``dim_level`` is the wire value / 100: LibAtem reads it as a level
+    0-100.00, atem-connection passes it raw. Neither treats it as a gain,
+    so it is not given in dB."""
+    node = mx.get('audio-mixer-monitor-properties')
+    if node is None:
+        return {'present': False, 'volume_db': 0.0, 'unmuted': True,
+                'enabled': False, 'dim': False, 'dim_level': 0.0,
+                'solo': False, 'solo_source': None}
+    return {
+        'present': True,
+        'volume_db': legacy_volume_to_db(getattr(node, 'volume', 0)),
+        'unmuted': not safe_bool(getattr(node, 'mute', False), False),
+        'enabled': safe_bool(getattr(node, 'enabled', False), False),
+        'dim': safe_bool(getattr(node, 'dim', False), False),
+        'dim_level': round(safe_int(getattr(node, 'dim_volume', 0), 0) / 100.0, 2),
+        'solo': safe_bool(getattr(node, 'solo', False), False),
+        'solo_source': safe_int(getattr(node, 'solo_source', 0), 0),
+    }
+
+
+def legacy_audio_solo(mx) -> dict:
+    """Read AMmO's solo into ``fairlight_solo``'s shape:
+    ``{any_soloed, strip_id}``, the strip id ``"<solo_source>.0"``."""
+    node = mx.get('audio-mixer-monitor-properties')
+    if node is None or not safe_bool(getattr(node, 'solo', False), False):
+        return {'any_soloed': False, 'strip_id': None}
+    return {'any_soloed': True,
+            'strip_id': f"{safe_int(getattr(node, 'solo_source', 0), 0)}.0"}
