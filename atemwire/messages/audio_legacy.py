@@ -176,7 +176,11 @@ class AtemMasterEqBandPropertiesField(Recv):
 
 class AudioInputField(Recv):
     """``AMIP`` — input description on the legacy (pre-Fairlight) ATEM
-    audio mixer. Exposed in mixerstate as ``audio-input``."""
+    audio mixer. Exposed in mixerstate as ``audio-input``.
+
+    16 bytes from ATEM 8.0 firmware on, 20 before it; the first 14 are the
+    same in both (LibAtem's ``AudioMixerInputGetCommand`` and its ``V8``
+    twin). Only the first 16 are read, so either length parses."""
     CODE = 'AMIP'
     PRETTY = 'audio-input'
     KEY_FORMAT = struct.Struct('>H')
@@ -184,7 +188,7 @@ class AudioInputField(Recv):
     def __init__(self, raw: bytes):
         self.raw = raw
         (self.index, self.type, self.number, self.plug, self.state,
-         self.volume, self.balance) = struct.unpack(
+         self.volume, self.balance) = struct.unpack_from(
             '>HB 2x B x BB x Hh 2x', raw)
         self.strip_id = f'{self.index}.0'
 
