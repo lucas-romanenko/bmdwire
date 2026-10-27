@@ -46,8 +46,8 @@ Python 3.10 or newer. No other dependencies.
 
 - `read_network(host)` / `set_network(host, address=…, netmask=…, gateway=…, dns=…, dynamic=…)`. The unit's network interface, the one Ultimatte Setup configures. `set_network` verifies by reading back the *settled* interface, not by trusting the unit's acknowledgement.
 - `archive_unit_to_bytes(host)`: pull every saved preset slot plus the `GPISettings` and `SavedSettings` resources into an in-memory zip in Smart Remote's exact layout, with a human-readable annotated state dump riding along.
-- `restore_unit_from_bytes(host, zip_bytes)`: push such a zip back, in the order the vendor app uses, aborting at the first rejected write.
-- Reads the unit's text prelude on TCP 9998 (label, firmware release, live control values, the preset FILE LIST) and does binary slot/resource reads and writes on TCP 9996.
+- `restore_unit_from_bytes(host, zip_bytes)`: push such a zip back, in the order the vendor app uses, aborting at the first rejected write. Its `SavedSettings` become the unit's live state at once, video format included, so settings changed on the unit and not saved are lost; the prelude's CURRENT FILE says whether there are any (`Modified`).
+- Reads the unit's text prelude on TCP 9998 (label, model, firmware release, live control values, the current file and whether it has unsaved changes, the preset FILE LIST) and does binary slot/resource reads and writes on TCP 9996.
 - Failed reads are omitted from the archive and reported as warnings instead of being written as placeholder bytes that a later restore would push into live hardware.
 - Short reads raise; truncated blobs are never archived.
 - One-retry connects to survive cold-ARP and first-packet hiccups.
