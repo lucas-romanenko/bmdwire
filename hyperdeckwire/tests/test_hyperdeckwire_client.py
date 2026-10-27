@@ -223,6 +223,20 @@ def test_disk_line_parser_handles_filename_with_spaces():
     )
 
 
+def test_clips_get_on_an_empty_timeline_is_empty():
+    """A Studio HD Mini on 9.0.2 answers clips get on an empty timeline
+    with 107 timeline empty, not an empty 205 (2026-10-27)."""
+    hd, _ = _client_with_script([b'107 timeline empty\r\n'])
+    assert hd.clips_get() == []
+
+
+def test_clips_get_other_refusals_still_raise():
+    hd, _ = _client_with_script([b'100 syntax error\r\n'])
+    with pytest.raises(HyperdeckError) as exc_info:
+        hd.clips_get()
+    assert exc_info.value.code == 100
+
+
 def test_clips_v1_line_parser_handles_filename_with_spaces():
     clip = _parse_clips_v1_line(
         '2: Intro Loop animation2.mp4 00:01:03:17 00:01:03:17')

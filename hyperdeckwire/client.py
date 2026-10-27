@@ -478,8 +478,18 @@ class Hyperdeck:
         return int(resp.params().get('clip count', '0'))
 
     def clips_get(self) -> List[Clip]:
-        """Return all clips currently on the timeline (version 1 format)."""
-        resp = self._check_ok('clips get')
+        """Return all clips currently on the timeline (version 1 format).
+
+        An empty timeline is ``[]``: a deck answers ``clips get`` on one
+        with ``107 timeline empty`` (a Studio HD Mini on software 9.0.2,
+        2026-10-27), not an empty ``205 clips info``. Any other refusal
+        raises :class:`HyperdeckError`, as before.
+        """
+        resp = self.request('clips get')
+        if resp.code == 107:
+            return []
+        if resp.is_error():
+            raise HyperdeckError(resp.code, resp.text)
         return _parse_clip_lines(resp.lines, _parse_clips_v1_line)
 
     # ------------------------------------------------------------------
