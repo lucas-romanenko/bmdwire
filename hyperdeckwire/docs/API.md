@@ -180,7 +180,9 @@ hd.play(speed=200, loop=True)             # 2x speed, looped
 hd.play(speed=-100)                       # reverse at normal speed
 
 hd.clips_clear()                          # empty the timeline (does NOT
-                                          # delete files on disk)
+                                          # delete files on disk); the
+                                          # deck answers before it is
+                                          # empty: see "Timeline edits"
 hd.clips_add('intro.mp4')                 # append to timeline
 hd.clips_add('intro.mp4', before_clip_id=3)
                                           # insert before clip 3
@@ -195,6 +197,15 @@ hd.remote_enable(False)                   # disable
 hd.slot_select(2)                         # switch active slot
 hd.ping()                                 # round-trip liveness check
 ```
+
+### Timeline edits
+
+`clips_clear()` returns once the deck answers, and the deck answers
+before the timeline is empty. On a Studio HD Mini with software 9.0.2, a
+`clips_get()` 0.01 s after the `200 ok` still listed the old clips; at
+0.16 s it returned `[]` (the deck's `107 timeline empty`). Read the
+timeline again a moment later, not at once. `clips_add()` and
+`clips_remove()` read back their change at once on the same deck.
 
 ### Configuration changes
 
