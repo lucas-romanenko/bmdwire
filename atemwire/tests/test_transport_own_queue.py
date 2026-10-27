@@ -90,8 +90,15 @@ def _fill_like_a_budget(p, count=768):
 
 
 def _drain(p, filler):
+    """Take what the filler queues until it has queued all of it. Only take
+    an item the queue holds: once the filler's last item is taken, its
+    thread can still be alive on its way out, and a get() then waits for a
+    byte that never comes (CI hung here on Python 3.14)."""
     while filler.is_alive() or p.thread_queue.qsize():
-        p.thread_queue.get()
+        if p.thread_queue.qsize():
+            p.thread_queue.get()
+        else:
+            time.sleep(0.001)
     filler.join(5)
 
 
