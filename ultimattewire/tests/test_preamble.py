@@ -58,6 +58,46 @@ def test_parse_section_missing_header_returns_empty(sample_prelude):
     assert _preamble.parse_section(sample_prelude, "NO SUCH SECTION") == ""
 
 
+# ---- extract_model / parse_current_file -------------------------------------
+
+# Sections as an Ultimatte 12 4K with software 2.3 sent them (2026-10-27),
+# the others left out and its Unique ID zeroed.
+PRELUDE_12_4K = (
+    "PROTOCOL PREAMBLE:\nVersion: 2.3\n\n"
+    "IDENTITY:\nModel: Ultimatte 12 4K\nLabel: Studio Keyer\n"
+    "Unique ID: 00000000000000000000000000000000\n\n"
+    "VERSION:\nProduct ID: BE8F\nHardware Version: 0100\n"
+    "Software Version: 2AE2D1CA\nSoftware Release: 2.3\n\n"
+    "CURRENT FILE:\nName: 3\nStatus: Modified\n\n"
+    "FILE LIST:\n1\n2\n\n"
+    "END PRELUDE:\n"
+)
+
+
+def test_extract_model_reads_identity():
+    assert _preamble.extract_model(PRELUDE_12_4K) == "Ultimatte 12 4K"
+
+
+def test_extract_model_without_identity_is_empty(sample_prelude):
+    assert _preamble.extract_model(sample_prelude) == ""
+
+
+def test_parse_current_file_reads_name_and_status():
+    assert _preamble.parse_current_file(PRELUDE_12_4K) == ("3", "Modified")
+    # What the same unit said after a restore of its own archive.
+    after = PRELUDE_12_4K.replace("Name: 3\nStatus: Modified", "Name: Ultimatte Defaults\nStatus: Clean")
+    assert _preamble.parse_current_file(after) == ("Ultimatte Defaults", "Clean")
+
+
+def test_parse_current_file_without_the_section_is_empty(sample_prelude):
+    assert _preamble.parse_current_file(sample_prelude) == ("", "")
+
+
+def test_the_12_4k_prelude_keeps_its_label_and_file_list():
+    assert _preamble.extract_label(PRELUDE_12_4K) == "Studio_Keyer"
+    assert _preamble.parse_file_list(PRELUDE_12_4K) == ["1", "2"]
+
+
 def test_parse_file_list(sample_prelude):
     assert _preamble.parse_file_list(sample_prelude) == ["preset-a", "preset-b"]
     assert _preamble.parse_file_list("Label: x\nEND PRELUDE:\n") == []

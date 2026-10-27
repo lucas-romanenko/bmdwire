@@ -74,3 +74,29 @@ def extract_label(text):
     if m:
         return re.sub(r"[^A-Za-z0-9._-]+", "_", m.group(1).strip())
     return "unknown"
+
+
+def _field(text, header, key):
+    """The value of one 'Key: value' line in a named section, or ''."""
+    for ln in parse_section(text, header).splitlines():
+        k, sep, v = ln.partition(":")
+        if sep and k.strip() == key:
+            return v.strip()
+    return ""
+
+
+def extract_model(text):
+    """Return the unit's model from its IDENTITY section ("Ultimatte 12 4K"
+    on a 12 4K with software 2.3), or "" when the prelude has none."""
+    return _field(text, "IDENTITY", "Model")
+
+
+def parse_current_file(text):
+    """Return (name, status) from the CURRENT FILE section: the file the
+    unit's live settings came from, and "Clean" while they match it or
+    "Modified" once they've been changed on the unit. ("", "") when the
+    prelude has none.
+
+    A restore's SavedSettings replaces the live settings
+    (profile/restore.py), so "Modified" is what a restore would lose."""
+    return _field(text, "CURRENT FILE", "Name"), _field(text, "CURRENT FILE", "Status")
