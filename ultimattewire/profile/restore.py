@@ -30,14 +30,16 @@ Restore order (matches Software Control captures):
     2. GPISettings
     3. SavedSettings   (overwrites live state, so save it for last)
 
-Writing SavedSettings makes the unit run those settings at once, the
-video format among them, and whatever was changed on the unit and not
-saved is gone. _preamble.parse_current_file says "Modified" when there
-is something to lose. Seen on an Ultimatte 12 4K with software 2.3
-(2026-10-27): a restore of the unit's own archive, whose saved settings
-were still its defaults, left it running "Ultimatte Defaults" in
-525i59.94 NTSC, where it had been running unsaved settings in 1080p25.
-The presets and both settings files read back byte for byte.
+Writing SavedSettings makes the unit run those settings at once, and
+whatever was changed on the unit and not saved is gone.
+_preamble.parse_current_file says "Modified" when there is something to
+lose. Seen on an Ultimatte 12 4K with software 2.3 (2026-10-27): a
+restore of the unit's own archive, whose saved settings were still its
+defaults, left it running "Ultimatte Defaults" where it had been running
+unsaved settings. Its Video Format setting was "auto detect" before and
+after; with no input to detect, the format it ran fell from 1080p25 to
+its default, 525i59.94 NTSC, until a signal comes. The presets and both
+settings files read back byte for byte.
 """
 
 import io
@@ -62,9 +64,9 @@ def restore_unit_from_bytes(host, zip_bytes, connect_timeout=CONNECT_TIMEOUT,
                             read_timeout=READ_TIMEOUT):
     """Restore one Ultimatte from in-memory zip bytes.
 
-    The zip's SavedSettings become the unit's live state, video format
-    included: settings changed on the unit and not saved are lost (see
-    the module docstring).
+    The zip's SavedSettings become the unit's live state: settings
+    changed on the unit and not saved are lost (see the module
+    docstring).
 
     Returns (ok: bool, info: dict). info contains the per-resource log:
         {
