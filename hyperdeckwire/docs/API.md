@@ -166,7 +166,8 @@ hd.stop()                                 # stop playback or recording.
                                           # (per `play option: stop mode:
                                           # lastframe`, the factory default).
 
-hd.play()                                 # plain play from current position
+hd.play()                                 # plain play from current position,
+                                          # once (not looped: see "About pause")
 hd.play(loop=True)                        # loop all clips on timeline
 hd.play(loop=True, single_clip=True)      # loop the current clip only
 hd.play(single_clip=True)                 # play current clip, stop at end
@@ -240,6 +241,11 @@ lastframe`, the unit freezes on the current frame rather than going to
 black. Subsequent `play()` resumes from there. The transport status
 reports `stopped` rather than `paused` (no such state exists in the
 protocol).
+
+`stop` also clears loop and single clip: on a Studio HD Mini (software
+9.0.2) the transport notification after it reads `loop: false` and
+`single clip: false`. So `play()` after a `stop` plays once and stops at
+the end; resuming a looped clip takes `play(loop=True, single_clip=True)`.
 
 ## FTP upload
 
@@ -450,9 +456,15 @@ suite for the pattern.
 These exist in the protocol but aren't exposed yet:
 
 - `playrange:` family (in/out point timeline ranges)
-- `goto:` family beyond `goto_clip` (frame-offset, timecode-relative)
+- `goto:` family beyond `goto_clip` (frame-offset, timecode-relative).
+  A relative `goto: clip id: +1` (or `-1`) past either end of the
+  timeline is refused with `109 out of range`, not held at the end (a
+  Studio HD Mini, software 9.0.2, with a one-clip timeline).
 - `jog:` / `shuttle:` (frame-accurate scrub)
-- `record:` (recording-side commands; playback only so far)
+- `record:` (recording-side commands; playback only so far). With no
+  video input, a Studio HD Mini (software 9.0.2) refuses `record` with
+  `110 no input` and goes to `preview` all the same; `stop` answers and
+  leaves it in preview, and a `goto: clip id:` brings it out.
 - `format:` (disk format / partition)
 - `slate:` (digital slate metadata for recordings)
 - `nas:` (NAS share management — units mount network storage)
@@ -470,6 +482,13 @@ These exist in the protocol but aren't exposed yet:
   configuration API (`HyperdeckSetup`), every read endpoint plus the
   write paths exercised as same-value round trips (name, network, network
   access, Ethernet protocol, NTP, timezone, identify).
+
+- **HyperDeck Studio HD Mini, software 9.0.2, protocol 1.19**
+  (2026-10-27, through bmdctl, the Go port of this client): the
+  connect and its reads (device, transport, slot and remote info,
+  configuration, clips), notifications, `stop`, `play` (loop, single
+  clip, speed), `goto_clip` and `slot_select`; and the answers above to
+  a relative `goto` and to `record`.
 
 Other Studio HD-class units (Plus, Pro, HDR, Shuttle, Extreme) speak
 the same 9993 protocol and the same configuration API. They additionally
