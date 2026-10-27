@@ -35,10 +35,12 @@ If the vocabulary doubles, revisit.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_PORT = 9993
 DEFAULT_CONNECT_TIMEOUT = 5.0
 DEFAULT_READ_TIMEOUT = 5.0
+# Notifications kept for read_notifications(); past this many unread, the
+# oldest go.
+NOTIFICATION_BACKLOG = 1000
+
+# HH:MM:SS:FF, or HH:MM:SS;FF (drop frame): hours under 24, minutes and
+# seconds under 60.
+_TIMECODE = re.compile(r'([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9][:;][0-9]{2}')
 
 
 class HyperdeckError(Exception):
@@ -130,10 +139,10 @@ class Hyperdeck:
 
     Read-only commands (``device_info``, ``disk_list``, ``clips_get``,
     ``transport_info``, ``configuration``, ``slot_info``) work without
-    setup. Write commands (``stop``, ``play``, ``clips_clear``,
-    ``clips_add``, ``goto_clip``) need the unit's "remote control"
-    flag enabled. On HD-class units that defaults to True; query with
-    :meth:`remote_info` if unsure.
+    setup. Write commands (``stop``, ``play``, ``record``,
+    ``clips_clear``, ``clips_add``, ``goto_clip``) need the unit's
+    "remote control" flag enabled. On HD-class units that defaults to
+    True; query with :meth:`remote_info` if unsure.
 
     ``socket_factory`` is a hook for tests: pass a callable that
     returns an object with ``sendall``, ``recv``, ``settimeout``,
@@ -155,6 +164,7 @@ class Hyperdeck:
         self._sock = None
         self._buf = b''
         self._greeting: Optional[Response] = None
+        self._notifications: Deque[Response] = deque(maxlen=NOTIFICATION_BACKLOG)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -184,6 +194,7 @@ class Hyperdeck:
         self._sock.settimeout(self.read_timeout)
         self._buf = b''
         self._greeting = None
+        self._notifications.clear()
         # The unit sends a 500 connection info: block immediately on
         # accept. It IS a 5xx code, but it's a one-time synchronous
         # greeting, not the kind of asynchronous notification we
@@ -282,9 +293,9 @@ class Hyperdeck:
         blank-line terminator.
 
         Asynchronous 5xx messages can arrive interleaved. By default
-        they're logged and skipped here so a caller waiting on the
-        actual response doesn't see them. Set ``skip_async=False`` to
-        return them through.
+        they're kept for :meth:`read_notifications` and skipped here, so a
+        caller waiting on the actual response doesn't see them. Set
+        ``skip_async=False`` to return them through.
         """
         timeout = timeout if timeout is not None else self.read_timeout
         deadline = time.monotonic() + timeout
@@ -310,6 +321,7 @@ class Hyperdeck:
             resp = Response(code=code_int, text=text, lines=lines)
             if resp.is_async() and skip_async:
                 logger.debug('hyperdeck async: %s', resp)
+                self._notifications.append(resp)
                 continue
             return resp
 
@@ -376,6 +388,7 @@ class Hyperdeck:
                 break
             if resp.is_async():
                 logger.debug('hyperdeck async: %s', resp)
+                self._notifications.append(resp)
             else:
                 logger.warning('hyperdeck: dropping a response no command '
                                'was waiting for: %s', resp)
@@ -456,15 +469,68 @@ class Hyperdeck:
         """
         if not params:
             return
-        parts = []
-        for key, value in params.items():
-            proto_key = key.replace('_', ' ')
-            if isinstance(value, bool):
-                proto_value = 'true' if value else 'false'
-            else:
-                proto_value = str(value)
-            parts.append(f'{proto_key}: {proto_value}')
-        self._check_ok('configuration: ' + ' '.join(parts))
+        self._check_ok('configuration: ' + _stack(params))
+
+    def notify(self) -> Dict[str, str]:
+        """Return which notifications are on for this connection:
+        ``transport``, ``slot``, ``remote``, ``configuration`` and the rest,
+        each ``true`` or ``false`` (``209 notify``)."""
+        return self._check_ok('notify').params()
+
+    def set_notify(self, **kinds) -> None:
+        """Turn notifications on or off for this connection, in one
+        ``notify:`` line, as :meth:`set_configuration` stacks its settings::
+
+            hd.set_notify(transport=True, slot=True)
+            hd.set_notify(display_timecode=False)
+
+        Notifications are per connection, and hyperdeckwire turns none on
+        by itself. Once one is on, the deck sends that block (``508
+        transport info``, ``502 slot info``, ``510 remote info``, ``511
+        configuration``) as it changes, between the answers to commands;
+        :meth:`read_notifications` returns them. ``display_timecode``
+        comes every frame. A no-args call is a no-op.
+        """
+        if not kinds:
+            return
+        self._check_ok('notify: ' + _stack(kinds))
+
+    def read_notifications(self, timeout: float = 0.0) -> List[Response]:
+        """Return the notifications that have arrived, oldest first, and
+        forget them.
+
+        They are the asynchronous 5xx blocks :meth:`set_notify` turned on,
+        taken whenever they arrive: before or among the answers to
+        commands, or here. With ``timeout``, wait up to that many seconds
+        for one when none has arrived; without it, take only what is
+        there. A response that is not a notification is no command's
+        answer, and is dropped as :meth:`request` drops one. Waiting out
+        ``timeout`` raises nothing and leaves the connection as it was.
+        Past ``NOTIFICATION_BACKLOG`` unread, the oldest go; a
+        :meth:`connect` starts afresh.
+        """
+        if self._sock is None:
+            raise OSError('not connected')
+        deadline = time.monotonic() + timeout
+        self._drop_unrequested()
+        while not self._notifications:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._sock.settimeout(min(remaining, 0.5))
+            try:
+                chunk = self._sock.recv(4096)
+            except socket.timeout:
+                continue
+            finally:
+                self._sock.settimeout(self.read_timeout)
+            if not chunk:
+                raise ConnectionError('peer closed connection')
+            self._buf += chunk
+            self._drop_unrequested()
+        out = list(self._notifications)
+        self._notifications.clear()
+        return out
 
     def disk_list(self, slot_id: Optional[int] = None) -> List[Clip]:
         """List clips on the active disk (or specified slot)."""
@@ -501,22 +567,26 @@ class Hyperdeck:
         self._check_ok('stop')
 
     def play(self, *,
-             loop: bool = False,
-             single_clip: bool = False,
+             loop: Optional[bool] = None,
+             single_clip: Optional[bool] = None,
              speed: Optional[int] = None,
              clip_id: Optional[int] = None) -> None:
         """Start playback. All parameters optional; defaults to a plain ``play``.
 
         ``speed`` is a percentage between -5000 and 5000 (100 = normal).
         ``clip_id`` starts playback at the given clip on the timeline.
+        ``loop`` and ``single_clip`` go as given, ``true`` or ``false``,
+        and left out (``None``) the line says nothing of them. Before
+        1.8.0 a false one was left out too, so ``play(loop=False)``
+        couldn't turn a loop off.
         """
         parts = []
         if clip_id is not None:
             parts.append(f'clip id: {clip_id}')
-        if loop:
-            parts.append('loop: true')
-        if single_clip:
-            parts.append('single clip: true')
+        if loop is not None:
+            parts.append(f"loop: {'true' if loop else 'false'}")
+        if single_clip is not None:
+            parts.append(f"single clip: {'true' if single_clip else 'false'}")
         if speed is not None:
             parts.append(f'speed: {int(speed)}')
         cmd = 'play' if not parts else 'play: ' + ' '.join(parts)
@@ -557,6 +627,40 @@ class Hyperdeck:
         """Seek the transport to the start of ``clip_id`` (does not play)."""
         self._check_ok(f'goto: clip id: {clip_id}')
 
+    def goto_clip_by(self, offset: int) -> None:
+        """Seek ``offset`` clips along the timeline, back when negative:
+        ``goto_clip_by(1)`` is the next clip's start, ``goto_clip_by(-1)``
+        the previous one's (``goto: clip id: +1``). Past either end the
+        deck refuses it with ``109 out of range``, not holding at the end
+        (a Studio HD Mini, software 9.0.2). An offset of 0 raises
+        ``ValueError``.
+        """
+        offset = int(offset)
+        if offset == 0:
+            raise ValueError('goto_clip_by: an offset of 0 clips moves nowhere')
+        self._check_ok(f'goto: clip id: {offset:+d}')
+
+    def goto_timecode(self, timecode: str) -> None:
+        """Seek to a timecode on the timeline, ``HH:MM:SS:FF`` (``;FF``
+        for drop frame), without playing. Anything else raises
+        ``ValueError`` before it is sent.
+        """
+        if not isinstance(timecode, str) or not _TIMECODE.fullmatch(timecode):
+            raise ValueError(f'goto_timecode: {timecode!r} is not a timecode, HH:MM:SS:FF')
+        self._check_ok(f'goto: timecode: {timecode}')
+
+    def record(self, name: Optional[str] = None) -> None:
+        """Start recording on the active slot, into a clip named ``name``
+        (``record: name: …``), or, with none (or ``''``), one the deck
+        names from its record prefix. ``stop()`` ends it.
+
+        With no video input a Studio HD Mini (software 9.0.2) refuses it
+        with ``110 no input`` (raised) and goes to preview all the same;
+        ``stop()`` answers and leaves it there, and a ``goto_clip`` brings
+        it out.
+        """
+        self._check_ok(f'record: name: {name}' if name else 'record')
+
     def remote_enable(self, enable: bool = True) -> None:
         """Enable or disable remote control."""
         flag = 'true' if enable else 'false'
@@ -569,6 +673,20 @@ class Hyperdeck:
     def ping(self) -> None:
         """Check the unit is responding. Raises on error / disconnect."""
         self._check_ok('ping')
+
+
+def _stack(params) -> str:
+    """snake_case keyword arguments as one line's ``{name}: {value}``
+    pairs: underscores become spaces, booleans ``true`` / ``false``."""
+    parts = []
+    for key, value in params.items():
+        proto_key = key.replace('_', ' ')
+        if isinstance(value, bool):
+            proto_value = 'true' if value else 'false'
+        else:
+            proto_value = str(value)
+        parts.append(f'{proto_key}: {proto_value}')
+    return ' '.join(parts)
 
 
 # ---------------------------------------------------------------------------
