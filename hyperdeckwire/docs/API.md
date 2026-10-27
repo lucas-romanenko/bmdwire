@@ -135,6 +135,10 @@ hd.clips_count()        # int — number of clips on the timeline
 hd.clips_get()          # List[Clip] — clips on the current timeline
 ```
 
+On an empty timeline `clips_get()` is `[]`: a deck answers `clips get`
+there with `107 timeline empty` (a Studio HD Mini on 9.0.2), not an
+empty list, and before 1.7.1 that raised `HyperdeckError`.
+
 ### `Clip` dataclass
 
 `disk_list()` and `clips_get()` return `List[Clip]`. The fields populated
