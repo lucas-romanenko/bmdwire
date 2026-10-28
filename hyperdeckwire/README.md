@@ -45,10 +45,10 @@ Python 3.10 or newer. No other dependencies.
 ## Features
 
 - Blocking, single-socket `Hyperdeck` client with an explicit connect/close lifecycle and context-manager support.
-- Read commands: `device_info`, `remote_info`, `slot_info`, `transport_info`, `configuration`, `disk_list`, `clips_get`, `clips_count`.
-- Write commands: `play` (loop, single clip, speed, clip id), `pause`, `stop`, `goto_clip`, `clips_add`, `clips_remove`, `clips_clear`, `slot_select`, `remote_enable`, `set_configuration`, `ping`.
+- Read commands: `device_info`, `remote_info`, `slot_info`, `transport_info`, `configuration`, `notify`, `disk_list`, `clips_get`, `clips_count`.
+- Write commands: `play` (loop and single clip on or off, speed, clip id), `pause`, `stop`, `record`, `goto_clip`, `goto_clip_by`, `goto_timecode`, `clips_add`, `clips_remove`, `clips_clear`, `slot_select`, `remote_enable`, `set_configuration`, `set_notify`, `ping`.
 - Typed `Clip` and `Response` dataclasses; protocol errors raise `HyperdeckError` with the deck's code and text.
-- Asynchronous 5xx notifications are filtered out of blocking requests and can be read explicitly.
+- Asynchronous 5xx notifications: `set_notify` turns them on, blocking requests set them aside, and `read_notifications` returns them.
 - `upload_clip` FTP helper with storage-volume auto-detection, anonymous-login fallback, progress callback and throughput reporting.
 - `HyperdeckSetup`: the configuration API on the deck's HTTP port. Name, network interface (address, netmask, gateway, DNS, DHCP), the FTP / Web Media Manager / HyperDeck Ethernet Protocol switches, certificate, users, date and time, NTP, identify, reboot. Every setter reads the setting back before reporting success; the "Configure via USB and Ethernet" switch is read-only from the network by construction.
 - Pure standard library; a `socket_factory` hook, `ftplib` monkeypatching and an `opener` hook make the whole suite runnable without hardware.

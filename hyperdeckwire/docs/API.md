@@ -175,6 +175,10 @@ hd.play()                                 # plain play from current position,
 hd.play(loop=True)                        # loop all clips on timeline
 hd.play(loop=True, single_clip=True)      # loop the current clip only
 hd.play(single_clip=True)                 # play current clip, stop at end
+hd.play(loop=False)                       # turn the loop off (play: loop:
+                                          # false); left out, the line says
+                                          # nothing of it (before 1.8.0 a
+                                          # False was left out too)
 hd.play(clip_id=3)                        # play from clip 3
 hd.play(speed=200, loop=True)             # 2x speed, looped
 hd.play(speed=-100)                       # reverse at normal speed
@@ -190,6 +194,17 @@ hd.clips_remove(2)                        # remove timeline clip 2
 
 hd.goto_clip(5)                           # seek to start of clip 5
                                           # (does not play)
+hd.goto_clip_by(1)                        # the next clip's start (goto:
+hd.goto_clip_by(-1)                       # clip id: +1), the previous one's;
+                                          # 109 out of range past either end
+hd.goto_timecode('00:01:30:00')           # seek to a timecode, HH:MM:SS:FF
+                                          # (;FF drop frame); anything else
+                                          # raises ValueError unsent
+
+hd.record()                               # record on the active slot, named
+                                          # from the record prefix
+hd.record('Interview 2')                  # into a clip of that name
+                                          # (stop() ends it)
 
 hd.remote_enable(True)                    # enable remote control
 hd.remote_enable(False)                   # disable
@@ -454,36 +469,52 @@ CR or LF raises `ValueError`.
 
 ## Asynchronous notifications
 
-The protocol's `notify:` family enables async 5xx messages
-(`502 slot info`, `508 transport info`, etc.) that arrive interleaved
-with regular responses. hyperdeckwire **skips async messages by default**
-inside `request()` so a caller waiting on the actual response doesn't
-see them. The greeting (`500 connection info`) is treated as
-synchronous since it always arrives once on connect.
+A deck tells a connection what changes, once that connection asks:
+`set_notify(transport=True, slot=True, remote=True, configuration=True)`
+sends `notify: transport: true slot: true ...`, and `notify()` reads
+which are on (`209 notify`). hyperdeckwire turns none on by itself. Each
+notification is the block its read command answers with, as a 5xx:
+`508 transport info`, `502 slot info`, `510 remote info`, `511
+configuration`. `display_timecode` comes every frame.
 
-For a future async-notifications consumer, the lower-level
-`_read_response(skip_async=False)` returns async responses through —
-see `test_async_message_returned_when_skip_async_false` in the test
-suite for the pattern.
+They arrive between the answers to commands. `request()` sets them
+aside, so a caller waiting on an answer never sees one, and
+`read_notifications()` returns those set aside, oldest first, as
+`Response`s, and forgets them:
+
+```python
+hd.set_notify(transport=True)
+hd.play()
+for note in hd.read_notifications(timeout=1.0):   # waits up to 1 s for one
+    print(note.code, note.text, note.params())    # 508 transport info {'status': 'play', ...}
+```
+
+Without `timeout` it takes only what has arrived. Waiting it out raises
+nothing and leaves the connection as it was. Past
+`NOTIFICATION_BACKLOG` (1000) unread, the oldest go, and `connect()`
+starts afresh. The greeting (`500 connection info`) is not a
+notification: it is read once, on connect.
+
+On a Studio HD Mini (software 9.0.2), with all four on, a notification
+followed each `stop`, `play`, `goto_clip` and `slot_select`, and a `511
+configuration` each `set_configuration`.
 
 ## What's intentionally NOT in the API
 
 These exist in the protocol but aren't exposed yet:
 
 - `playrange:` family (in/out point timeline ranges)
-- `goto:` family beyond `goto_clip` (frame-offset, timecode-relative).
-  A relative `goto: clip id: +1` (or `-1`) past either end of the
-  timeline is refused with `109 out of range`, not held at the end (a
-  Studio HD Mini, software 9.0.2, with a one-clip timeline).
+- `goto:` beyond `goto_clip`, `goto_clip_by` and `goto_timecode`: a
+  clip's or the timeline's start or end, a relative timecode, a slot.
 - `jog:` / `shuttle:` (frame-accurate scrub)
-- `record:` (recording-side commands; playback only so far). With no
-  video input, a Studio HD Mini (software 9.0.2) refuses `record` with
-  `110 no input` and goes to `preview` all the same; `stop` answers and
-  leaves it in preview, and a `goto: clip id:` brings it out.
+- `record:` beyond `record()`: `record: spill`, recording to a
+  timecode. With no video input, a Studio HD Mini (software 9.0.2)
+  refuses `record` with `110 no input` and goes to `preview` all the
+  same; `stop` answers and leaves it in preview, and a `goto: clip id:`
+  brings it out.
 - `format:` (disk format / partition)
 - `slate:` (digital slate metadata for recordings)
 - `nas:` (NAS share management — units mount network storage)
-- `notify:` toggle interface (no subscription API yet)
 - Multi-line commands (`authenticate:`, etc. — line-oriented only today)
 
 ## Validated against
@@ -501,9 +532,11 @@ These exist in the protocol but aren't exposed yet:
 - **HyperDeck Studio HD Mini, software 9.0.2, protocol 1.19**
   (2026-10-27, through bmdctl, the Go port of this client): the
   connect and its reads (device, transport, slot and remote info,
-  configuration, clips), notifications, `stop`, `play` (loop, single
-  clip, speed), `goto_clip` and `slot_select`; and the answers above to
-  a relative `goto` and to `record`.
+  configuration, clips), notifications (`set_notify` for transport,
+  slot, remote and configuration), `stop`, `play` (loop on and off,
+  single clip, speed), `goto_clip` and `slot_select`; and the answers
+  above to a relative `goto` and to `record`. These are the lines 1.8.0's
+  `set_notify`, `play(loop=False)`, `goto_clip_by` and `record` send.
 
 Other Studio HD-class units (Plus, Pro, HDR, Shuttle, Extreme) speak
 the same 9993 protocol and the same configuration API. They additionally
