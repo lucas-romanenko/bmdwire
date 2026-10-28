@@ -532,7 +532,13 @@ class Hyperdeck:
         self._check_ok('play: speed: 0')
 
     def clips_clear(self) -> None:
-        """Empty the current timeline (does not delete files on disk)."""
+        """Empty the current timeline (does not delete files on disk).
+
+        The deck answers before the timeline is empty: a Studio HD Mini on
+        9.0.2 (2026-10-27) still listed the old clips to a ``clips get``
+        0.01 s after the ``200 ok``, and answered ``107 timeline empty`` at
+        0.16 s. Read the timeline again a moment later, not at once.
+        """
         self._check_ok('clips clear')
 
     def clips_add(self, name: str,
