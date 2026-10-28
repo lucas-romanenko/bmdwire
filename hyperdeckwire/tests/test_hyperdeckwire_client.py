@@ -14,7 +14,7 @@ What's pinned here:
     raise ``HyperdeckError`` with the code and text preserved.
   - Asynchronous (5xx) messages are skipped by default during a
     blocking request — they don't get returned as the request's
-    response.
+    response — and kept for ``read_notifications``.
   - Clip line parsing handles filenames with spaces correctly
     (real-world data: "Intro Loop animation.mp4").
   - Action commands assemble their argument strings as documented.
@@ -286,6 +286,19 @@ def test_play_with_no_args_sends_plain_play():
     assert sock.sent == b'play\n'
 
 
+def test_play_with_false_loop_and_single_clip_sends_them_false():
+    # Before 1.8.0 a False was left out, so a loop couldn't be turned off.
+    hd, sock = _client_with_script([b'200 ok\r\n'])
+    hd.play(loop=False, single_clip=False)
+    assert sock.sent == b'play: loop: false single clip: false\n'
+
+
+def test_play_leaves_out_what_it_is_not_given():
+    hd, sock = _client_with_script([b'200 ok\r\n'])
+    hd.play(single_clip=True, speed=50)
+    assert sock.sent == b'play: single clip: true speed: 50\n'
+
+
 def test_pause_sends_play_speed_zero():
     # HyperDeck has no literal pause — it's play at speed 0 (holds the frame).
     hd, sock = _client_with_script([b'200 ok\r\n'])
@@ -312,6 +325,73 @@ def test_goto_clip_sends_clip_id_param():
     hd, sock = _client_with_script([b'200 ok\r\n'])
     hd.goto_clip(5)
     assert sock.sent == b'goto: clip id: 5\n'
+
+
+@pytest.mark.parametrize('offset, line', [
+    (1, b'goto: clip id: +1\n'),
+    (-1, b'goto: clip id: -1\n'),
+    (3, b'goto: clip id: +3\n'),
+], ids=['next', 'prev', 'three-on'])
+def test_goto_clip_by_sends_a_signed_offset(offset, line):
+    hd, sock = _client_with_script([b'200 ok\r\n'])
+    hd.goto_clip_by(offset)
+    assert sock.sent == line
+
+
+def test_goto_clip_by_zero_is_refused_unsent():
+    hd, sock = _client_with_script([b'200 ok\r\n'])
+    with pytest.raises(ValueError, match='moves nowhere'):
+        hd.goto_clip_by(0)
+    assert sock.sent == b''
+
+
+def test_goto_clip_by_past_the_end_raises_109():
+    # A Studio HD Mini on 9.0.2 with one clip on the timeline (2026-10-27).
+    hd, _ = _client_with_script([b'109 out of range\r\n'])
+    with pytest.raises(HyperdeckError) as exc_info:
+        hd.goto_clip_by(1)
+    assert exc_info.value.code == 109
+
+
+@pytest.mark.parametrize('timecode', ['00:01:30:00', '23:59:59:29', '00:00:10;02'],
+                         ids=['plain', 'last', 'drop-frame'])
+def test_goto_timecode_sends_it(timecode):
+    hd, sock = _client_with_script([b'200 ok\r\n'])
+    hd.goto_timecode(timecode)
+    assert sock.sent == f'goto: timecode: {timecode}\n'.encode()
+
+
+@pytest.mark.parametrize('timecode', [
+    '1:00:00:00', '24:00:00:00', '00:60:00:00', '00:00:60:00', '00;00:00:00',
+    '00:00:00:0', '00:00:00:000', ' 00:00:00:00', '00:00:00:00\n', '',
+    '٠٠:٠٠:٠٠:٠٠', 100,
+], ids=['one-digit-hour', 'hour-24', 'minute-60', 'second-60', 'semicolon-early',
+        'one-digit-frame', 'three-digit-frame', 'space', 'line-break', 'empty',
+        'arabic-digits', 'int'])
+def test_goto_timecode_refuses_anything_else_unsent(timecode):
+    hd, sock = _client_with_script([b'200 ok\r\n'])
+    with pytest.raises(ValueError, match='not a timecode'):
+        hd.goto_timecode(timecode)
+    assert sock.sent == b''
+
+
+@pytest.mark.parametrize('name, line', [
+    (None, b'record\n'),
+    ('', b'record\n'),
+    ('Interview 2', b'record: name: Interview 2\n'),
+], ids=['none', 'empty', 'named'])
+def test_record_sends_its_name_if_given(name, line):
+    hd, sock = _client_with_script([b'200 ok\r\n'])
+    hd.record(name)
+    assert sock.sent == line
+
+
+def test_record_with_no_input_raises_110():
+    # A Studio HD Mini on 9.0.2 with nothing on its input (2026-10-27).
+    hd, _ = _client_with_script([b'110 no input\r\n'])
+    with pytest.raises(HyperdeckError) as exc_info:
+        hd.record()
+    assert exc_info.value.code == 110
 
 
 def test_remote_enable_true_sets_remote_to_true():
@@ -429,6 +509,124 @@ def test_response_params_skips_lines_without_colon():
 
 
 # ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+def test_notify_reads_which_are_on():
+    hd, sock = _client_with_script([
+        b'209 notify:\r\n'
+        b'remote: false\r\n'
+        b'transport: true\r\n'
+        b'slot: false\r\n'
+        b'configuration: false\r\n'
+        b'\r\n'
+    ])
+    assert hd.notify() == {'remote': 'false', 'transport': 'true',
+                           'slot': 'false', 'configuration': 'false'}
+    assert sock.sent == b'notify\n'
+
+
+def test_set_notify_stacks_its_kinds_in_one_line():
+    hd, sock = _client_with_script([b'200 ok\r\n'])
+    hd.set_notify(transport=True, slot=True, display_timecode=False)
+    assert sock.sent == b'notify: transport: true slot: true display timecode: false\n'
+
+
+def test_set_notify_no_args_is_noop():
+    hd, sock = _client_with_script([])
+    hd.set_notify()
+    assert sock.sent == b''
+
+
+def test_set_notify_raises_on_protocol_error():
+    hd, _ = _client_with_script([b'101 unsupported parameter\r\n'])
+    with pytest.raises(HyperdeckError) as exc_info:
+        hd.set_notify(timeline_position=True)
+    assert exc_info.value.code == 101
+
+
+TRANSPORT_NOTE = b'508 transport info:\r\nstatus: play\r\n\r\n'
+SLOT_NOTE = b'502 slot info:\r\nslot id: 1\r\nstatus: mounted\r\n\r\n'
+
+
+def test_notifications_among_answers_are_kept_in_order():
+    hd, sock = _client_with_script([TRANSPORT_NOTE + b'200 ok\r\n', SLOT_NOTE + b'200 ok\r\n'])
+    hd.stop()
+    hd.slot_select(1)
+    notes = hd.read_notifications()
+    assert [(n.code, n.text, n.params()) for n in notes] == [
+        (508, 'transport info', {'status': 'play'}),
+        (502, 'slot info', {'slot id': '1', 'status': 'mounted'}),
+    ]
+    assert hd.read_notifications() == [], 'read once, forgotten'
+
+
+def test_notifications_that_came_before_a_command_are_kept():
+    hd, [sock] = _deck([[GREETING, b'200 ok\r\n']])
+    sock.arrive(TRANSPORT_NOTE)
+    hd.stop()
+    assert [n.code for n in hd.read_notifications()] == [508]
+
+
+def test_read_notifications_takes_what_has_arrived():
+    hd, [sock] = _deck([[GREETING]])
+    sock.arrive(TRANSPORT_NOTE + SLOT_NOTE)
+    assert [n.code for n in hd.read_notifications()] == [508, 502]
+
+
+def test_read_notifications_waits_for_one(clock):
+    hd, [sock] = _deck([[GREETING, SILENCE, TRANSPORT_NOTE]], clock)
+    assert [n.code for n in hd.read_notifications(timeout=2.0)] == [508]
+
+
+def test_waiting_out_read_notifications_leaves_the_connection(clock):
+    hd, [sock] = _deck([[GREETING, SILENCE, b'200 ok\r\n']], clock)
+    assert hd.read_notifications(timeout=0.5) == []
+    assert hd._sock is sock
+    hd.ping()
+    assert sock.sent == b'ping\n'
+
+
+def test_read_notifications_drops_a_stray_answer(caplog):
+    hd, [sock] = _deck([[GREETING]])
+    sock.arrive(b'200 ok\r\n' + TRANSPORT_NOTE)
+    with caplog.at_level(logging.WARNING, logger='hyperdeckwire.client'):
+        assert [n.code for n in hd.read_notifications()] == [508]
+    assert 'no command was waiting for' in caplog.text
+
+
+def test_read_notifications_leaves_a_partial_one():
+    hd, [sock] = _deck([[GREETING]])
+    sock.arrive(b'508 transport info:\r\nstatus: re')
+    assert hd.read_notifications() == []
+    sock.arrive(b'cord\r\n\r\n')
+    assert [n.params() for n in hd.read_notifications()] == [{'status': 'record'}]
+
+
+def test_a_full_backlog_keeps_the_newest(monkeypatch):
+    monkeypatch.setattr(client_mod, 'NOTIFICATION_BACKLOG', 3)
+    hd, [sock] = _deck([[GREETING]])
+    for status in (b'play', b'stopped', b'preview', b'record'):
+        sock.arrive(b'508 transport info:\r\nstatus: ' + status + b'\r\n\r\n')
+    assert [n.params()['status'] for n in hd.read_notifications()] == [
+        'stopped', 'preview', 'record']
+
+
+def test_connect_starts_the_notifications_afresh():
+    hd, socks = _deck([[GREETING, b'200 ok\r\n'], [GREETING]])
+    socks[0].arrive(TRANSPORT_NOTE)
+    hd.ping()                                    # sets the notification aside
+    hd.connect()
+    assert hd.read_notifications() == []
+
+
+def test_read_notifications_when_not_connected():
+    hd = Hyperdeck('1.2.3.4')
+    with pytest.raises(OSError, match='not connected'):
+        hd.read_notifications()
+
+
+# ---------------------------------------------------------------------------
 # Answers stay with their commands
 # ---------------------------------------------------------------------------
 
@@ -532,9 +730,10 @@ def test_a_partial_response_is_left_for_the_read():
     lambda hd: hd.set_configuration(record_prefix='x\r'),
     lambda hd: hd.set_configuration(record_prefix='show\nformat: prepare: H.264High'),
     lambda hd: hd.goto_clip('1\nstop'),
+    lambda hd: hd.record('take\nstop'),
     lambda hd: hd.request('ping\nstop'),
 ], ids=['clips_add', 'clips_add-before', 'record_prefix-cr', 'record_prefix-lf',
-        'goto_clip', 'request'])
+        'goto_clip', 'record', 'request'])
 def test_a_line_break_is_refused_before_sending(call):
     hd, sock = _client_with_script([b'200 ok\r\n', b'200 ok\r\n'])
     with pytest.raises(ValueError, match='line break'):
