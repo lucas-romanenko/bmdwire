@@ -34,9 +34,9 @@ print(probe('192.0.2.10'))   # {'video_format': ..., 'atem_model': ..., ...}
   it is now covered by the version number. `atemwire.state`, `messages`,
   `pool`, `profile` and `ready` are public; protocol and transport are the
   wire and may change in a minor release.
-- Runs in production driving a fleet of ATEM switchers from a Django/Channels
-  app: live switching, media-pool uploads, still capture, profile save and
-  restore, HyperDeck bindings.
+- Used in production with a fleet of ATEM switchers: live switching,
+  media-pool uploads, still capture, profile save and restore, HyperDeck
+  bindings.
 - Developed and verified against 1 M/E and Constellation switchers; the
   profile format is pinned to the version 2.1 XML a 1 M/E Constellation HD
   emits. Other models are expected to work for switching and media, and each
