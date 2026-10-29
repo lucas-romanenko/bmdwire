@@ -188,7 +188,7 @@ new lock, skipped the release after that transfer, and asked again as the
 holder, which the switcher ignores (see "Requests and grants"). Waiting
 for the echo hid it, at a frame per transfer at best and up to 6.6 s
 measured, during a 20-still restore by bmdctl, which mirrors this code.
-Since `bd6ae77` atemwire holds the lock from `LKOB` to its own release, as
+Since `d050c10` atemwire holds the lock from `LKOB` to its own release, as
 ASC does. That commit also sent the release and the next request in one
 packet, as ASC does; that shut ASC out, and since `5827626` the next
 request waits its turn (below).
@@ -227,7 +227,7 @@ two of them captured on the ASC machine.
   thumbnails while the other client downloaded; the download paused 38 s
   for ASC's 20 and went on. Alone, 20 uploads take 14.2 s, against
   12.7 s with 1.5.0 and about 12 s for ASC.
-* That has to follow every release, work queued or not (`1b30449`).
+* That has to follow every release, work queued or not (`5130d64`).
   WebATEM's media pool watcher queues one still at a time, the next
   after decoding the last, so nothing is queued at the release; 1.5.1
   yielded only when something was, and the watcher's next request went

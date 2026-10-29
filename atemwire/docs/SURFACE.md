@@ -4,7 +4,7 @@ An inventory of everything the `atemwire` library can do, built for mapping to C
 Every entry was taken from the code, not from the docs. Where a doc or comment disagrees with the
 code, the code wins, and the disagreement is listed in §5.3.
 
-- **Source read:** `bmdwire` 1.2.0 (`github.com/lucas-romanenko/bmdwire`, commit `028ac26`),
+- **Source read:** `bmdwire` 1.2.0 (`github.com/lucas-romanenko/bmdwire`, commit `4387c7c`),
   package `atemwire/`. atemwire is byte-identical to 1.1.0, which WebATEM pins in
   `requirements.txt`, except for its README.
 - **Method:** the `Send`/`Recv` classes are declarative, so their layouts, codes, mask bits and
@@ -106,7 +106,7 @@ Every row takes `index:u8=me` and `keyer:u8` first.
 | `KeyPropertiesMaskCommand` | `CKMs` | `enabled?:bool`, `top?:i16`, `bottom?:i16`, `left?:i16`, `right?:i16` | edges ×1000 (display ±9 top/bottom, ±16 left/right). The docstring says "Not Wireshark-validated yet". Ops `set_usk_mask_enabled`, `set_usk_mask_top/bottom/left/right(display, ×1000, no clamp)` |
 | `KeyPropertiesDveCommand` | `CKDV` | `size_x?:i32`, `size_y?:i32`, `pos_x?:i32`, `pos_y?:i32`, `rotation?:i32`, `border_enabled?:bool`, `shadow_enabled?:bool`, `border_bevel_enabled?:u8 (bevel type)`, `outer_width?:u16=0–1600`, `inner_width?:u16=0–1600`, `outer_softness?:u8=0–100`, `inner_softness?:u8=0–100`, `bevel_softness?:u8=0–100`, `bevel_position?:u8=0–100`, `border_opacity?:u8=0–100`, `border_hue?:u16`, `border_saturation?:u16`, `border_luma?:u16`, `angle?:u16=0–3590`, `altitude?:u8=10–100`, `mask_enabled?:bool`, `mask_top?:i16=±9000`, `mask_bottom?:i16=±9000`, `mask_left?:i16=±16000`, `mask_right?:i16=±16000`, `rate?:u8=frames` | u32 mask, 26 bits; `__init__(index, keyer, **kwargs)`. Helper method `set_border_color_rgb`. Ops `set_usk_dve_position_x/y(display ×1000; clamped only to the i32 range so off-screen fly positions survive)`, `set_usk_dve_size_x/y(0–2 → 0–2000, clamped)`, `set_usk_dve_rotation(deg ×10)`, `set_usk_dve_border_enabled`, `set_usk_dve_border_hue/saturation/luma(×10; the "SCALE CONTRACT" comment explains the asymmetric read)`, `set_usk_dve_border_opacity`, `set_usk_dve_border_outer_width/inner_width(×100)`, `set_usk_dve_border_outer_softness/inner_softness/bevel_softness/bevel_position`, `set_usk_dve_masked`, `set_usk_dve_top/bottom/left/right(×1000)`, `set_usk_dve_light_direction(deg ×10)`, `set_usk_dve_light_altitude`, `set_usk_dve_shadow`, `set_usk_dve_rate(rate_str)`. No op sets `border_bevel_enabled` |
 | `KeyerKeyframeSetCommand` | `SFKF` | `keyframe:u8=1 A\|2 B` | op `set_keyer_fly_keyframe(conn, keyer, 'a'\|'b'\|'full'\|'runToInfinite', me)` maps through `helpers.KEYFRAME_BY_NAME` (a=1, b=2, full=3, runToInfinite=4); the wire docstring documents only A/B |
-| `KeyerKeyframeRunCommand` | `RFlK` | `run_to:u8=1 A\|2 B\|3 Full\|4 Infinite` (or `'A'`,`'B'`,`'Full'`,`'Infinite'`), `direction?:u8` | mask bit 1 gates `direction`; `run_to` has no mask bit. Ops `run_flying_key_keyframe(conn, keyer, 'a'\|'b'\|'full', me)`, `run_flying_key_infinite_direction(conn, keyer, direction, me)`. `direction` is the location, the same byte as macro op 0x0056's location and `KeFS` byte 5, captured from ASC (bmdwire#10): 0 CentreOfKey, 1 TopLeft, 2 TopCentre, 3 TopRight, 4 MiddleLeft, 5 MiddleCentre, 6 MiddleRight, 7 BottomLeft, 8 BottomCentre, 9 BottomRight. In 1.3.0 and earlier the op takes the int only and its docstring calls 5 the centre, and the macro table has no 5 (§5.4 items 9 and 10); since `b89fcb7` both use `helpers.FLYKEY_LOCATION_NAMES` and the op also takes the names. ASC sends 0x6E in padding byte 3, atemwire 0 |
+| `KeyerKeyframeRunCommand` | `RFlK` | `run_to:u8=1 A\|2 B\|3 Full\|4 Infinite` (or `'A'`,`'B'`,`'Full'`,`'Infinite'`), `direction?:u8` | mask bit 1 gates `direction`; `run_to` has no mask bit. Ops `run_flying_key_keyframe(conn, keyer, 'a'\|'b'\|'full', me)`, `run_flying_key_infinite_direction(conn, keyer, direction, me)`. `direction` is the location, the same byte as macro op 0x0056's location and `KeFS` byte 5, captured from ASC (bmdwire#10): 0 CentreOfKey, 1 TopLeft, 2 TopCentre, 3 TopRight, 4 MiddleLeft, 5 MiddleCentre, 6 MiddleRight, 7 BottomLeft, 8 BottomCentre, 9 BottomRight. In 1.3.0 and earlier the op takes the int only and its docstring calls 5 the centre, and the macro table has no 5 (§5.4 items 9 and 10); since `1bee7d4` both use `helpers.FLYKEY_LOCATION_NAMES` and the op also takes the names. ASC sends 0x6E in padding byte 3, atemwire 0 |
 
 ### 1.5 keyer-dsk — `messages/downstream_keyer.py`
 
@@ -435,9 +435,9 @@ describe a packet is logged at DEBUG and never reaches the packet loop.
 | `time` | `Time` | `hours`, `minutes`, `seconds`, `frames`, `dropframe:bool`; `total_seconds()` | bare | `TiRq` (request), `SToD` (sets the clock) |
 | `time-config` | `TCCc` | `mode:u8 (0 freerun, 1 time-of-day)` | bare | — (no command) |
 | `lock-obtained` | `LKOB` | `store:u16` | consumed by the transfer engine, **not stored** | `LOCK`/`PLCK` |
-| `lock-state` | `LKST` | `store:u16`, `state:bool`, `u1` | bare: the latest LKST, whatever its store. Only releases until `312c7cf` (§5.4 item 19). Held by another client: `state` True while `protocol.locks.get(store)` is falsy | `LOCK` |
+| `lock-state` | `LKST` | `store:u16`, `state:bool`, `u1` | bare: the latest LKST, whatever its store. Only releases until `cd7f738` (§5.4 item 19). Held by another client: `state` True while `protocol.locks.get(store)` is falsy | `LOCK` |
 | `file-transfer-*` | `FTDa`/`FTDE`/`FTDC`/`FTCD` | `transfer`, `size`/`status`/`count`… | consumed by the transfer engine, **not stored** | §3 |
-| `transfer-complete` | `*XFC` | `store`, `slot`, `upload:bool` | consumed (TCP-proxy transport only); since `15321d0` dropped unparsed on UDP (§5.4 item 18) | — |
+| `transfer-complete` | `*XFC` | `store`, `slot`, `upload:bool` | consumed (TCP-proxy transport only); since `baa269c` dropped unparsed on UDP (§5.4 item 18) | — |
 | `InCm` | `InCm` | raw bytes (end of the initial state dump) | bare | — |
 
 ### 2.6 `build_full_state(conn)` (the assembled snapshot)
@@ -535,7 +535,7 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   (`LOCK(store, False)`), and the `LKST` echo starts the next queued task. If another session's
   release is seen while work is queued, the lock is re-requested at once. A lock request is not
   repeated within 1.0 s (`LOCK_REREQUEST_SECONDS`). There is no timer-driven retry: a dropped
-  request is re-sent only on the next event. Since `bd6ae77` the release and the next request go
+  request is re-sent only on the next event. Since `d050c10` the release and the next request go
   in one packet, as ATEM Software Control sends them, and a release broadcast while the store is
   held changes nothing; after an FTDE 6 the release goes alone (§5.4 item 21). Since `5827626`
   the release goes alone and the next request waits for the store to be announced free and a
@@ -550,7 +550,7 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   Statuses 1, 5 and 6 never reach callers.
 - **Upload pacing:** the switcher grants budgets with `FTCD(size, count)`. Chunks go out as `FTDa`
   (an RLE header word is never split), then `FTFD(name, description, md5)` once the send queue
-  drains. Download chunks are acked one by one with `FTUA(tid, 0)`. Since `bd6ae77` `FTFD` goes
+  drains. Download chunks are acked one by one with `FTUA(tid, 0)`. Since `d050c10` `FTFD` goes
   with the first budget and each budget is sent whole as it is granted (§5.4 items 22 and 23).
 - **The protocol layer has no timeouts.** A transfer ends on `FTDC`, a fatal `FTDE`, or
   `abort_transfers()`. Timeouts live in the callers below.
@@ -562,7 +562,7 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
 | operation | entry point | parameters | behaviour |
 |---|---|---|---|
 | **download** | `ATEMConnection.download_still` (`connection.py:188`); on the facade, `atem.raw.download_still` | `(slot:int, *, timeout:float=30.0, progress_callback:Callable[[float],None]=None) -> bytes` | Blocking and serialised per connection. Flow: `PLCK(0,slot)` → `LKOB` → `FTSU` → `FTDa`×N/`FTUA` → `FTDC` → unlock. Returns the **RLE-decoded YCbCrA 4:2:2 frame** (w×h×4 bytes; actually a `bytearray`). Convert it with `imaging.atem_to_rgb`. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False, §5.4 item 20), `RuntimeError` (fatal `FTDE`) or `TimeoutError` (after `abort_transfers`) |
-| **upload** | **no high-level entry point**. Only `AtemProtocol.upload` (`protocol.py:682`) | `(store, index, data, compress=True, compressed=False, name=None, description=None, size=None, task=None) -> None` | Non-blocking: it only queues, and someone must pump `loop()`. `data` is a YCbCrA frame from `imaging.rgb_to_atem`. The MD5 is taken over the uncompressed frame. Flow: `PLCK` → `LKOB` → `FTSD(mode 1 = RLE)` → `FTCD` → `FTDa`… → `FTFD` → `FTDC` → `upload-done(store, slot)`. Progress arrives as `upload-progress(store, slot, percent, done, total)`. `size` is unused. `compressed=True` needs `compress=False`. `aggressive_drain=True` (constructor only, so not reachable through the pool) drains 10 packets per trigger instead of 5; since `bd6ae77` each budget is sent whole on any connection and it changes nothing (§5.4 item 22). The working reference caller is in WebATEM: `atem_control/uploader.py` (its own `AtemProtocol(ip, aggressive_drain=True)`, pumps until `upload-done`, then checks the `MPfe` hash) |
+| **upload** | **no high-level entry point**. Only `AtemProtocol.upload` (`protocol.py:682`) | `(store, index, data, compress=True, compressed=False, name=None, description=None, size=None, task=None) -> None` | Non-blocking: it only queues, and someone must pump `loop()`. `data` is a YCbCrA frame from `imaging.rgb_to_atem`. The MD5 is taken over the uncompressed frame. Flow: `PLCK` → `LKOB` → `FTSD(mode 1 = RLE)` → `FTCD` → `FTDa`… → `FTFD` → `FTDC` → `upload-done(store, slot)`. Progress arrives as `upload-progress(store, slot, percent, done, total)`. `size` is unused. `compressed=True` needs `compress=False`. `aggressive_drain=True` (constructor only, so not reachable through the pool) drains 10 packets per trigger instead of 5; since `d050c10` each budget is sent whole on any connection and it changes nothing (§5.4 item 22). The working reference caller is in WebATEM: `atem_control/uploader.py` (its own `AtemProtocol(ip, aggressive_drain=True)`, pumps until `upload-done`, then checks the `MPfe` hash) |
 | **clear (locked)** | `ATEM.clear_still` / `ATEMConnection.clear_still` (`connection.py:196`); underneath, `AtemProtocol.queue_clear(store, index)` / `dequeue_clear(task)` | `(slot:int, *, timeout:float=5.0) -> None` | `LOCK(0,True)` → `LKOB` → `CSTL` → `clear-dispatched` → unlock. Returns once the clear has been **dispatched**, not confirmed; watch `MPfe.is_used` to confirm. Use this, not the bare `media.clear_still` op (§1.8). Raises `ConnectionDeadError` when not connected (since `1572508`, when not `is_ready`) or `TimeoutError` |
 | capture | `media.capture_still(conn)` | — | single packet `Capt`, listed for completeness |
 
@@ -635,7 +635,7 @@ layers, so whether this module is covered by the version number is unstated.
 **Bytecode.** A macro is a concatenation of ops, with no header, count or padding. Each op is
 `u16 LE total_len` (header included), then `u16 LE op_code`, then params. Everything is
 **little-endian**, unlike the big-endian live protocol. Fixed-point values are Q16.16 (`raw/65536`),
-written with at most 6 decimals (since `4011dcb`, six significant digits; §5.4 item 9). Decoded attributes are strings (`'True'`/`'False'` for bools).
+written with at most 6 decimals (since `c0e211e`, six significant digits; §5.4 item 9). Decoded attributes are strings (`'True'`/`'False'` for bools).
 Ops are identified by **u16 codes, not 4-char commands**.
 
 **146 op codes, all encode + decode** (`_KNOWN_OPS`, verified by import): upstream_keyer 56,
@@ -757,13 +757,13 @@ Readiness and identity:
 - The switcher is on UDP **9910**. The handshake is a SYN with `0x01` and session id `0x1337`; the
   switcher answers with a SYN (`0x02` = accepted) and the client ACKs it. The session id is then
   adopted from the switcher. The handshake ACK is sent from `loop()`, so it needs pumping. Since
-  `25e94d7`, a re-handshake drops packets carrying the replaced session's id, and while the SYN
+  `7e42caa`, a re-handshake drops packets carrying the replaced session's id, and while the SYN
   is out, anything but its reply (§5.4 item 16).
 - Every reliable packet is ACKed with the contiguous high-water mark, by the transport's **own
   UDP thread**. A session therefore survives an unpumped loop; events only wait.
 - Duplicates are dropped. Out-of-order packets are parked (up to 512 ahead). Retransmission is
   **only on the switcher's request** (go-back-N, max 128). There is no client-side retransmit
-  timer, and the switcher's ACK number is never read. Since `bd6ae77` it is read, and what it
+  timer, and the switcher's ACK number is never read. Since `d050c10` it is read, and what it
   hasn't acknowledged in 250 ms is resent; a reliable packet the kernel refuses keeps its
   sequence number (§5.4 items 24 and 25).
 - Goodbye: `close_session()` sends a SYN with `0x04`, fire-and-forget.
@@ -773,7 +773,7 @@ Readiness and identity:
   `2797515`, 5 s since the last packet accepted from the switcher or the last SYN; §5.4 item
   15). The protocol then raises `disconnected` and **empties `mixerstate`**; when the new dump
   completes, `connected` fires again. Meanwhile `ATEMConnection.is_connected` **stays True**;
-  since `edb5fa0`, `is_ready` and `ATEM.connected` go False for the gap (§5.4 item 2).
+  since `661dc4c`, `is_ready` and `ATEM.connected` go False for the gap (§5.4 item 2).
 - Environment: `ATEMWIRE_PACKET_TRACE=1|true|yes|on` turns on the `atemwire.trace.packet` and
   `atemwire.trace.drain` loggers. No other environment variable is read.
 
@@ -786,7 +786,7 @@ callback is logged and swallowed.
 | event | args | when |
 |---|---|---|
 | `connected` | — | initial dump complete (the packet after `InCm`) |
-| `disconnected` | — | transport timeout or forced reconnect (since `50cb4b3`, also a dump that ends without a video mode); `mixerstate` is cleared |
+| `disconnected` | — | transport timeout or forced reconnect (since `2fc9375`, also a dump that ends without a video mode); `mixerstate` is cleared |
 | `change` | `(key, contents)` | every stored field |
 | `change:<key>` | `(contents)` | bare fields |
 | `change:<key>:<first-index>` and `change:<key>:*` | `(contents)` | indexed fields (Fairlight: the strip id) |
@@ -798,7 +798,7 @@ callback is logged and swallowed.
 | `clear-dispatched` | `(store, slot)` | locked clear sent (local, not a switcher confirmation) |
 
 `LKOB`, `FTCD`, `FTDa`, `FTDE`, `FTDC` and `*XFC` produce **no** `change` events. `LKST`
-produces `change:lock-state` for a lock taken as well as a release since `312c7cf`.
+produces `change:lock-state` for a lock taken as well as a release since `cd7f738`.
 
 ### 4.4 Knowing a command took effect
 
@@ -868,7 +868,7 @@ simulated switcher state beyond a 1080p50 `video-mode`.
   The last three have `ApplyOptions` flags that do nothing.
 - The `tcp://` proxy and USB transports. Both raise `NotImplementedError`, so the `*XFC`/`*XFR`
   handling and the TCP `connected` path are dead code. A `*XFC` that reaches a UDP session
-  anyway was not inert until `15321d0` (§5.4 item 18).
+  anyway was not inert until `baa269c` (§5.4 item 18).
 - `CXMS` bytes 10–15 (auto-roll and frame delay) are not mapped and are sent as 0.
 
 **The macro codec** knows 146 op codes. These families are absent and round-trip only as
@@ -910,7 +910,7 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 - **`build_full_state` omits whole areas.** It covers no multiviewer, SuperSource, recording,
   streaming, tally, camera control, media-pool slots, media-player selection, locks, time or
   meters, and lists **only the first 12 macros**. (Legacy audio was in this list until
-  `3e2f400`; see §5.4 item 33.)
+  `bd2f4bb`; see §5.4 item 33.)
 - **Unused constants.** `FTSD`'s `MODE_WRITE_RLE`, `MODE_WRITE` and `MODE_ERASE` are unused (the
   engine uses literals). `profile/_enums._source_symbol()` is dead code.
 - **`SaveOptions.media_pool_images` and `ApplyOptions.restore_media_pool_images` are never read.**
@@ -961,21 +961,21 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
    unrecognised. Both SD aspects save as the same string (`625i50`), and `525i59.94` has no entry
-   (`profile/save.py:516-522`). *Fixed in `e9e4a77`:* save and apply share
+   (`profile/save.py:516-522`). *Fixed in `0ee0915`:* save and apply share
    `input_video.VIDEO_MODE_XML_NAMES` (all 30 modes, SD 16:9 as `NTSC_widescreen` /
    `PAL_widescreen`), and apply compares mode numbers. Old decimal spellings are still read.
-   The two old SD labels never recorded the aspect (`1a7e366`): `525i59.94` is skipped with a
+   The two old SD labels never recorded the aspect (`e2a2166`): `525i59.94` is skipped with a
    warning, and `625i50`, which is also ASC's name for PAL 4:3, applies as 4:3 with a warning.
 2. **Transport reconnect leaves `is_connected == True` while `mixerstate == {}`** (1.2.0). A warm
    `ATEM(ip)` can join mid-outage; check `mixerstate` or wait for `connected`. *Fixed in
-   `edb5fa0`:* `is_connected` keeps its meaning (worker alive; `send()` and pool eviction use it).
+   `661dc4c`:* `is_connected` keeps its meaning (worker alive; `send()` and pool eviction use it).
    The new `ATEMConnection.is_ready` is False from `disconnected` until the next `connected`,
    `ATEM.connected` reads it, and `probe()` reports `connection_status=False` during the gap.
 3. **An unknown `VidM` mode code raises inside the parser.** The exception escapes `loop()`, the
    rest of that packet is lost, `video-mode` never lands, and `wait_ready` times out. Since
-   `50cb4b3` the session re-handshakes three times first (item 17).
+   `2fc9375` the session re-handshakes three times first (item 17).
 4. **Slot 0 is never latched as the last-run macro** (1.2.0). `last_run_macro_index` uses
-   `int(index) or 0xFFFF` (`connection.py:481`). *Fixed in `a9f3646`:* only a missing index or
+   `int(index) or 0xFFFF` (`connection.py:481`). *Fixed in `a5ac82e`:* only a missing index or
    0xFFFF means idle.
 5. **`FEna` disable cannot address M/E 2+.** "Disable ME2" equals "enable ME1" on the wire, so
    `set_ftb_disabled` always targets ME1. `FEna` state is a byte heuristic.
@@ -992,7 +992,7 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
      `AudioSource id` for both halves (a per-input sentinel: −256 if `FAIP` says mono, else
      −65280) and records no subchannel, so only element order tells them apart. The ASC reference
      export has no split input, so how ASC marks the second half is unknown. *Fixed in
-     `d86ed31`:* ASC's export of an input in Dual Mono (bmdwire#9) writes `DualMono` and an id per
+     `b682afe`:* ASC's export of an input in Dual Mono (bmdwire#9) writes `DualMono` and an id per
      half, the strip's wire address as a signed i64: −256 channel 0, −255 channel 1, −65280
      stereo. Save writes those, in subchannel order, and apply sends each strip to the channel its
      id names, the XLR's −256 included (channel 0, not −1).
@@ -1004,17 +1004,17 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
 9. **Macro codec losses:**
    - Marker bytes are rewritten.
    - Floats decode to six decimals where ASC writes six significant digits (`-327.679993` for
-     `-327.68`, `-0.080002` for `-0.0800018`). *Fixed in `4011dcb`:* `_fmt_scalar` writes ASC's
+     `-327.68`, `-0.080002` for `-0.0800018`). *Fixed in `c0e211e`:* `_fmt_scalar` writes ASC's
      form, which every float in twelve ASC exports matches (bmdwire#17).
    - Unknown transition style, key type and mix type strings silently encode as Mix, Luma and On.
    - TransitionSource mask 0 becomes Background.
    - u16/u32 values are masked silently (70000 → 4464).
    - Fly-key `MiddleCentre` raises, despite a comment saying it is accepted. *Fixed in
-     `b89fcb7`:* it encodes as 5, the byte ASC's own recorded macro holds (bmdwire#10).
+     `1bee7d4`:* it encodes as 5, the byte ASC's own recorded macro holds (bmdwire#10).
    - A missing `MacroSleep.frames` encodes as 0.
    - A Fairlight strip op with no `sourceId` encodes `0xFFFFFFFFFFFF0000`, an address no capture
      shows; the stereo strip is `0xFFFFFFFFFFFF0100` (ASC's `18446744073709486336`). *Fixed in
-     `9b53248`:* that is the default now (bmdwire#16).
+     `cc42c33`:* that is the default now (bmdwire#16).
 10. **Unit traps:**
     - **Unclamped values:** stinger clip/gain (×10). CACK values are ×1000 and unclamped.
     - **`CICP`/`CILP`/`CIXP`/`CMCP`/`CMLP` take dB/ms floats**, while `CFMP`/`CFSP`/`CEBP` take
@@ -1030,7 +1030,7 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
       and the macro table (0 CentreOfKey, no 5). They agree on 1–4 and 6–9. ASC's own export (the
       Lots XML) uses both `CentreOfKey` and `MiddleCentre` in one macro, so they are different
       locations. No capture in the repo shows the centre byte; both sites carry a TODO
-      (`f960428`). *Fixed in `b89fcb7`:* a capture of ASC settled it (bmdwire#10). `RFlK` byte 5,
+      (`84bf32c`). *Fixed in `1bee7d4`:* a capture of ASC settled it (bmdwire#10). `RFlK` byte 5,
       `KeFS` byte 5 and the 0x0056 location are one enum, `helpers.FLYKEY_LOCATION_NAMES`:
       0 CentreOfKey, 1–9 the grid row by row with 5 MiddleCentre. The op also takes the names.
 11. **Bare clear is unreliable.** The `CSTL` sent by `media.clear_still` is ignored by some models;
@@ -1054,7 +1054,7 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
     packet restarts the silence window; the first reliable one becomes the new session's ACK
     baseline and delivery cursor, so the new dump (starting again at low sequence numbers) is
     dropped as duplicates and `connected` doesn't come until the next timeout; and one arriving
-    just after the handshake ACK can be adopted as the session id. *Fixed in `25e94d7`:*
+    just after the handshake ACK can be adopted as the session id. *Fixed in `7e42caa`:*
     packets carrying the replaced session's switcher-assigned id are dropped before any receive
     state sees them, and so is anything but the SYN reply while the SYN is out (bmdwire#12).
 17. **The first packet of a state dump is lost for good if it is lost at all** (1.3.0). The first
@@ -1062,7 +1062,7 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
     first dump packet is lost, the second one's ACK covers it, so it is never resent, and a late
     copy is dropped as already delivered. Without its `VidM`, `wait_ready` waits out its timeout
     and `ATEMConnection.connect` fails after 15 s; other fields in it are silently missing.
-    *Partly fixed in `50cb4b3`:* a dump that ends (`InCm`) without `video-mode` raises
+    *Partly fixed in `2fc9375`:* a dump that ends (`InCm`) without `video-mode` raises
     `disconnected` and re-handshakes at once, up to 3 times in a row, then carries on as before.
     Other fields lost with the first packet are still missing. The real fix, a known first
     sequence number, waits for a trace showing what it is (bmdwire#13).
@@ -1070,12 +1070,12 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
     non-ATEM peer, a fuzzer, a future firmware) the handler indexes `transfer_queue[store]`: with
     nothing queued that raises `KeyError`, which escapes `loop()` and loses the rest of the
     datagram; with a transfer queued it pops that transfer and may raise a spurious
-    `upload-done`. *Fixed in `15321d0`:* on UDP it is dropped before parsing, logged at debug,
+    `upload-done`. *Fixed in `baa269c`:* on UDP it is dropped before parsing, logged at debug,
     and the TCP branch reads the queue with `.get()` (bmdwire#14).
 19. **`LKST` reporting a lock taken is dropped** (1.3.0). Nothing is stored and no event fires,
     whether the lock is this session's or another client's, so `mixerstate['lock-state']` only
     ever shows the last release and a held media store can't be seen; a foreign holder shows
-    only as a download timing out with "lock never granted". *Fixed in `312c7cf`:* both states
+    only as a download timing out with "lock never granted". *Fixed in `cd7f738`:* both states
     are stored and raise `change:lock-state`; the transfer engine still reacts to releases only
     (bmdwire#15). The key is still bare, so stores 0 and `0xFFFF` overwrite each other.
 20. **Transfers started during a re-handshake wait out their timeout** (1.3.0).
@@ -1093,28 +1093,28 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
     "eaten" while a release was in flight. What happened instead: the switcher broadcasts lock
     changes once a frame, after the `LKOB` for the new request, and the lock-state handler took
     the release broadcast as losing the new grant, then skipped the next release and asked again
-    as the holder, which the switcher ignores (`docs/MEDIA_LOCK.md`). *Fixed in `bd6ae77`:* the
+    as the holder, which the switcher ignores (`docs/MEDIA_LOCK.md`). *Fixed in `d050c10`:* the
     release and the next request go in one packet, as ASC sends them, and a release broadcast
     while the store is held changes nothing. After an FTDE 6 the release still goes alone.
 22. **Uploads go five chunks per packet from the switcher** (1.4.0). A photographic 1080p still
     (about 5,940 chunks: RLE barely shortens it) takes about 23 s; with `aggressive_drain`, about
     3 s (WebATEM's figure). `FTFD` waits for the send queue to drain after the last chunk.
-    *Fixed in `bd6ae77`:* each `FTCD` budget is sent whole as it is granted, and `FTFD` goes with
+    *Fixed in `d050c10`:* each `FTCD` budget is sent whole as it is granted, and `FTFD` goes with
     the first, as ASC sends them (0.5 s a still); `aggressive_drain` no longer changes anything.
 23. **Upload chunks are sliced off the front of the data** (1.4.0). Each slice copies the rest,
     some 25 GB for a 1080p still, and an upload retried after FTDE 1 goes on from where the
-    last attempt stopped, without its start or a second `FTFD`. *Fixed in `bd6ae77`:* chunks are
+    last attempt stopped, without its start or a second `FTFD`. *Fixed in `d050c10`:* chunks are
     cut at an offset, reset with the `FTFD` on each attempt.
 24. **A lost packet with nothing after it is never resent** (1.4.0). Retransmission is only on
     the switcher's request, which a later packet's gap prompts. The last packet of a burst (an
     upload budget's last chunk; `FTFD` after the data) has nothing after it until the switcher
-    answers, so its loss stalls the transfer until the caller's timeout. *Fixed in `bd6ae77`:*
+    answers, so its loss stalls the transfer until the caller's timeout. *Fixed in `d050c10`:*
     the switcher's ACK number is read, and what it hasn't acknowledged in 250 ms
     (`UdpProtocol.RESEND_AFTER`) is resent from the first unacknowledged packet.
 25. **A reliable packet the kernel refuses is lost without a gap** (1.4.0). On a transient send
     error (`ENOBUFS`, which macOS returns for a full buffer; `EAGAIN`; a route flap) the UDP
     thread drops the packet before its sequence number is used, so the next packet takes it:
-    the switcher sees no gap, and an upload loses a chunk without a word. *Fixed in `bd6ae77`:*
+    the switcher sees no gap, and an upload loses a chunk without a word. *Fixed in `d050c10`:*
     `ENOBUFS` and `EAGAIN` are retried for up to 20 ms, and a reliable packet still refused keeps
     its number and its copy for retransmission.
 26. **Another client's turn is cut short** (1.5.0). The release and the next lock request go in
@@ -1131,7 +1131,7 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
     the wait only after a release with more work queued. A caller that queues its transfers one at
     a time (WebATEM's media pool watcher, the next still after decoding the last) has nothing
     queued at the release, and its next request goes out at once, beside another client's,
-    aborting it as before. *Fixed in `1b30449`:* every per-frame release starts the wait, after an
+    aborting it as before. *Fixed in `5130d64`:* every per-frame release starts the wait, after an
     FTDE 6 too, and so does any client's announced release.
 28. **The UDP thread can wait on itself for good** (1.5.0). `thread_queue` is a `SocketQueue`:
     each put writes a byte to a socketpair (278 fit on Linux) that only the UDP thread reads.
@@ -1139,37 +1139,37 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
     its own packets too, the ACK for every reliable packet received among them. A packet arriving
     mid-budget (another session's lock or transfer broadcast, say) left both threads waiting in
     `SocketQueue.put` for good: the upload stops, and a caller's timeout never runs if its pump is
-    the protocol thread. *Fixed in `81955c1`:* what the UDP thread sends goes to the socket at once.
+    the protocol thread. *Fixed in `8877133`:* what the UDP thread sends goes to the socket at once.
 29. **A caller's Wakeup runs the trigger in every yield** (1.5.2). `_service_yields` ran on
     every `Wakeup`, a caller's included, and triggered each store with work queued before its
     turn was due: two INFO lines per `Wakeup`, 100 a second under WebATEM's pump. *Fixed in
-    `81955c1`:* the trigger runs once the turn is due; before it, the protocol only wakes for the
+    `8877133`:* the trigger runs once the turn is due; before it, the protocol only wakes for the
     due time again.
 30. **A receive buffer size the system refuses fails the connect** (1.5.3). `UdpProtocol` asked
     for a 16 MB `SO_RCVBUF` with a bare `setsockopt`. Linux caps the request silently and Windows
     takes it, but macOS 12 refuses anything above `kern.ipc.maxsockbuf` with errno 55
     (`ENOBUFS`): the constructor raised, and no switcher could be connected from that system.
-    *Fixed in `c08f830`:* the request steps down 16, 8, 4, 1 MB and keeps the first size taken,
+    *Fixed in `968798e`:* the request steps down 16, 8, 4, 1 MB and keeps the first size taken,
     or the system's default if it takes none.
 31. **A caller's timeout hands the store back early** (1.5.1). `abort_transfers()` cleared the wait
     for another client's turn with the queue. A caller that times out and retries (WebATEM's media
     pool: 15 s, then again) asked at once, though the switcher may have handed the store over
     unannounced at our last release, and was granted beside the other client's lock, aborting its
-    transfer. *Fixed in `1feedbd`:* the wait outlives the abort, and a lock the abort releases starts
+    transfer. *Fixed in `5a8f45a`:* the wait outlives the abort, and a lock the abort releases starts
     one.
 32. **An `AMIP` from before ATEM 8.0 firmware ends the connection** (1.5.5). `AudioInputField`
     unpacked it with `struct.unpack`, which wants exactly 16 bytes; before 8.0 the switcher sends
     20 (LibAtem's `AudioMixerInputGetCommand` and its `V8` twin). The `struct.error` left
     `loop()` and ended the worker, so a legacy switcher on older firmware could not stay
-    connected. *Fixed in `626c785`:* `unpack_from` reads the first 16 bytes of either length.
+    connected. *Fixed in `8fd3ece`:* `unpack_from` reads the first 16 bytes of either length.
     Untested on a switcher.
 33. **On a legacy audio mixer the audio section is never present** (1.5.5). `_build_audio` read
     only the Fairlight packets, so on a switcher with the legacy mixer (a Production Studio 4K, a
     Television Studio HD) `audio.present` stayed False and a frontend gated on it (WebATEM)
-    waited for good. *Fixed in `3e2f400`:* `audio.mixer` says which mixer it is
+    waited for good. *Fixed in `bd2f4bb`:* `audio.mixer` says which mixer it is
     (`audio_mixer_type`), and on `'legacy'` the section is built from `AMMO`, `AMIP` and `AMmO`
     in the Fairlight shapes (§2.4, §2.6). The first of each legacy packet is logged raw and
-    decoded (`03fa389`, §2.4) so a user's log can check the layouts. Untested on a switcher.
+    decoded (`45fafa4`, §2.4) so a user's log can check the layouts. Untested on a switcher.
 
 ## Counts
 
