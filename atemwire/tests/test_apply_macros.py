@@ -137,7 +137,7 @@ def test_apply_macros_partial_upload_reports_dropped_ops(monkeypatch):
     upload_calls = _stub_upload_success(monkeypatch)
 
     p = _profile_with_macros(
-        '<Macro index="0" name="WIDE CAM" description="">'
+        '<Macro index="0" name="TWO SHOT" description="">'
         '  <Op id="ProgramInput" mixEffectBlockIndex="0" input="Camera1"/>'
         '  <Op id="_TestSyntheticUnencodableOp2"'
         '      input="Camera1" sourceId="0" mixType="On"/>'
@@ -155,7 +155,7 @@ def test_apply_macros_partial_upload_reports_dropped_ops(monkeypatch):
     # 1 macro had drops
     assert '1 with dropped ops' in line, line
     # The op id and slot should be enumerated
-    assert "slot 0 ('WIDE CAM')" in line, line
+    assert "slot 0 ('TWO SHOT')" in line, line
     assert '_TestSyntheticUnencodableOp2' in line, line
     # Operator should see how many ops were dropped (singular here)
     assert 'dropped 1 op' in line, line

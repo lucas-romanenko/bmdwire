@@ -28,7 +28,7 @@ verified live against an ATEM 1 M/E Constellation HD.
 > 3. **Encoder symmetry.** The bytecode format is identical in both
 >    directions — every op the decoder produces (`<Op id="..."
 >    attrs="..."/>`) round-trips through `encode_macro_bytecode` to
->    byte-identical bytes (verified on slot 0 "WIDE CAM": 712 bytes,
+>    byte-identical bytes (verified on slot 0 "TWO SHOT": 712 bytes,
 >    52 ops, full round-trip). Marker bytes that earlier reverse-
 >    engineering captured as `0x028e` / `0x026c` / `0x000c` were
 >    artifacts of synthesized test commands; real Software Control

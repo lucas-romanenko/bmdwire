@@ -64,7 +64,7 @@ def test_parse_section_missing_header_returns_empty(sample_prelude):
 # the others left out and its Unique ID zeroed.
 PRELUDE_12_4K = (
     "PROTOCOL PREAMBLE:\nVersion: 2.3\n\n"
-    "IDENTITY:\nModel: Ultimatte 12 4K\nLabel: Ultimatte Editor\n"
+    "IDENTITY:\nModel: Ultimatte 12 4K\nLabel: Studio Keyer\n"
     "Unique ID: 00000000000000000000000000000000\n\n"
     "VERSION:\nProduct ID: BE8F\nHardware Version: 0100\n"
     "Software Version: 2AE2D1CA\nSoftware Release: 2.3\n\n"
@@ -94,7 +94,7 @@ def test_parse_current_file_without_the_section_is_empty(sample_prelude):
 
 
 def test_the_12_4k_prelude_keeps_its_label_and_file_list():
-    assert _preamble.extract_label(PRELUDE_12_4K) == "Ultimatte_Editor"
+    assert _preamble.extract_label(PRELUDE_12_4K) == "Studio_Keyer"
     assert _preamble.parse_file_list(PRELUDE_12_4K) == ["1", "2"]
 
 

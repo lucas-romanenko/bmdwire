@@ -403,7 +403,7 @@ class AtemProtocol:
             # again for its next transfer (ASC does, in one packet) is
             # announced as a release then a lock, often in one packet: a
             # request sent on the release would be granted alongside theirs
-            # and abort their transfer (TEST ATEM 2, 2026-10-15).
+            # and abort their transfer (Studio ATEM, 2026-10-15).
             y = self._yielding.get(contents.store)
             now = time.monotonic()
             if y is None and self._can_wake():

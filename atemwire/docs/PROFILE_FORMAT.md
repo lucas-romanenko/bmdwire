@@ -892,11 +892,11 @@ poison sibling slots.
 new op can't land with only one direction defined.
 
 Live verification: an end-to-end download → decode → encode → upload
-→ download cycle on slot 0 ("WIDE CAM", 712 bytes, 52 ops) is
+→ download cycle on slot 0 ("TWO SHOT", 712 bytes, 52 ops) is
 byte-identical when every op is encodable. Reference XML
 (`everything_2026-04-27_18-16-51.xml`, 8 macros including 2 with
 Fairlight ops) reports ``macros (8/8 restored, 2 with dropped ops:
-slot 0 ('WIDE CAM') dropped 25 ops; slot 2 ('CAMERA TOP') dropped 28
+slot 0 ('TWO SHOT') dropped 25 ops; slot 2 ('CRANE SHOT') dropped 28
 ops)`` — both partial macros land with all their non-Fairlight ops
 intact.
 
