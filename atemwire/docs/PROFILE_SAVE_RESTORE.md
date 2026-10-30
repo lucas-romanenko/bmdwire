@@ -320,7 +320,8 @@ downloads every used slot as a PNG and returns a list of
 connection's normal packet loop (`ATEMConnection.download_still`, a
 native interleaved transfer), so control traffic and state events keep
 flowing during each slot (~2 s measured per 1080p still). The frame size
-comes from the live video mode (falling back to 1920x1080). Per-slot
+comes from the live video mode (falling back to 1920x1080; at a mode
+atemwire has no table entry for, nothing is downloaded). Per-slot
 failures are logged and skipped, so the caller gets a partial list;
 `cancel_check()` returning True stops before the next slot;
 `progress_callback(slot, completed, total)` fires after each slot. The

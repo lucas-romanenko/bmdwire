@@ -485,9 +485,13 @@ mixerstate; restore is a documented gap.
 | `videoMode` | `state.video_mode(mx)['format']`     | `operations.set_video_mode(mode='1080p60')` |
 
 **Implemented as of 2026-04-28.** Mode names are mapped via
-`operations.VIDEO_MODE_NAMES` (covers all 30 entries from
+`input_video.VIDEO_MODE_NAMES` (covers all 30 entries from
 `VideoModeField`'s receive table). The XML elides the decimal point
-in fractional rates (29.97 → `2997`, 59.94 → `5994`).
+in fractional rates (29.97 → `2997`, 59.94 → `5994`). The 4K and 8K
+modes are ATEM Software Control's `4KHDp2398` … `8KHDp5994`, which save
+writes; the `2160p…` / `4320p…` spellings older atemwire wrote are still
+read. A mode the table doesn't have is saved as `mode-<n>` (the
+switcher's own number) and applied back as that number.
 
 **Quirk: changing video mode is destructive.** The ATEM resyncs all
 outputs; video drops briefly and clients may be force-disconnected.
