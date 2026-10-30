@@ -406,8 +406,8 @@ def _e_ftb_enabled(attrs):
 
 
 def _e_video_mode(attrs):
-    # A VIDEO_MODE_NAMES name, or "mode-<n>" for a mode atemwire has no
-    # name for; the decoder writes such a mode as "<n>".
+    # ASC's names, the older 2160p/4320p spellings, and "mode-<n>" for a
+    # mode atemwire has no name for; the decoder writes such a mode as "<n>".
     from atemwire.messages.input_video import _video_mode_number
     mode = attrs['videoMode']
     if isinstance(mode, str):

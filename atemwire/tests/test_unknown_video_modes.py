@@ -343,6 +343,22 @@ def test_each_mode_round_trips_through_every_table(mode):
     assert encode_macro_bytecode([{'id': 'VideoMode', 'videoMode': name}]) == raw
 
 
+@pytest.mark.parametrize('name, mode', [
+    # ATEM Software Control's spelling of the UHD modes (its profile export
+    # from a 4 M/E Constellation 4K lists them all) ...
+    ('4KHDp2398', 14), ('4KHDp24', 15), ('4KHDp25', 16), ('4KHDp2997', 17),
+    ('4KHDp50', 18), ('4KHDp5994', 19),
+    ('8KHDp2398', 20), ('8KHDp24', 21), ('8KHDp25', 22), ('8KHDp2997', 23),
+    ('8KHDp50', 24), ('8KHDp5994', 25),
+    # ... and the spelling atemwire 1.9.0 and earlier wrote, still read.
+    ('2160p2398', 14), ('2160p5994', 19), ('4320p25', 22), ('4320p5994', 25),
+])
+def test_uhd_names_both_spellings(name, mode):
+    assert VIDEO_MODE_NAMES[name] == mode
+    raw = _pack_op(0x000C, bytes([mode, 0, 0, 0]))
+    assert encode_macro_bytecode([{'id': 'VideoMode', 'videoMode': name}]) == raw
+
+
 def test_macro_video_mode_op_with_an_unknown_mode():
     raw = _pack_op(0x000C, bytes([31, 0, 0, 0]))
     assert decode_macro_bytecode(raw) == [{'id': 'VideoMode', 'videoMode': '31'}]
@@ -428,6 +444,16 @@ def test_apply_skips_a_name_it_cannot_read(no_resync_sleep, name):
     sent, result = _apply_xml(name, live=_mx_at(10))
     assert sent == []
     assert any('unrecognized mode' in s for s in result.skipped)
+
+
+def test_save_and_apply_use_asc_uhd_names(no_resync_sleep):
+    saved = Profile.from_atem(_RecordingConn(_mx_at(17)), _video_mode_only_save())
+    assert '<VideoMode videoMode="4KHDp2997"' in saved.to_xml()
+    sent, _ = _apply_xml('4KHDp2997', live=_mx_at(10))
+    assert sent == [17]
+    sent, result = _apply_xml('4KHDp2997', live=_mx_at(17))
+    assert sent == []
+    assert any(s.startswith('video_mode: already at') for s in result.skipped)
 
 
 def test_media_pool_images_at_an_unknown_mode_downloads_nothing(caplog):

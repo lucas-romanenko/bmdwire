@@ -22,6 +22,10 @@ from atemwire.messages._dsl import Recv, Send, string, u8, u16
 
 # Name → wire enum (matches VideoModeField._MODE_TABLE). The XML form of
 # the rate elides the decimal point (29.97 → "2997", 59.94 → "5994").
+# ATEM Software Control spells the UHD modes "4KHDp…" and "8KHDp…" (its own
+# profile exports, and the SDK's bmdSwitcherVideoMode names); the
+# "2160p…" / "4320p…" spellings are what atemwire 1.9.0 and earlier wrote,
+# and are still read.
 VIDEO_MODE_NAMES = {
     'NTSC': 0, '525i5994': 0,
     'PAL': 1, '625i50': 1,
@@ -32,6 +36,10 @@ VIDEO_MODE_NAMES = {
     '1080p2398': 8, '1080p24': 9, '1080p25': 10,
     '1080p2997': 11, '1080p30': 26,
     '1080p50': 12, '1080p5994': 13, '1080p60': 27,
+    '4KHDp2398': 14, '4KHDp24': 15, '4KHDp25': 16, '4KHDp2997': 17,
+    '4KHDp50': 18, '4KHDp5994': 19,
+    '8KHDp2398': 20, '8KHDp24': 21, '8KHDp25': 22, '8KHDp2997': 23,
+    '8KHDp50': 24, '8KHDp5994': 25,
     '2160p2398': 14, '2160p24': 15, '2160p25': 16, '2160p2997': 17,
     '2160p50': 18, '2160p5994': 19,
     '4320p2398': 20, '4320p24': 21, '4320p25': 22, '4320p2997': 23,
@@ -53,10 +61,10 @@ VIDEO_MODE_XML_NAMES = {
     8: '1080p2398', 9: '1080p24', 10: '1080p25',
     11: '1080p2997', 26: '1080p30',
     12: '1080p50', 13: '1080p5994', 27: '1080p60',
-    14: '2160p2398', 15: '2160p24', 16: '2160p25', 17: '2160p2997',
-    18: '2160p50', 19: '2160p5994',
-    20: '4320p2398', 21: '4320p24', 22: '4320p25', 23: '4320p2997',
-    24: '4320p50', 25: '4320p5994',
+    14: '4KHDp2398', 15: '4KHDp24', 16: '4KHDp25', 17: '4KHDp2997',
+    18: '4KHDp50', 19: '4KHDp5994',
+    20: '8KHDp2398', 21: '8KHDp24', 22: '8KHDp25', 23: '8KHDp2997',
+    24: '8KHDp50', 25: '8KHDp5994',
 }
 
 # A mode number atemwire has no table entry for is labelled ``mode-<n>``
