@@ -222,6 +222,9 @@ class AtemProtocol:
         # (key, AMIP source) of the legacy-audio packets already logged
         # (messages/audio_legacy.py, "Diagnostics").
         self._legacy_audio_logged = set()
+        # Wire codes whose field failed to parse or handle, logged once each
+        # with the traceback (_save_field_guarded); later failures go to debug.
+        self._field_errors_logged = set()
 
         # store -> True while we hold its lock: from the LKOB until we send
         # the release, whatever LKST says meanwhile. The switcher announces
@@ -319,7 +322,7 @@ class AtemProtocol:
             return
         try:
             for fieldname, data in self.decode_packet(packet.data):
-                self.save_field_data(fieldname, data)
+                self._save_field_guarded(fieldname, data)
         except ConnectionError as e:
             # The old handler claimed "closing connection" but closed
             # nothing: the session stayed ESTABLISHED with a gutted
@@ -344,6 +347,32 @@ class AtemProtocol:
                 self.transport.connect()
             except Exception as e:
                 self.log.error(f'Post-corruption reconnect failed: {e}')
+
+    def _save_field_guarded(self, fieldname, data):
+        """``save_field_data`` for one field of a packet. A field whose
+        parser or handler raises is logged and dropped, and the fields after
+        it in the packet still land. Before this, the exception left
+        ``loop()`` and took the rest of the packet with it: an unknown video
+        mode code in ``_VMC`` cost the ``VidM`` behind it, so the state dump
+        never completed, and a short ``AMIP`` once ended the connection
+        (SURFACE.md §5.4 items 3 and 32). ``ConnectionError`` (transport
+        corruption, ``IncompleteStateDump``) still goes to ``loop()``, which
+        re-handshakes."""
+        try:
+            self.save_field_data(fieldname, data)
+        except ConnectionError:
+            raise
+        except Exception:
+            code = bytes(fieldname).decode('ascii', errors='replace')
+            if code in self._field_errors_logged:
+                self.log.debug('%r field dropped again: it could not be parsed',
+                               code, exc_info=True)
+            else:
+                self._field_errors_logged.add(code)
+                self.log.exception(
+                    '%r field could not be parsed (%d bytes: %s); dropped, '
+                    'the rest of the packet goes on', code, len(data),
+                    bytes(data[:32]).hex())
 
     def on(self, event, callback):
         if event not in self.callbacks:

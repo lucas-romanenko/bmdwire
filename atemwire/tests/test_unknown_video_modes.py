@@ -13,7 +13,8 @@ connect timed out.
 
 Now an unknown code is kept as an unknown mode (``known`` False, label
 ``mode-<n>``, no frame size or rate), every reader and the profile and macro
-paths take it.
+paths take it, and a field whose parser raises for any other reason is
+dropped on its own, not with the rest of its packet.
 """
 import logging
 import struct
@@ -229,6 +230,28 @@ def test_an_unknown_running_mode_completes_the_dump(harness):
     vm = h.p.mixerstate['video-mode']
     assert (vm.mode, vm.known) == (31, False)
     assert wait_ready(h.p, timeout=0.5) is h.p.mixerstate
+
+
+def test_a_field_that_fails_to_parse_costs_only_itself(harness, caplog):
+    # InPr wants 36 bytes. A short one raised struct.error out of loop(),
+    # and the VidM behind it in the packet was lost with it.
+    h = harness()
+    bad = _field(b'InPr', bytes(4))
+    with caplog.at_level(logging.ERROR, logger='AtemProtocol'):
+        h.run(_packet(TOP, bad, _vidm_field(12), INCM), _packet(TIME))
+
+    assert h.calls == []
+    assert h.events == ['connected']
+    assert h.p.mixerstate['video-mode'].mode == 12
+    assert 'input-properties' not in h.p.mixerstate
+    errors = [r for r in caplog.records if 'InPr' in r.getMessage()]
+    assert len(errors) == 1 and errors[0].exc_info is not None
+
+    # Logged once per wire code; later ones go to debug.
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger='AtemProtocol'):
+        h.run(_packet(bad, TIME))
+    assert not [r for r in caplog.records if 'InPr' in r.getMessage()]
 
 
 def test_transfer_progress_skips_an_unknown_mode(harness):
