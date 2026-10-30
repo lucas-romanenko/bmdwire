@@ -52,6 +52,46 @@ one) did not hold on this hardware.
   sessions complete in 8.2 s, the wire floor.
 * `FTDC` for a transfer is broadcast to **every** session, with the owner's
   transfer id. A session must match the id against its own transfer.
+* So two sessions must not use the same ids. Until 1.8.0 every session of
+  this package started at 43 (measured 2026-10-30, two and three sessions
+  in one process): one took the other's `FTDC` for its own, dropped its
+  task, and ignored the chunks of the transfer the switcher then started
+  for it, 153 of them, unacknowledged. The switcher answered every later
+  `FTSU` and `FTSD`, from every session, with `FTDE 1`, for as long as the
+  sessions lasted (30 s in the test). Since `6876ba2` each session starts
+  at a random id.
+* `FTDE 1` (try again) answers a transfer request in about 10 ms while the
+  switcher's transfer engine is busy with another session's transfer, a
+  1080p still for its whole ~2 s.
+
+### Who asks first after a release
+
+Measured the same day: an uploader and a downloader that fetches one still
+at a time, the next 250 ms after the last, in one process. After each
+upload, the uploader released; the release was announced 40 ms later; and
+both sessions, each waiting `LOCK_COURTESY` (60 ms) after the announcement,
+asked **0.3 ms apart**, twice in each run of four uploads. In 4 of 5 runs one
+of those pairs ended with the downloader's transfer aborted (`FTDE 6`).
+Otherwise the later `PLCK` was queued and handed over at the uploader's
+release, unannounced.
+
+Since `6876ba2` the session whose release it was waits `LOCK_HANDOVER`
+(100 ms) more, while it has seen another client lately. The waiter asks at
+60 ms, gets `LKOB` about 10 ms later, and the `LKST` for that grant reaches
+the releaser about 80 ms after the release was announced, before its own
+request is due at 160 ms; the store is then the waiter's, and the releaser
+asks once it is announced free again. The two alternate, one turn each:
+
+| | before | after |
+|---|---|---|
+| requests within 30 ms of each other (5 runs) | 10 | 0 |
+| `FTDE 6` | 4 | 0 |
+| downloads per run of four uploads | 3 | 5 (one before the first upload, one after each) |
+| four uploads, with the downloader | 5.7 s | 10.0 s (its turns included) |
+| four uploads, alone | 2.72 to 2.80 s | 2.69 to 2.92 s |
+
+"Before" is 1.8.0 with the two sessions' transfer ids set apart by hand, so
+that the shared ids above don't mix in.
 
 ## Session end
 

@@ -44,6 +44,7 @@ def _protocol_holding(*stores):
     p.locks = {s: True for s in stores}
     p._lock_requested = set()
     p._yielding = {}
+    p._own_release = {}
     return p
 
 

@@ -29,7 +29,7 @@ import struct
 
 import pytest
 
-from atemwire.protocol import LOCK_COURTESY, LOCK_QUIET, AtemProtocol
+from atemwire.protocol import LOCK_COURTESY, LOCK_HANDOVER, LOCK_QUIET, AtemProtocol
 from atemwire.transport import BaseProtocol, Packet, UdpProtocol
 
 CHUNK = 1392                     # the switcher's 1396, in whole 8-byte words
@@ -381,6 +381,11 @@ def test_ftde_6_still_leaves_the_request_to_the_release_broadcast(proto, clock):
     assert names(proto.packets[-1]) == ['LockCommand'], 'another session is queued: no request with it'
     lkst(proto, 0, False)
     clock.t += LOCK_COURTESY
+    proto._service_yields()
+    # The session we collided with waits for this store too: the turn after
+    # our release is its (LOCK_HANDOVER).
+    assert names(proto.packets[-1]) == ['LockCommand'], 'asked with the waiter'
+    clock.t += LOCK_HANDOVER
     proto._service_yields()
     assert names(proto.packets[-1]) == ['PartialLockCommand']
 

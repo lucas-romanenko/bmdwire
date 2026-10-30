@@ -539,7 +539,12 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   in one packet, as ATEM Software Control sends them, and a release broadcast while the store is
   held changes nothing; after an FTDE 6 the release goes alone (§5.4 item 21). Since `5827626`
   the release goes alone and the next request waits for the store to be announced free and a
-  frame more, never while another client holds it (§5.4 item 26).
+  frame more, never while another client holds it (§5.4 item 26). Since `6876ba2`, after a release
+  of our own the next request waits `LOCK_HANDOVER` (0.1 s) more while another client has been
+  seen within `LOCK_QUIET`, so a client waiting on that release asks first (§5.4 item 37).
+- **Transfer ids:** each `FTSU`/`FTSD` carries the session's next transfer id, and the switcher's
+  `FTDC` for it goes to every session with that id. Every session used to start at 43; since
+  `6876ba2` each starts at a random id in 1..0xFFFF, wrapping without 0 (§5.4 item 36).
 - **`FTDE` status handling:**
   - 1 (try again): re-send the request with the same tid.
   - 5 (no lock): re-request the lock.
@@ -959,7 +964,7 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
 it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and still apply to it.
-Items 34 and 35 were fixed after 1.8.0 and still apply to it.
+Items 34 to 37 were fixed after 1.8.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1207,6 +1212,36 @@ Items 34 and 35 were fixed after 1.8.0 and still apply to it.
       entry evicted while held doesn't take a reference from its replacement.
     `get_instance` and `peek_connection` still return a connection whatever its state; `send()`
     still checks only `is_connected` (bmdwire#65).
+36. **Every session uses the same transfer ids** (1.8.0). A session's first transfer id is 43, the
+    next 44, and so on, and the switcher's `FTDC` goes to every session with the owner's id. Two
+    sessions of this package on one switcher, in one process or not, therefore use the same ids.
+    With a still download in one and a macro download in the other, the still's session took the
+    macro's `FTDC` for its own: it dropped its task (a "download" of no data, in 0.09 s), released,
+    and ignored the chunks of the transfer the switcher then started for it (153 on a
+    Constellation), never acknowledging them. With its transfer engine held, the switcher refused
+    every later request from both with `FTDE 1`, about 100 a second each, for as long as the
+    sessions lasted: in 30 s, one download each, then nothing; with a third session uploading, the
+    same (bmdwire#64 took it for retries in step; a random retry delay alone did not unblock it).
+    *Fixed in `6876ba2`:* each session starts at a random id in 1..0xFFFF, and ids wrap without 0.
+    The same 30 s: 13 stills and 43 macros; with the uploader, 10 stills, 39 macros and 10 uploads.
+    A request refused with `FTDE 1` while another session's transfer runs is still sent again at
+    once, about every 10 ms, until that transfer ends.
+37. **The releaser and the client waiting on its release ask together** (1.8.0). After a per-frame
+    release (item 27) the releaser waits for the store to be announced free and `LOCK_COURTESY`
+    more, and so does a client that saw the store held and waited for it. Both ask at the same
+    moment: on a Constellation, an uploader and a downloader in one process asked 0.3 ms apart,
+    twice in each run of four uploads, and in 4 of 5 runs one download was aborted with `FTDE 6` (an
+    upload can be aborted instead: the switcher then refuses every chunk of its budget). *Fixed in
+    `6876ba2`:* after a release of our own, the next request waits `LOCK_HANDOVER` (0.1 s) more, but
+    only while another client has been seen within `LOCK_QUIET` (its `LKST`, its `FTDC`, an
+    `FTDE 6`; since `c7a8788` not the late `LKST` of a grant of ours, from a transfer shorter than a
+    frame). The waiter asks first; its grant is announced about 20 ms later, before our request is
+    due, and the store is then another client's. A release announced more than `LOCK_ECHO_WINDOW`
+    (0.25 s) after ours is not our release's echo but another client's (the store was handed to a
+    request waiting at the switcher, unannounced), and we ask after it as its waiter. The same runs:
+    no requests together and no `FTDE 6`; the downloader took a turn after every upload, so four
+    uploads took 10 s instead of 5.7 s. Alone, four uploads take the same 2.7 to 2.9 s as before
+    (bmdwire#63).
 
 ## Counts
 
