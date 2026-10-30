@@ -1,6 +1,7 @@
 # Copyright 2021 - 2022, Martijn Braam and the OpenAtem contributors
 # SPDX-License-Identifier: LGPL-3.0-only
 import logging
+import random
 import struct
 import time
 
@@ -65,6 +66,43 @@ LOCK_REREQUEST_SECONDS = 1.0
 # were WebATEM refreshing each new still's thumbnail.
 LOCK_COURTESY = 0.06
 LOCK_QUIET = 10.0
+
+# The turn after our own release goes to whoever was waiting for it. They
+# ask LOCK_COURTESY after the release is announced; so did we, and two
+# requests that close together are both granted, or one is aborted
+# (FTDE 6 to a download; to an upload, a refusal of every chunk of its
+# budget). Measured on a Constellation HD, 2026-10-30: an uploader and a
+# downloader in one process asked 0.3 ms apart after each upload's release
+# (bmdwire#63). So after a release of ours, our next request waits
+# LOCK_HANDOVER more: time for a waiter's request, its grant, and the LKST
+# that announces it (the next frame tick) to reach us, after which the
+# store is another client's and we ask once they let go. Only while
+# another client has been seen in the last LOCK_QUIET (its LKST, its FTDC,
+# an FTDE 6): alone, nothing is waiting, and a restore of 20 stills would
+# pay it 20 times for nobody.
+LOCK_HANDOVER = 0.1
+
+# Our release's own LKST comes at the switcher's next frame tick, about
+# 40 ms later. A release announced much later than this is another
+# client's: the store was handed to a request waiting at the switcher, with
+# nothing announced, and that client has now let go. We are its waiter
+# then, not the releaser, and ask LOCK_COURTESY after it like any waiter.
+LOCK_ECHO_WINDOW = 0.25
+
+
+def _first_transfer_id():
+    """A session's first transfer id, at random in 1..0xFFFF.
+
+    The switcher broadcasts FTDC to every session with the owner's transfer
+    id, and a session matches it against its own. Every session used to
+    start at 43, so two sessions of this package (in one process or not)
+    used the same ids: one took the other's FTDC for its own, finished a
+    transfer the switcher was still sending, and stopped acknowledging it.
+    The switcher, its transfer engine held by a transfer nobody drained,
+    refused every later request with FTDE 1 (try again), from both
+    sessions, for good (bmdwire#64)."""
+    return random.randrange(1, 0x10000)
+
 
 # A state dump that ends (InCm) without a video mode has lost its first
 # packet for good: the transport takes the first reliable packet that
@@ -213,9 +251,15 @@ class AtemProtocol:
         # Stores another client holds, from its LKST until its release's:
         # we don't ask for them meanwhile (LOCK_COURTESY).
         self._foreign_held = set()
+        # store -> monotonic time of the release of ours that started its
+        # yield: the turn after it goes to a waiter first (LOCK_HANDOVER).
+        self._own_release = {}
+        # monotonic time another client was last seen at the store (its
+        # LKST, its FTDC, an FTDE 6 to us); None if never.
+        self._others_seen = None
         self.mode = None
         self.transfer_queue = {}
-        self.transfer_id = 42
+        self.transfer_id = _first_transfer_id()
         # Download chunks accumulate as a LIST and join once at FTDC. The
         # historical bytes concat (buffer += chunk) was O(n²) across the
         # ~6000 chunks of a 1080p still — the reason the (since-deleted)
@@ -383,8 +427,12 @@ class AtemProtocol:
             # is theirs now.
             if not self.locks.get(contents.store):
                 self._foreign_held.add(contents.store)
+                self._others_seen = time.monotonic()
                 if contents.store in self._yielding:
                     self._yielding[contents.store] = [time.monotonic(), None]
+                    # Theirs now: the next turn after their release is ours
+                    # as a waiter, not as the releaser.
+                    self._own_release.pop(contents.store, None)
         elif key == 'lock-state' and self.locks.get(contents.store):
             # A release broadcast while we hold the store is the late echo
             # of our own previous release: the switcher announces lock
@@ -408,8 +456,13 @@ class AtemProtocol:
             now = time.monotonic()
             if y is None and self._can_wake():
                 self._yielding[contents.store] = [now, now]
+                self._own_release.pop(contents.store, None)
             elif y is not None and y[1] is None:
                 y[1] = now
+                released = self._own_release.get(contents.store)
+                if released is not None and now - released > LOCK_ECHO_WINDOW:
+                    # Not our release's echo: another client's (LOCK_ECHO_WINDOW).
+                    self._own_release.pop(contents.store, None)
             if contents.store in self._yielding and self.transfer_queue.get(contents.store):
                 self._wake_at(now + LOCK_COURTESY)
             # The lock is free: whatever request we had outstanding is
@@ -520,6 +573,7 @@ class AtemProtocol:
                 # second control page on the same switcher.
                 store = self.transfer.store
                 self._lock_requested.pop(store, None)
+                self._others_seen = time.monotonic()
                 self._release_then_continue(store, request_next=False)
             else:
                 # Fatal for THIS transfer (e.g. code 2 = rejected mode/slot):
@@ -742,6 +796,7 @@ class AtemProtocol:
         self.locks = {}
         self._lock_requested.clear()
         self._yielding.clear()
+        self._own_release.clear()
         self._foreign_held.clear()
 
     def release_locks_now(self):
@@ -781,6 +836,7 @@ class AtemProtocol:
             self.locks[store] = False
         self._lock_requested.clear()
         self._yielding.clear()
+        self._own_release.clear()
 
     def abort_transfers(self):
         """Best-effort reset of the transfer state machine, for callers that
@@ -811,6 +867,7 @@ class AtemProtocol:
                 self.locks[lock] = False
                 if self._can_wake():
                     self._yielding[lock] = [time.monotonic(), None]
+                    self._own_release[lock] = time.monotonic()
 
     def download(self, store, index):
         # The native interleaved download: transfers ride the normal packet
@@ -1003,6 +1060,7 @@ class AtemProtocol:
                 # queued at it, and that request must wait its turn too. The
                 # trigger defers it and asks to be woken.
                 self._yielding[store] = [time.monotonic(), None]
+                self._own_release[store] = time.monotonic()
             if not request_next:
                 return  # the store's release broadcast continues the queue
         self._transfer_trigger(store)
@@ -1019,13 +1077,24 @@ class AtemProtocol:
         """When a store we are leaving free may be asked for again."""
         since, announced = self._yielding[store]
         if announced is not None:
+            if store in self._own_release and self._others_recently():
+                return announced + LOCK_COURTESY + LOCK_HANDOVER
             return announced + LOCK_COURTESY
         return since + LOCK_QUIET
+
+    def _others_recently(self):
+        return (self._others_seen is not None
+                and time.monotonic() - self._others_seen < LOCK_QUIET)
+
+    def _end_yield(self, store):
+        self._yielding.pop(store, None)
+        self._own_release.pop(store, None)
 
     def _someone_at_work(self):
         """Another session's transfer ended: a store we wait for, not yet
         announced free, is busy, and LOCK_QUIET starts again."""
         now = time.monotonic()
+        self._others_seen = now
         for y in self._yielding.values():
             if y[1] is None:
                 y[0] = now
@@ -1041,7 +1110,7 @@ class AtemProtocol:
             due = self._yield_due(store)
             if not self.transfer_queue.get(store):
                 if now >= due:
-                    del self._yielding[store]
+                    self._end_yield(store)
             elif (self.transfer_requested or self.locks.get(store)
                     or store in self._foreign_held):
                 continue                         # their release asks for us
@@ -1092,7 +1161,7 @@ class AtemProtocol:
                                    f'for other clients')
                     self._wake_at(due)
                     return
-                del self._yielding[next.store]
+                self._end_yield(next.store)
             asked = self._lock_requested.get(next.store)
             if asked is not None and time.monotonic() - asked < LOCK_REREQUEST_SECONDS:
                 self.log.debug(
@@ -1133,9 +1202,10 @@ class AtemProtocol:
             self._release_then_continue(next.store)
             return
 
-        # Assign a transfer id and start the transfer
+        # Assign a transfer id and start the transfer. A u16 on the wire,
+        # never 0.
         if not retry:
-            self.transfer_id += 1
+            self.transfer_id = self.transfer_id % 0xFFFF + 1
         self.transfer = next
         self.transfer.tid = self.transfer_id
         if not self.transfer.upload:

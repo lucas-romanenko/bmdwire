@@ -204,9 +204,11 @@ def test_wait_ready_fast_path_needs_initialized():
 @pytest.fixture(autouse=True)
 def _no_courtesy(monkeypatch):
     # These tests are about the pounce itself: a release prompting the next
-    # request. The frame it waits first (LOCK_COURTESY) is
+    # request. The frame it waits first (LOCK_COURTESY), and the turn it
+    # leaves a waiter after a release of its own (LOCK_HANDOVER), are
     # test_upload_like_asc.py's.
     monkeypatch.setattr('atemwire.protocol.LOCK_COURTESY', 0.0)
+    monkeypatch.setattr('atemwire.protocol.LOCK_HANDOVER', 0.0)
 
 
 @pytest.fixture
