@@ -460,15 +460,18 @@ def available_video_modes(mx):
 
 def video_resolution(mx, default=(1920, 1080)):
     """Return (width, height) tuple for the current video mode, falling
-    back to ``default`` if the field isn't populated or the helper
-    raises."""
+    back to ``default`` if the field isn't populated, the mode is one
+    atemwire doesn't know (its frame size is unknown), or the helper
+    raises. Pass ``default=None`` to tell those cases apart from a real
+    1080 mode."""
     node = mx.get('video-mode')
     if node is None:
         return default
     try:
-        return node.get_resolution()
+        size = node.get_resolution()
     except Exception:
         return default
+    return default if size is None else size
 
 
 def product_name(mx, default=''):

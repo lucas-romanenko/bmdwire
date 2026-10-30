@@ -528,9 +528,12 @@ class AtemProtocol:
                     # downloads have no frame size, and a raw KeyError on a
                     # missing video-mode would abort save_field_data
                     # mid-packet, dropping fields bundled behind the FTDa.
+                    # An unknown video mode has no frame size (get_pixels()
+                    # is None): no progress then, rather than a TypeError.
                     vm = self.mixerstate.get('video-mode')
-                    if vm is not None and self.transfer.store != 0xffff:
-                        total_size = vm.get_pixels() * 4
+                    pixels = vm.get_pixels() if vm is not None else None
+                    if pixels and self.transfer.store != 0xffff:
+                        total_size = pixels * 4
                         transfer_progress = self.transfer_buffer_bytes / total_size
                         self._raise('transfer-progress', self.transfer.store, self.transfer.slot, transfer_progress)
                 # The 0 should be the transfer slot, but it seems it's always 0 in practice
