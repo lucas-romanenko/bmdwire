@@ -523,7 +523,8 @@ def _build_video_mode(root: ET.Element, mx: dict) -> None:
     # The canonical XML name by mode number ("1080p5994", "PAL_widescreen"),
     # the spelling apply reads back. get_label() is the display form
     # ("1080p59.94", aspect dropped below) and is only a fallback for a
-    # video-mode node without a known mode number.
+    # video-mode node without a known mode number: for a mode atemwire has
+    # no table entry for it is "mode-<n>", which apply reads back as <n>.
     name = VIDEO_MODE_XML_NAMES.get(vm.get('id')) if isinstance(vm, dict) else None
     if name is None:
         label = (vm or {}).get('format', '') if isinstance(vm, dict) else ''
@@ -1021,9 +1022,17 @@ def download_media_pool_images(
     vm = mx.get('video-mode')
     if vm is not None:
         try:
-            width, height = vm.get_resolution()
+            size = vm.get_resolution()
         except Exception:
-            width, height = 1920, 1080
+            size = (1920, 1080)
+        if size is None:
+            # A mode atemwire has no table entry for: the frame size is
+            # unknown, so a download could not be decoded.
+            logger.warning(
+                "media-pool image capture skipped: video mode %s has no "
+                "known frame size", vm.get_label())
+            return []
+        width, height = size
     else:
         width, height = 1920, 1080
 

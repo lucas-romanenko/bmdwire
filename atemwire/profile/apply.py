@@ -43,7 +43,8 @@ from atemwire.messages.fairlight import (
     set_fairlight_master_limiter, set_fairlight_strip,
 )
 from atemwire.messages.input_video import (
-    VIDEO_MODE_NAMES, VIDEO_MODE_XML_NAMES, set_input_label, set_video_mode,
+    VIDEO_MODE_XML_NAMES, _video_mode_number as _named_video_mode_number,
+    set_input_label, set_video_mode,
 )
 from atemwire.messages.media import (
     set_media_player_clip, set_media_player_still,
@@ -350,9 +351,10 @@ _LEGACY_VIDEO_MODE_LABELS = {
 
 
 def _video_mode_number(name):
-    """Wire mode number for an XML videoMode name, canonical or legacy;
-    None when unknown."""
-    mode = VIDEO_MODE_NAMES.get(name)
+    """Wire mode number for an XML videoMode name: canonical (ASC's
+    spelling), an older atemwire spelling, or the ``mode-<n>`` label save
+    writes for a mode atemwire doesn't know. None when unrecognised."""
+    mode = _named_video_mode_number(name)
     return _LEGACY_VIDEO_MODE_LABELS.get(name) if mode is None else mode
 
 

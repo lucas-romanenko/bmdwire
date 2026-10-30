@@ -20,8 +20,12 @@ from atemwire.state import _kv, decode_name
 from atemwire.messages._dsl import Recv, Send, string, u8, u16
 
 
-# Name → wire enum (matches VideoModeField.modes table). The XML form of
+# Name → wire enum (matches VideoModeField._MODE_TABLE). The XML form of
 # the rate elides the decimal point (29.97 → "2997", 59.94 → "5994").
+# ATEM Software Control spells the UHD modes "4KHDp…" and "8KHDp…" (its own
+# profile exports, and the SDK's bmdSwitcherVideoMode names); the
+# "2160p…" / "4320p…" spellings are what atemwire 1.9.0 and earlier wrote,
+# and are still read.
 VIDEO_MODE_NAMES = {
     'NTSC': 0, '525i5994': 0,
     'PAL': 1, '625i50': 1,
@@ -32,6 +36,10 @@ VIDEO_MODE_NAMES = {
     '1080p2398': 8, '1080p24': 9, '1080p25': 10,
     '1080p2997': 11, '1080p30': 26,
     '1080p50': 12, '1080p5994': 13, '1080p60': 27,
+    '4KHDp2398': 14, '4KHDp24': 15, '4KHDp25': 16, '4KHDp2997': 17,
+    '4KHDp50': 18, '4KHDp5994': 19,
+    '8KHDp2398': 20, '8KHDp24': 21, '8KHDp25': 22, '8KHDp2997': 23,
+    '8KHDp50': 24, '8KHDp5994': 25,
     '2160p2398': 14, '2160p24': 15, '2160p25': 16, '2160p2997': 17,
     '2160p50': 18, '2160p5994': 19,
     '4320p2398': 20, '4320p24': 21, '4320p25': 22, '4320p2997': 23,
@@ -42,7 +50,9 @@ VIDEO_MODE_NAMES = {
 # the numerical form (``525i5994`` over ``NTSC``); the two widescreen SD
 # modes have no numerical spelling of their own. Profile save writes these
 # and the macro VideoMode op decodes to them; every value is a key of
-# ``VIDEO_MODE_NAMES``, so each mode round-trips.
+# ``VIDEO_MODE_NAMES``, so each mode round-trips. A mode number with no
+# entry here is written as ``mode-<n>`` (``VideoModeField.get_label()``),
+# which ``_video_mode_number`` reads back.
 VIDEO_MODE_XML_NAMES = {
     0: '525i5994', 1: '625i50',
     2: 'NTSC_widescreen', 3: 'PAL_widescreen',
@@ -51,11 +61,33 @@ VIDEO_MODE_XML_NAMES = {
     8: '1080p2398', 9: '1080p24', 10: '1080p25',
     11: '1080p2997', 26: '1080p30',
     12: '1080p50', 13: '1080p5994', 27: '1080p60',
-    14: '2160p2398', 15: '2160p24', 16: '2160p25', 17: '2160p2997',
-    18: '2160p50', 19: '2160p5994',
-    20: '4320p2398', 21: '4320p24', 22: '4320p25', 23: '4320p2997',
-    24: '4320p50', 25: '4320p5994',
+    14: '4KHDp2398', 15: '4KHDp24', 16: '4KHDp25', 17: '4KHDp2997',
+    18: '4KHDp50', 19: '4KHDp5994',
+    20: '8KHDp2398', 21: '8KHDp24', 22: '8KHDp25', 23: '8KHDp2997',
+    24: '8KHDp50', 25: '8KHDp5994',
 }
+
+# A mode number atemwire has no table entry for is labelled ``mode-<n>``
+# (``VideoModeField.get_label()``) and read back by ``_video_mode_number``.
+# The number is the switcher's own, so it can still be sent with CVdM.
+# Underscored so the facade's operation walk (``atem.py``) skips it.
+_UNKNOWN_MODE_PREFIX = 'mode-'
+
+
+def _video_mode_number(name):
+    """Wire mode number for a video mode name: a ``VIDEO_MODE_NAMES`` key,
+    or the ``mode-<n>`` label of a mode atemwire doesn't know (n 0 to 255).
+    None for anything else."""
+    if not isinstance(name, str):
+        return None
+    mode = VIDEO_MODE_NAMES.get(name)
+    if mode is not None:
+        return mode
+    if name.startswith(_UNKNOWN_MODE_PREFIX):
+        digits = name[len(_UNKNOWN_MODE_PREFIX):]
+        if digits.isascii() and digits.isdigit() and int(digits) <= 0xFF:
+            return int(digits)
+    return None
 
 
 # -----------------------------------------------------------------------------
@@ -235,6 +267,13 @@ class VideoModeField(Recv):
     The ``mode`` integer maps to a ``(resolution, interlaced, rate,
     widescreen)`` tuple via ``_MODE_TABLE``. Helper methods produce a
     label string and a (width, height) pixel resolution.
+
+    A mode number with no table entry (newer firmware lists modes this
+    table doesn't have) is kept, not refused: ``known`` is False,
+    ``resolution`` / ``interlaced`` / ``rate`` / ``widescreen`` are None,
+    ``get_label()`` is ``mode-<n>``, and ``get_resolution()`` /
+    ``get_pixels()`` return None. Raising here used to lose the rest of
+    the packet, ``VidM`` with it when the unknown mode came in ``_VMC``.
     """
     CODE = 'VidM'
     PRETTY = 'video-mode'
@@ -275,19 +314,33 @@ class VideoModeField(Recv):
         29: (1080, True,  60,    True),
     }
 
+    # vertical resolution → frame size in pixels
+    _FRAME_SIZES = {
+        525:  (720, 480),
+        625:  (720, 576),
+        720:  (1280, 720),
+        1080: (1920, 1080),
+        2160: (3840, 2160),
+        4320: (7680, 4320),
+    }
+
     def __init__(self, raw: bytes):
         super().__init__(raw)
-        if self.mode not in self._MODE_TABLE:
-            raise ValueError(f'Unknown resolution code {self.mode}, cannot continue')
-        res, inter, rate, ws = self._MODE_TABLE[self.mode]
+        res, inter, rate, ws = self._MODE_TABLE.get(
+            self.mode, (None, None, None, None))
         self.resolution = res
         self.interlaced = inter
         self.rate = rate
         self.widescreen = ws
 
+    @property
+    def known(self):
+        """False for a mode number atemwire has no table entry for."""
+        return self.mode in self._MODE_TABLE
+
     def get_label(self):
         if self.resolution is None:
-            return f'unknown [{self.mode}]'
+            return f'{_UNKNOWN_MODE_PREFIX}{self.mode}'
         pi = 'i' if self.interlaced else 'p'
         aspect = ''
         if self.resolution < 720:
@@ -295,19 +348,13 @@ class VideoModeField(Recv):
         return f'{self.resolution}{pi}{self.rate}{aspect}'
 
     def get_pixels(self):
-        w, h = self.get_resolution()
-        return w * h
+        """Pixels in one frame, or None for an unknown mode."""
+        size = self.get_resolution()
+        return None if size is None else size[0] * size[1]
 
     def get_resolution(self):
-        lut = {
-            525:  (720, 480),
-            625:  (720, 576),
-            720:  (1280, 720),
-            1080: (1920, 1080),
-            2160: (3840, 2160),
-            4320: (7680, 4320),
-        }
-        return lut[self.resolution]
+        """(width, height) of one frame, or None for an unknown mode."""
+        return self._FRAME_SIZES.get(self.resolution)
 
     def __repr__(self):
         return f'<video-mode: mode={self.mode}: {self.get_label()}>'
@@ -316,8 +363,8 @@ class VideoModeField(Recv):
 class VideoModeCapabilityField(Recv):
     """``_VMC`` — supported video modes + their multiview / downconvert options.
 
-    Variable-length payload (count + N×13-byte mode descriptors), so
-    parsing is hand-rolled.
+    Variable-length payload (count + N mode blocks), so parsing is
+    hand-rolled.
 
     ====== ==== ====== ===========
     Offset Size Type   Description
@@ -330,17 +377,40 @@ class VideoModeCapabilityField(Recv):
     12     4    u32    Downconvert modes bitfield
     16     1    bool   Requires reconfiguration
     ====== ==== ====== ===========
+
+    Each block is 13 bytes from protocol 8.0 and 12 before it, without the
+    reconfiguration flag (Sofie's ``atem-connection``,
+    ``VideoMixerConfigCommand``). The payload doesn't carry the protocol
+    version, so the block size is taken from its length; a 12-byte block
+    reads ``reconfigure`` as False. A block cut short by the end of the
+    payload ends the list.
+
+    A mode number atemwire doesn't know, in a block or set in a bitfield,
+    becomes an unknown ``VideoModeField`` (``known`` False, label
+    ``mode-<n>``); nothing here raises on one. A 4K or 8K capable
+    switcher lists its UHD modes even while it runs HD.
     """
     CODE = '_VMC'
     PRETTY = 'video-mode-capability'
 
+    _BLOCK = struct.Struct('>B3x I I')     # mode, multiview, downconvert
+    _BLOCK_V8 = 13                         # + requires-reconfiguration byte
+
     def __init__(self, raw: bytes):
         self.raw = raw
-        count, = struct.unpack_from('>H', raw, 0)
         self.modes = []
+        if len(raw) < 2:
+            return
+        count, = struct.unpack_from('>H', raw, 0)
+        size = self._BLOCK_V8
+        if 4 + count * self._BLOCK.size <= len(raw) < 4 + count * self._BLOCK_V8:
+            size = self._BLOCK.size     # before protocol 8.0
         for i in range(count):
-            vidm, multiview, downscale, reconfig = struct.unpack_from(
-                '>B3x I I ?', raw, 4 + (i * 13))
+            offset = 4 + i * size
+            if offset + size > len(raw):
+                break
+            vidm, multiview, downscale = self._BLOCK.unpack_from(raw, offset)
+            reconfig = size == self._BLOCK_V8 and raw[offset + 12] != 0
             self.modes.append({
                 'modenum': vidm,
                 'mode': self._int_to_mode(vidm),

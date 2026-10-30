@@ -250,7 +250,7 @@ All three are restored upstream and not re-exported.
 | name | opcode | params | notes |
 |---|---|---|---|
 | `InputPropertiesCommand` | `CInL` | `source_index:u16`, `label?:str[≤20 B]`, `short_label?:str[≤4 B]`, `port_type?:u16` | custom mask: a key is applied whenever its argument is not None, so `''` is a valid label. Op `set_input_label(conn, source, *, long_name, short_name)` (truncates to 20/4 bytes). No op sets `port_type`. Fixed internal sources (Black, Bars, Key Mask, Program, Preview) are not renamable |
-| `VideoModeCommand` | `CVdM` | `mode:u8=0–29` | **destructive**: outputs resync and clients may be dropped. Op `set_video_mode(conn, mode int\|name)`. Names (`input_video.VIDEO_MODE_NAMES`): 0 NTSC/525i5994, 1 PAL/625i50, 2 NTSC_widescreen, 3 PAL_widescreen, 4 720p50, 5 720p5994, 6 1080i50, 7 1080i5994, 8 1080p2398, 9 1080p24, 10 1080p25, 11 1080p2997, 12 1080p50, 13 1080p5994, 14 2160p2398, 15 2160p24, 16 2160p25, 17 2160p2997, 18 2160p50, 19 2160p5994, 20 4320p2398, 21 4320p24, 22 4320p25, 23 4320p2997, 24 4320p50, 25 4320p5994, 26 1080p30, 27 1080p60, 28 720p60, 29 1080i60. The supported subset per model is in `_VMC` |
+| `VideoModeCommand` | `CVdM` | `mode:u8=0–29` | **destructive**: outputs resync and clients may be dropped. Op `set_video_mode(conn, mode int\|name)`. Names (`input_video.VIDEO_MODE_NAMES`): 0 NTSC/525i5994, 1 PAL/625i50, 2 NTSC_widescreen, 3 PAL_widescreen, 4 720p50, 5 720p5994, 6 1080i50, 7 1080i5994, 8 1080p2398, 9 1080p24, 10 1080p25, 11 1080p2997, 12 1080p50, 13 1080p5994, 14 4KHDp2398, 15 4KHDp24, 16 4KHDp25, 17 4KHDp2997, 18 4KHDp50, 19 4KHDp5994, 20 8KHDp2398, 21 8KHDp24, 22 8KHDp25, 23 8KHDp2997, 24 8KHDp50, 25 8KHDp5994, 26 1080p30, 27 1080p60, 28 720p60, 29 1080i60. 14–25 are ATEM Software Control's names since `4be0f40`; their `2160p…` / `4320p…` spellings are also accepted. The supported subset per model is in `_VMC`. An integer is sent as given, so a mode the tables don't have (a `_VMC` entry labelled `mode-<n>`, §2.5) can be set by its number |
 | `AutoInputVideoModeCommand` | `AiVM` | `enable:bool` | restored upstream; not re-exported. Op `set_auto_video_mode(conn, enable)` |
 | `SaveStartupStateCommand` | `SRsv` | — | restored upstream; not re-exported. Op `save_startup_state(conn)` |
 | `ClearStartupStateCommand` | `SRcl` | — | restored upstream; not re-exported. Op `clear_startup_state(conn)` |
@@ -281,7 +281,9 @@ pooled `ATEMConnection` exposes the same dict as `conn.mixerstate`. For each inc
 
 1. If the 4-char code has a `Recv` class **and** a `PRETTY` name, the payload is parsed into that
    class and stored under the `PRETTY` key (e.g. `'program-bus-input'`). The attributes in the
-   tables below are attributes of that object.
+   tables below are attributes of that object. Since `df41751` a field whose parser or handler
+   raises is logged (once per code, with a traceback) and not stored; the rest of its packet
+   still lands (§5.4 item 40).
 2. If the class has a `KEY_FORMAT`, the leading bytes become nested dict keys:
    `mx['key-on-air'][me][keyer]`. Fairlight classes that carry `strip_id` replace the first key
    with the `"<source>.<subchannel>"` string (`protocol.py:489-498`), so strips live at
@@ -422,8 +424,8 @@ describe a packet is logged at DEBUG and never reaches the packet loop.
 | `streaming-stats` | `SRSS` | `bitrate:u32`, `cache:u16` | bare | — |
 | `tally-index` | `TlIn` | `num`, `tally:[(program, preview)]` | bare | — |
 | `tally-source` | `TlSr` | `num`, `tally:{src: (program, preview)}` | bare | — |
-| `video-mode` | `VidM` | `mode:u8`, `resolution:int`, `interlaced:bool`, `rate:float`, `widescreen:bool`; `get_label()`, `get_resolution()`, `get_pixels()`. **Raises `ValueError` on a mode outside 0–29** | bare | `CVdM` |
-| `video-mode-capability` | `_VMC` | `modes:[{modenum, mode:VideoModeField, multiview:[…], downscale:[…], reconfigure:bool}]` | bare | — |
+| `video-mode` | `VidM` | `mode:u8`, `resolution:int`, `interlaced:bool`, `rate:float`, `widescreen:bool`, `known:bool`; `get_label()`, `get_resolution()`, `get_pixels()`. A mode outside 0–29 raised `ValueError` until `631944d` (§5.4 item 3); now `known` is False, the four values are None, `get_label()` is `mode-<n>` and `get_resolution()` / `get_pixels()` return None | bare | `CVdM` |
+| `video-mode-capability` | `_VMC` | `modes:[{modenum, mode:VideoModeField, multiview:[…], downscale:[…], reconfigure:bool}]`. A UHD capable switcher lists its UHD modes while it runs HD, and an unknown number in a block or a bitfield is an unknown `VideoModeField` (since `631944d`). Blocks are 13 bytes from protocol 8.0 and 12 before, without `reconfigure` (read as False); the size is taken from the payload length (§5.4 item 39) | bare | — |
 | `auto-input-video-mode` | `AiVM` | `enabled:bool`, `detected:bool` | bare | `AiVM` |
 | `sdi-3g-level` | `V3sl` | `level:u8 (0 Level B, 1 Level A)` | bare | — (no command) |
 | `firmware-version` | `_ver` | `major:u16`, `minor:u16`, `version:str` | bare | — |
@@ -488,8 +490,8 @@ audio: {mixer 'fairlight'|'unknown', present, master {…, eq_bands[6]}, strips 
         short_name, mix_type, mix_state (0/1/2), volume_db, pan, soloed, input_type, plug} ],
         headphones {present, volume_db, unmuted, enabled, dim, dim_level, solo, solo_source},
         solo {any_soloed, strip_id}}
-videoMode: {format, id, fps}
-videoModes: [ {id, label} ]
+videoMode: {format, id, fps}     (a mode with no table entry: format 'mode-<n>', fps the default 25)
+videoModes: [ {id, label} ]      (label 'mode-<n>' for one)
 inputLabels: {inputs: [], outputs: [], media: []}   ({source, long, short})
 sources: [ {source, long, short, port_type, available_aux, available_key_source,
             available_multiview, available_me1..me4} ]
@@ -614,7 +616,9 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
 
 The labels above are `get_label()` output, which keeps the decimal point. The names
 `set_video_mode` accepts (`VIDEO_MODE_NAMES`) drop it (`1080p5994`). The modes a given switcher
-supports are in `_VMC`, read with `available_video_modes(mx)`.
+supports are in `_VMC`, read with `available_video_modes(mx)`. A mode with no table entry has no
+frame size: `get_resolution()` returns None and `video_resolution(mx, default)` its default (pass
+`default=None` to tell), so no still can be sized for it (since `631944d`).
 
 **Clips and audio: not implemented.** There is no clip or audio upload or download, and no
 thumbnail transfer (a "thumbnail" means a full frame download). Clip and audio state arrives only
@@ -682,10 +686,10 @@ The top-level `atemwire` exports `Profile`, `ApplyOptions` and `ApplyResult`.
 | `Profile.from_atem` | `(atem, options:SaveOptions=None) -> Profile` | Takes anything with `.mixerstate` or `.raw.mixerstate`. First calls `ready.wait_state_settled` (polls only; returns within 3 s at most), then downloads every used macro slot in turn (up to 10 s each). Worst case ≈ 3 s + 10 s × used macros. **With a bare `AtemProtocol` the macros are saved with metadata only and no ops**; the error is swallowed |
 | `Profile.from_xml` / `from_file` | `(xml:str\|bytes)` / `(path)` | refuses NUL bytes, `<!DOCTYPE` and `<!ENTITY`; the root tag and version are not validated |
 | `Profile.to_xml` / `to_file` | `() -> str` / `(path)` | ASC-style XML |
-| properties | `root`, `major_version`, `minor_version`, `product`, `video_mode` | `video_mode` is the raw XML string |
+| properties | `root`, `major_version`, `minor_version`, `product`, `video_mode` | `video_mode` is the raw XML string. Save writes `VIDEO_MODE_XML_NAMES` (ASC's spellings, `4KHDp…` / `8KHDp…` for 14–25 since `4be0f40`), or `mode-<n>` for a mode with no entry, which apply reads back as `<n>` (since `631944d`) |
 | `Profile.macros()` | `-> list[{index, name, description, ops}]` | ops in the §3.2 dict form |
 | `Profile.apply` | `(atem, options:ApplyOptions=None) -> ApplyResult` | Takes an `ATEM`, anything with `.send`, or an `AtemProtocol` (wrapped so `send` is synchronous). Setters only queue. It blocks only for a 3 s sleep after a video-mode change and for macro uploads (10 s each, which **need someone pumping the loop**). Sections run in order: video_mode, inputs, settings_flags, color_generators, aux, transition, upstream_keyers, downstream_keys, fade_to_black, media_players, audio, multiview (placeholder), macros, camera_control (placeholder), hyperdecks, talkback (placeholder), program_preview. There is no model or version guard, and no try/except around sections: a non-`ValueError` raised by a macro encoder aborts the whole apply |
-| `download_media_pool_images` | `(atem, progress_callback=None, cancel_check=None, timeout_per_slot=30.0, cache_get=None, cache_put=None) -> list[{slot, name, png_bytes, from_cache}]` | `download_still` per used slot → `atem_to_rgb` → Pillow PNG (the `[profile]` extra). Not called by `from_atem`. A slot that fails is skipped. Since `1572508` it refuses when not `is_ready` and stops (a partial list) once the session goes; since `2b540db` the slot in flight then fails at once instead of waiting out `timeout_per_slot` (§5.4 item 34) |
+| `download_media_pool_images` | `(atem, progress_callback=None, cancel_check=None, timeout_per_slot=30.0, cache_get=None, cache_put=None) -> list[{slot, name, png_bytes, from_cache}]` | `download_still` per used slot → `atem_to_rgb` → Pillow PNG (the `[profile]` extra). Not called by `from_atem`. A slot that fails is skipped. At a video mode with no table entry it downloads nothing and returns `[]` with a warning, since the frame size is unknown (`631944d`). Since `1572508` it refuses when not `is_ready` and stops (a partial list) once the session goes; since `2b540db` the slot in flight then fails at once instead of waiting out `timeout_per_slot` (§5.4 item 34) |
 
 **`SaveOptions`** (all default True): `mes: list[MixEffectOptions]` (×4), `downstream_keys`,
 `color_generators`, `fairlight`, `camera_control`, `media_pool_metadata`, `media_pool_images`
@@ -972,8 +976,8 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
 it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and still apply to it.
-Items 34 to 37 were fixed after 1.8.0 and still apply to it. Item 38 was fixed after 1.9.0 and
-still applies to it.
+Items 34 to 37 were fixed after 1.8.0 and still apply to it. Item 3 and items 38 to 41 were
+fixed after 1.9.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -989,9 +993,17 @@ still applies to it.
    The new `ATEMConnection.is_ready` is False from `disconnected` until the next `connected`,
    `ATEM.connected` reads it, and `probe()` reports `connection_status=False` during the gap.
    Since `2b540db` a warm `ATEM(ip)` waits for the new dump instead of joining the gap (item 35).
-3. **An unknown `VidM` mode code raises inside the parser.** The exception escapes `loop()`, the
-   rest of that packet is lost, `video-mode` never lands, and `wait_ready` times out. Since
-   `2fc9375` the session re-handshakes three times first (item 17).
+3. **An unknown video mode code raises inside the parser** (1.9.0). `VideoModeField` refuses a
+   number outside 0–29 with `ValueError`, which escapes `loop()`, and the rest of that packet is
+   lost. In `VidM` that is `video-mode` itself. In `_VMC` it is worse: a 4K or 8K capable switcher
+   lists all its modes there while it runs HD, each block and each multiview / downconvert bit is
+   parsed as a `VideoModeField`, and `_VMC` comes ahead of `VidM` in the first dump packet (on a
+   1 M/E Constellation HD at protocol 2.30, fields 16 and 21 of 31). One mode newer than the table
+   then loses `VidM`: every dump ends without a video mode, the session re-handshakes three
+   times (item 17), and every connect times out. *Fixed in `631944d`:* an unknown number is kept
+   as an unknown mode (§2.5 `video-mode`), and every reader, the snapshot, the transfer progress,
+   the media-pool image export, profile save and apply and the macro `VideoMode` op take it.
+   Untested on a switcher that lists one: neither bench unit does.
 4. **Slot 0 is never latched as the last-run macro** (1.2.0). `last_run_macro_index` uses
    `int(index) or 0xFFFF` (`connection.py:481`). *Fixed in `a5ac82e`:* only a missing index or
    0xFFFF means idle.
@@ -1269,6 +1281,27 @@ still applies to it.
     SuperSource, as the spec sheet lists) and the seven payloads in upstream pyatem's
     `TopologyField` table, one of them with no DVE; the older one is atem-connection's, untested on
     a switcher.
+39. **A `_VMC` from before protocol 8.0 raises** (1.9.0). Its mode blocks are 12 bytes there,
+    without the requires-reconfiguration byte (Sofie's `atem-connection`,
+    `VideoMixerConfigCommand`), and the parser stepped 13 bytes a block: it read the blocks after
+    the first out of line and the last past the end of the payload, a `struct.error` that took
+    the rest of the packet (item 3). *Fixed in `631944d`:* the block size is taken from the
+    payload length, a 12-byte block reads `reconfigure` as False, and a payload cut short parses
+    the blocks it holds. Untested on a switcher.
+40. **A field whose parser raises loses the rest of its packet** (1.9.0). Any exception from
+    `save_field_data` left `loop()`; the fields after it in that datagram never landed (items 3,
+    18 and 32 were three cases). *Fixed in `df41751`:* `loop()` saves each field through
+    `_save_field_guarded`, which logs the failure once per wire code (with the traceback and the
+    first 32 bytes) and then at debug, and goes on with the next field. `ConnectionError`,
+    `IncompleteStateDump` included, still reaches `loop()` and re-handshakes.
+41. **ATEM Software Control's names for the UHD modes are not read** (1.9.0). ASC writes modes
+    14–25 as `4KHDp2398`…`4KHDp5994` and `8KHDp2398`…`8KHDp5994` (its exports from a 4 M/E
+    Constellation 4K list them; the SDK's `bmdSwitcherVideoMode` names agree); atemwire knew only
+    `2160p…` / `4320p…`. An ASC profile from a UHD switcher had its video mode skipped as
+    unrecognised, and the `VideoMode` prologue of each of its macros was dropped on restore.
+    *Fixed in `4be0f40`:* both spellings are read, and save and the macro decoder write ASC's.
+    ASC's `4KHDp30`, `4KHDp60`, `8KHDp30` and `8KHDp60` have no wire number in any source this
+    library follows, so they stay unknown modes (item 3).
 
 ## Counts
 
