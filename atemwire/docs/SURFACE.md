@@ -1234,8 +1234,9 @@ Items 34 to 37 were fixed after 1.8.0 and still apply to it.
     upload can be aborted instead: the switcher then refuses every chunk of its budget). *Fixed in
     `6876ba2`:* after a release of our own, the next request waits `LOCK_HANDOVER` (0.1 s) more, but
     only while another client has been seen within `LOCK_QUIET` (its `LKST`, its `FTDC`, an
-    `FTDE 6`). The waiter asks first; its grant is announced about 20 ms later, before our request
-    is due, and the store is then another client's. A release announced more than `LOCK_ECHO_WINDOW`
+    `FTDE 6`; since `c7a8788` not the late `LKST` of a grant of ours, from a transfer shorter than a
+    frame). The waiter asks first; its grant is announced about 20 ms later, before our request is
+    due, and the store is then another client's. A release announced more than `LOCK_ECHO_WINDOW`
     (0.25 s) after ours is not our release's echo but another client's (the store was handed to a
     request waiting at the switcher, unannounced), and we ask after it as its waiter. The same runs:
     no requests together and no `FTDE 6`; the downloader took a turn after every upload, so four
