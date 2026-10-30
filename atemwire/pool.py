@@ -89,6 +89,7 @@ import logging
 import threading
 from contextlib import contextmanager
 
+from atemwire import connection as _connection
 from atemwire.connection import ATEMConnection, ConnectionDeadError  # noqa: F401
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,9 @@ class ATEMInstanceManager:
         or ``None``. **Never creates or connects** and takes no ref — safe to
         call from a web-request thread (no handshake, no blocking I/O). Use it
         to opportunistically reach an ATEM only when a session is already up.
+        Live means ``is_connected``: the session may be in a transport
+        re-handshake, with its state empty, so check ``is_ready`` before
+        reading or sending.
         """
         with cls._instance_lock:
             entry = cls._instances.get(ip_address)
@@ -136,6 +140,14 @@ class ATEMInstanceManager:
         ``conn.connect(ip)`` to either join (warm) or start fresh (cold).
         Will never return an entry mid-teardown — concurrent calls block
         until the teardown finishes and a fresh entry is created.
+
+        It promises nothing about the session itself: the connection may be
+        unconnected, or connected and in a transport re-handshake.
+        ``conn.connect(ip)`` returns once its state is current either way
+        (it waits for a re-handshake to finish); a holder that keeps the
+        entry checks ``conn.is_ready`` or ``conn.wait_until_ready()``
+        before deciding from the state or sending. ``acquire_connection``
+        does all of that.
         """
         with cls._instance_lock:
             return cls._get_instance_locked(ip_address)
@@ -365,19 +377,32 @@ class ATEMInstanceManager:
 
 
 @contextmanager
-def acquire_connection(ip_address: str):
+def acquire_connection(ip_address: str, *, ready_timeout=None):
     """Context manager yielding a live, ready ``ATEMConnection`` to the given IP.
 
     Exactly one connection story for the whole codebase. Two paths:
 
     - **Pool hit** (warm): the pool already has a connected instance for this
-      IP. Ref count is bumped and the connection is yielded immediately. No
-      handshake cost.
+      IP. Ref count is bumped and, once the session is ready, the connection
+      is yielded. No handshake cost.
     - **Pool miss / stale** (cold): ``ATEMInstanceManager.get_instance`` creates
       or returns the instance, this helper calls ``connect(ip)`` on it (which
       does the full handshake + state dump), and yields on success. If the
       existing pooled connection is for a different IP (or disconnected), we
       also re-connect.
+
+    **Ready** means ``conn.is_ready``: the state dump is complete, so
+    ``mixerstate`` holds the switcher's state and a ``send()`` reaches it.
+    A warm session can be in a transport re-handshake (after ~5 s without a
+    packet from the switcher), when ``is_connected`` is True but the state
+    is empty and every send goes to the session being replaced. A pool hit
+    then waits for the new dump, up to ``ready_timeout`` seconds
+    (``connection.CONNECT_TIMEOUT``, 15 s, by default: what a cold connect
+    is given), and raises ``ConnectionDeadError`` if it doesn't come.
+    ``ready_timeout=0`` only checks. 1.8.0 and earlier yielded a pool hit at
+    once, ready or not. The connection is ready when yielded; it can still
+    go into a re-handshake while held, and ``conn.wait_until_ready()`` waits
+    for it again.
 
     On exit, the ref count is decremented. If this was the last ref, the pool's
     normal 2-second grace-period teardown applies — so subsequent short-lived
@@ -393,8 +418,12 @@ def acquire_connection(ip_address: str):
     than open a second socket; every extra session costs the switcher a slot.)
 
     :raises RuntimeError: if the underlying connection fails to become ready
-        within the connection's configured timeout.
+        within the connection's configured timeout. A pooled session that
+        doesn't become ready in ``ready_timeout`` raises
+        ``ConnectionDeadError``, a ``RuntimeError``.
     """
+    if ready_timeout is None:
+        ready_timeout = _connection.CONNECT_TIMEOUT
     instance = ATEMInstanceManager.get_instance(ip_address)
     conn = instance['connection']
     try:
@@ -406,9 +435,24 @@ def acquire_connection(ip_address: str):
             if not ok:
                 err = getattr(conn, '_connect_error', None) or 'connect failed'
                 raise RuntimeError(f"ATEM {ip_address}: {err}")
+        # A cold connect returns ready; a pool hit may be mid re-handshake,
+        # its state empty and its sends lost (bmdwire#65).
+        if not conn.wait_until_ready(ready_timeout):
+            if conn.is_connected:
+                raise ConnectionDeadError(
+                    f"ATEM {ip_address}: the pooled session was not ready "
+                    f"within {ready_timeout}s (the transport is "
+                    f"re-establishing it)")
+            raise ConnectionDeadError(
+                f"ATEM {ip_address}: the pooled session was lost before it "
+                f"was ready")
         yield conn
     finally:
-        ATEMInstanceManager.release_instance(ip_address)
+        # Identity-guarded: if this entry was evicted (its worker died) and
+        # another caller built a fresh one meanwhile, this reference died
+        # with the old entry, and releasing by IP alone would take one of
+        # the new entry's.
+        ATEMInstanceManager.release_instance(ip_address, instance=instance)
 
 
 def close_all_sessions_at_exit():

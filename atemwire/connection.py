@@ -77,6 +77,11 @@ CONNECT_TIMEOUT = 15.0
 # Cadence at which the worker pumps protocol.loop() while idle.
 PUMP_INTERVAL = 0.01
 
+# How often ``wait_until_ready`` looks at worker liveness while it waits.
+# Readiness itself wakes it at once (an event); this only bounds how long a
+# worker that died meanwhile goes unnoticed.
+_READY_POLL = 0.05
+
 # Spacing inserted BETWEEN back-to-back reliable packets when a single drain
 # produced more than one (i.e. a burst — e.g. a profile apply dumping
 # hundreds of commands). Without it the transport flushes up to batch_size
@@ -102,7 +107,13 @@ class ConnectionDeadError(RuntimeError):
     Replaces the historical silent-drop behaviour: ``send()`` used to log
     a warning and discard the command, which caused capture timeouts of
     up to 10s when the actual cause was that the worker had died. Now the
-    failure surfaces immediately at the call site."""
+    failure surfaces immediately at the call site.
+
+    Also raised when the worker is alive but the session is not ready (a
+    transport re-handshake): by the transfers (``download_still``,
+    ``download_macro``, ``clear_still``), up front and when the session goes
+    while they wait, and by ``pool.acquire_connection`` when a pooled
+    session doesn't become ready in time."""
 
 
 class ATEMConnection:
@@ -134,8 +145,9 @@ class ATEMConnection:
         # ``_session_ready`` follows the protocol's 'connected' /
         # 'disconnected' events: False from the moment a transport
         # re-handshake empties mixerstate until the new state dump is
-        # complete. Read through ``is_ready``.
-        self._session_ready: bool = False
+        # complete. Read through ``is_ready``; ``wait_until_ready`` waits
+        # on the event behind it.
+        self._session_ready_event = threading.Event()
 
         self._lifecycle_lock = threading.Lock()  # serializes connect/disconnect calls
         self._transfer_serial_lock = threading.Lock()  # one native transfer at a time
@@ -188,6 +200,46 @@ class ATEMConnection:
         return self._session_ready and self.is_connected
 
     @property
+    def _session_ready(self) -> bool:
+        return self._session_ready_event.is_set()
+
+    @_session_ready.setter
+    def _session_ready(self, value: bool) -> None:
+        if value:
+            self._session_ready_event.set()
+        else:
+            self._session_ready_event.clear()
+
+    def wait_until_ready(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for ``is_ready``.
+
+        Returns True as soon as the session is ready (at once if it already
+        is), and False when ``timeout`` passes first or the connection
+        stops being connected meanwhile (no worker, or the worker died,
+        so nothing will make it ready). A ``timeout`` of 0 only checks.
+
+        Use it before deciding from ``mixerstate`` or sending something an
+        operator will see on a connection held for a while: a transport
+        re-handshake can start at any time, and in its gap the state is
+        empty and every ``send()`` goes to the session being replaced.
+        Not from a protocol event handler: those run on the worker thread,
+        which is what processes the new state dump.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            if self.is_ready:
+                return True
+            if not self.is_connected:
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            # The event wakes the wait the moment the new dump completes;
+            # the cap keeps a worker that dies meanwhile from being waited
+            # out to the deadline.
+            self._session_ready_event.wait(min(remaining, _READY_POLL))
+
+    @property
     def mixerstate(self) -> dict:
         """Live state dict from atemwire. Safe to read from any thread — CPython
         dict reads are atomic under the GIL. Returns {} when not connected."""
@@ -226,7 +278,8 @@ class ATEMConnection:
         callers needing confirmation watch ``mediaplayer-file-info`` for
         the slot's ``is_used`` flipping False (the MPfe ack).
 
-        Raises ``ConnectionDeadError`` if the connection is not ready, and
+        Raises ``ConnectionDeadError`` if the connection is not ready, or
+        stops being ready before the clear is dispatched, and
         ``TimeoutError`` if the lock wasn't granted within ``timeout``
         (another client holds the media lock). On timeout the queued clear
         is dequeued so it cannot fire much later against a slot an
@@ -242,35 +295,56 @@ class ATEMConnection:
         ip = self.ip_address
         protocol = self._protocol
         done = threading.Event()
+        dispatched = []
+        lost = []
 
         def _on_dispatched(store_id, slot_idx):
             if store_id == 0 and slot_idx == slot:
+                dispatched.append(True)
                 done.set()
 
+        def _on_lost():
+            # The session went while the clear waited for the lock. The
+            # protocol empties the transfer lane right after this event, the
+            # queued clear with it, so it can't fire later.
+            lost.append(True)
+            done.set()
+
         handler_id = protocol.on('clear-dispatched', _on_dispatched)
+        lost_id = protocol.on('disconnected', _on_lost)
         try:
             task = protocol.queue_clear(0, slot)
-            if not done.wait(timeout):
-                dequeued = False
-                try:
-                    dequeued = protocol.dequeue_clear(task)
-                except Exception:
-                    # A dequeue FAILURE is ambiguous (we don't know whether
-                    # the clear ran) — log it instead of silently treating
-                    # it as "already dispatched" below.
-                    logger.warning(
-                        'clear_still: dequeue_clear failed for slot %s — '
-                        'treating the clear as dispatched', slot,
-                        exc_info=True)
-                if dequeued:
-                    raise TimeoutError(
-                        f"clear_still: store lock for {ip} not granted "
-                        f"within {timeout}s — another client is holding "
-                        f"the media lock; clear of slot {slot} abandoned")
-                # Task already dispatched — the event just raced our wait.
+            done.wait(timeout)
+            if dispatched:
+                return
+            if lost:
+                # It used to wait out its whole timeout here and then blame
+                # another client for the lock (bmdwire#8).
+                raise ConnectionDeadError(
+                    f"clear_still: the session to {ip} was lost before the "
+                    f"clear of slot {slot} was sent (it is being "
+                    f"re-established)")
+            dequeued = False
+            try:
+                dequeued = protocol.dequeue_clear(task)
+            except Exception:
+                # A dequeue FAILURE is ambiguous (we don't know whether
+                # the clear ran) — log it instead of silently treating
+                # it as "already dispatched" below.
+                logger.warning(
+                    'clear_still: dequeue_clear failed for slot %s — '
+                    'treating the clear as dispatched', slot,
+                    exc_info=True)
+            if dequeued:
+                raise TimeoutError(
+                    f"clear_still: store lock for {ip} not granted "
+                    f"within {timeout}s — another client is holding "
+                    f"the media lock; clear of slot {slot} abandoned")
+            # Task already dispatched — the event just raced our wait.
         finally:
             try:
                 protocol.off('clear-dispatched', handler_id)
+                protocol.off('disconnected', lost_id)
             except Exception:
                 pass
 
@@ -299,9 +373,10 @@ class ATEMConnection:
 
         ``progress_callback`` receives a 0..1 fraction, fired from the
         worker thread — keep it cheap. Raises ``ConnectionDeadError`` if the
-        connection is not ready, ``TimeoutError`` on timeout (after aborting
-        the transfer so the connection's transfer lane can't stay wedged
-        for later callers).
+        connection is not ready, or the session is lost while the transfer
+        is queued or running, and ``TimeoutError`` on timeout (after
+        aborting the transfer so the connection's transfer lane can't stay
+        wedged for later callers).
         """
         # is_ready, not is_connected: a transfer started during a transport
         # re-handshake queued its lock and transfer requests into the
@@ -341,21 +416,47 @@ class ATEMConnection:
                 result['error'] = contents
                 done.set()
 
+            def _on_lost():
+                # The transport gave up on the session (a re-handshake) or
+                # the protocol is replacing it. The protocol empties the
+                # transfer lane right after this event, so nothing will
+                # ever finish this transfer: fail now. A transfer in
+                # flight used to sit out its whole timeout here and then
+                # blame "another client" for the lock, since the reset had
+                # emptied the lock table (bmdwire#8).
+                result['lost'] = True
+                done.set()
+
             done_id = protocol.on('download-done', _on_done)
             prog_id = protocol.on('transfer-progress', _on_progress)
             err_id = protocol.on('file-transfer-error', _on_error)
+            lost_id = protocol.on('disconnected', _on_lost)
             try:
                 protocol.download(store, index)
-                if not done.wait(timeout):
+                done.wait(timeout)
+                if 'data' in result:
+                    return result['data']
+                if result.get('lost'):
+                    # No abort_transfers: the lane reset that follows the
+                    # event does it, and an unlock sent now would go to the
+                    # new session.
+                    raise ConnectionDeadError(
+                        f"download: store {store} slot {index} on {ip}: the "
+                        f"session was lost during the transfer (it is being "
+                        f"re-established)")
+                if 'error' not in result:
                     # Read the lock belief BEFORE abort_transfers resets it:
                     # a timeout with the store lock never granted means the
                     # ATEM is refusing PLCK — another client (ASC, another
                     # application, an abandoned session) holds the media lock.
                     # That's the single most common cause of "images won't
                     # load", so name it instead of a bare timeout.
+                    # Only with the session ready: a lane reset empties the
+                    # lock table too, and no other client is to blame then.
                     lock_never_granted = False
                     try:
-                        lock_never_granted = not protocol.locks.get(store)
+                        lock_never_granted = (not protocol.locks.get(store)
+                                              and self.is_ready)
                     except Exception:
                         pass
                     try:
@@ -368,16 +469,15 @@ class ATEMConnection:
                     raise TimeoutError(
                         f"download: store {store} slot {index} on "
                         f"{ip} timed out ({timeout}s){hint}")
-                if 'error' in result:
-                    raise RuntimeError(
-                        f"download: store {store} slot {index} on {ip} "
-                        f"rejected by the switcher: {result['error']}")
-                return result['data']
+                raise RuntimeError(
+                    f"download: store {store} slot {index} on {ip} "
+                    f"rejected by the switcher: {result['error']}")
             finally:
                 try:
                     protocol.off('download-done', done_id)
                     protocol.off('transfer-progress', prog_id)
                     protocol.off('file-transfer-error', err_id)
+                    protocol.off('disconnected', lost_id)
                 except Exception:
                     pass
 
@@ -419,55 +519,78 @@ class ATEMConnection:
     def connect(self, ip_address: str) -> bool:
         """Connect to the ATEM at `ip_address`. Blocks until connected + initial
         state (video-mode) arrives, or CONNECT_TIMEOUT elapses. Returns True on
-        success, False on timeout / error."""
+        success, False on timeout / error.
+
+        Already connected to ``ip_address``, it joins the session, and still
+        returns only once the state is current: a session the transport is
+        re-handshaking (``is_ready`` False) is waited for, up to
+        CONNECT_TIMEOUT, and False comes back if it doesn't recover in that
+        time. The session is left as it is either way; it is shared, and the
+        transport goes on re-establishing it. 1.8.0 and earlier returned True
+        at once, with the state still empty (bmdwire#65)."""
         with self._lifecycle_lock:
-            # Disconnect first if already connected — either to a different IP
-            # or to the same IP but possibly stale.
-            if self._worker and self._worker.is_alive():
-                if self._handshake_done and self.ip_address == ip_address:
-                    logger.info(f"Instance {self.instance_id}: already connected to {ip_address}")
-                    return True
-                self._disconnect_locked()
-
-            self._stop_event.clear()
-            self._ready_event.clear()
-            self._connect_error = None
-            self._handshake_done = False
-            self._session_ready = False
-            self._died_signalled = False
-            self.ip_address = ip_address
-
-            # Drain any stale queued commands from a previous connection.
-            try:
-                while True:
-                    self._cmd_queue.get_nowait()
-            except queue.Empty:
-                pass
-
-            logger.info(f"Instance {self.instance_id}: connecting to ATEM at {ip_address}")
-            self._worker = threading.Thread(
-                target=self._run,
-                daemon=True,
-                name=f"AtemConn-{self.instance_id}",
-            )
-            self._worker.start()
-
-            if not self._ready_event.wait(timeout=CONNECT_TIMEOUT):
-                err = self._connect_error or f"timeout after {CONNECT_TIMEOUT}s"
-                logger.warning(f"Instance {self.instance_id}: connect failed ({err})")
-                self._disconnect_locked()
-                return False
-
-            if not self._handshake_done:
-                # _ready_event was set by an early-error path (path A/B/C/D),
-                # not a successful handshake.
-                err = self._connect_error or "handshake did not complete"
-                logger.warning(f"Instance {self.instance_id}: connect failed ({err})")
-                self._disconnect_locked()
-                return False
-
-            logger.info(f"Instance {self.instance_id}: connected to {ip_address}")
+            warm = (self._worker is not None and self._worker.is_alive()
+                    and self._handshake_done and self.ip_address == ip_address)
+            if not warm:
+                return self._connect_locked(ip_address)
+        # Outside the lifecycle lock: a disconnect, the pool's grace teardown
+        # included, must not queue behind this wait.
+        if self.wait_until_ready(CONNECT_TIMEOUT) and self.ip_address == ip_address:
+            logger.info(f"Instance {self.instance_id}: already connected to {ip_address}")
             return True
+        logger.warning(
+            f"Instance {self.instance_id}: joined the session to {ip_address}, "
+            f"but it was not ready within {CONNECT_TIMEOUT}s (the transport is "
+            f"re-establishing it)")
+        return False
+
+    def _connect_locked(self, ip_address: str) -> bool:
+        """The cold path of ``connect``: start a worker and wait for the
+        handshake and the state dump. Caller must hold _lifecycle_lock."""
+        # Disconnect first if a worker is running for a different IP, or for
+        # this one with no handshake done.
+        if self._worker and self._worker.is_alive():
+            self._disconnect_locked()
+
+        self._stop_event.clear()
+        self._ready_event.clear()
+        self._connect_error = None
+        self._handshake_done = False
+        self._session_ready = False
+        self._died_signalled = False
+        self.ip_address = ip_address
+
+        # Drain any stale queued commands from a previous connection.
+        try:
+            while True:
+                self._cmd_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+        logger.info(f"Instance {self.instance_id}: connecting to ATEM at {ip_address}")
+        self._worker = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name=f"AtemConn-{self.instance_id}",
+        )
+        self._worker.start()
+
+        if not self._ready_event.wait(timeout=CONNECT_TIMEOUT):
+            err = self._connect_error or f"timeout after {CONNECT_TIMEOUT}s"
+            logger.warning(f"Instance {self.instance_id}: connect failed ({err})")
+            self._disconnect_locked()
+            return False
+
+        if not self._handshake_done:
+            # _ready_event was set by an early-error path (path A/B/C/D),
+            # not a successful handshake.
+            err = self._connect_error or "handshake did not complete"
+            logger.warning(f"Instance {self.instance_id}: connect failed ({err})")
+            self._disconnect_locked()
+            return False
+
+        logger.info(f"Instance {self.instance_id}: connected to {ip_address}")
+        return True
 
     def disconnect(self) -> None:
         """Tear down the connection. Safe to call multiple times.

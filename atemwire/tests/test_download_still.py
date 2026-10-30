@@ -138,6 +138,100 @@ def test_not_ready_raises_before_wire(call):
     assert p.callbacks == {}                       # no handler registered
 
 
+class _LosesSessionProto(_FakeProto):
+    """The transport gives up on the session 50 ms into the transfer: the
+    protocol raises 'disconnected' (and then empties its transfer lane)."""
+
+    def download(self, store, slot):
+        super().download(store, slot)
+        threading.Timer(0.05, self._raise, args=('disconnected',)).start()
+
+    def queue_clear(self, store, index):
+        threading.Timer(0.05, self._raise, args=('disconnected',)).start()
+        return types.SimpleNamespace(store=store, slot=index, clear=True)
+
+    def dequeue_clear(self, task):
+        raise AssertionError('nothing to dequeue: the lane reset took it')
+
+
+@pytest.mark.parametrize('call', [
+    lambda c: ATEMConnection.download_still(c, 0, timeout=5.0),
+    lambda c: ATEMConnection.download_macro(c, 0, timeout=5.0),
+    lambda c: ATEMConnection.clear_still(c, 0, timeout=5.0),
+], ids=['download_still', 'download_macro', 'clear_still'])
+def test_session_lost_while_waiting_raises_at_once(call):
+    # bmdwire#8, the transfer already in flight when the session goes: it
+    # waited out its whole timeout (30 s for a still) and then blamed
+    # "another client" for the lock, since the lane reset had emptied the
+    # lock table. It must fail as soon as the protocol says the session went.
+    import time
+    p = _LosesSessionProto()
+    started = time.monotonic()
+    with pytest.raises(ConnectionDeadError, match='lost'):
+        call(_conn(p))
+    assert time.monotonic() - started < 1.0
+    assert p.aborted == 0                    # the lane reset does it, not us
+    assert all(handlers == {} for handlers in p.callbacks.values())
+
+
+def test_timeout_while_not_ready_does_not_blame_another_client():
+    # If the session went without the event reaching us, the lock table is
+    # empty because the lane was reset, not because someone holds the store.
+    conn = None
+
+    class _P(_FakeProto):
+        def download(self, store, slot):
+            super().download(store, slot)
+            conn.is_ready = False            # re-handshake, event missed
+
+    p = _P()
+    p.locks = {}
+    conn = _conn(p)
+    with pytest.raises(TimeoutError) as excinfo:
+        ATEMConnection.download_still(conn, 3, timeout=0.05)
+    assert 'another client' not in str(excinfo.value)
+
+
+def test_session_lost_mid_download_with_the_real_protocol():
+    """The real lane: the download is queued (PLCK sent), the transport
+    delivers its give-up sentinel, the protocol raises 'disconnected' and
+    resets the lane, and the caller is told at once."""
+    import time
+    p = AtemProtocol(ip='127.0.0.1')
+    p.send_commands = lambda cmds: None
+    p.connected = True
+    conn = _conn(p)
+    outcome = {}
+
+    def _download():
+        started = time.monotonic()
+        try:
+            ATEMConnection.download_still(conn, 2, timeout=5.0)
+        except Exception as e:  # noqa: BLE001
+            outcome['error'] = e
+        outcome['took'] = time.monotonic() - started
+
+    try:
+        worker = threading.Thread(target=_download)
+        worker.start()
+        deadline = time.monotonic() + 2.0
+        while not p.transfer_queue.get(0) and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert p.transfer_queue.get(0)       # queued, lock requested
+        p.transport.thread_recv_queue.put(None)
+        p.loop()                             # the transport's give-up
+        worker.join(2.0)
+        assert isinstance(outcome.get('error'), ConnectionDeadError)
+        assert outcome['took'] < 1.0
+        assert p.transfer_queue == {}        # the lane was reset
+        assert 'disconnected' not in p.callbacks or not p.callbacks['disconnected']
+    finally:
+        try:
+            p.transport.sock.close()
+        except Exception:
+            pass
+
+
 def test_protocol_abort_transfers_resets_and_unlocks():
     p = AtemProtocol(ip='127.0.0.1')
     try:
