@@ -306,6 +306,30 @@ upload_clip('192.0.2.11', '/local/clip.mp4',
             progress_callback=on_progress)
 ```
 
+### Stopping an upload part-way
+
+`should_cancel` is a callable asked about once a second
+(`CANCEL_POLL_SECONDS`) while the file is sent; an exception from it counts
+as "keep going". When it returns True, the data connection is closed, the
+deck's reply to the stopped `STOR` is read, the partial file is deleted, and
+`UploadCancelled` is raised. Its `bytes_sent` says how far it got, and
+`partial_removed` is False only if the deck still lists the file afterwards.
+
+```python
+from hyperdeckwire import UploadCancelled, upload_clip
+
+try:
+    upload_clip('192.0.2.11', '/local/clip.mov',
+                should_cancel=lambda: job_was_cancelled())
+except UploadCancelled as e:
+    print(e)    # upload of clip.mov cancelled after 148,520,960 bytes
+```
+
+Measured on a Studio HD Mini (software 9.0.2) with a 400 MB file: stopped
+2.04 s in, after 148 MB, and the deck listed no file 50 ms later. Without
+`should_cancel`, an upload cannot be stopped once `STOR` starts, because
+`upload_clip` logs and ignores anything `progress_callback` raises.
+
 Anonymous login is used by default — works on stock HD-class firmware.
 For servers that reject the bare empty-user form, the helper retries
 with explicit `anonymous` user automatically. Pass `login_user` and

@@ -56,7 +56,7 @@ from hyperdeckwire.setup import (
     SetupInfo,
     User,
 )
-from hyperdeckwire.upload import UploadResult, upload_clip
+from hyperdeckwire.upload import UploadCancelled, UploadResult, upload_clip
 
 __all__ = [
     'Clip',
@@ -68,6 +68,7 @@ __all__ = [
     'RemoteAdmin',
     'Response',
     'SetupInfo',
+    'UploadCancelled',
     'UploadResult',
     'User',
     'upload_clip',
