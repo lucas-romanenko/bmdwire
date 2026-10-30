@@ -451,6 +451,144 @@ def test_facade_and_probe_report_the_rehandshake_gap(
     assert len(instances) == 1     # one session throughout, never replaced
 
 
+def _in_the_gap(conn, proto):
+    gone = threading.Event()
+    proto.on('disconnected', gone.set)
+    _rehandshake_start(proto)
+    assert gone.wait(2.0)
+    assert conn.is_connected is True and conn.is_ready is False
+
+
+def test_wait_until_ready_returns_once_the_new_dump_is_complete(
+    reset_pool, fake_protocol_factory, short_connect_timeout,
+):
+    instances = fake_protocol_factory()
+    conn = ATEMConnection('atem_test')
+    assert conn.connect('1.2.3.4')
+    try:
+        assert conn.wait_until_ready(0) is True      # ready: no wait at all
+        proto = instances[-1]
+        _in_the_gap(conn, proto)
+        assert conn.wait_until_ready(0) is False     # 0 only checks
+        started = time.monotonic()
+        assert conn.wait_until_ready(0.1) is False   # bounded
+        assert 0.09 <= time.monotonic() - started < 0.5
+
+        threading.Timer(0.2, proto.connect).start()  # the new dump lands
+        started = time.monotonic()
+        assert conn.wait_until_ready(3.0) is True
+        assert time.monotonic() - started < 1.0      # woken, not waited out
+        assert 'video-mode' in conn.mixerstate
+    finally:
+        conn.disconnect()
+
+
+def test_wait_until_ready_gives_up_when_the_connection_goes(
+    reset_pool, fake_protocol_factory, short_connect_timeout,
+):
+    instances = fake_protocol_factory()
+    conn = ATEMConnection('atem_test')
+    assert conn.connect('1.2.3.4')
+    _in_the_gap(conn, instances[-1])
+    threading.Timer(0.1, conn.disconnect).start()
+    started = time.monotonic()
+    assert conn.wait_until_ready(5.0) is False
+    assert time.monotonic() - started < 1.0
+    # Never connected: nothing will make it ready, so no wait.
+    assert ATEMConnection('atem_other').wait_until_ready(5.0) is False
+
+
+def test_connect_joining_a_rehandshaking_session_waits_for_it(
+    reset_pool, fake_protocol_factory, short_connect_timeout,
+):
+    """A second caller's connect() on a session in a re-handshake used to
+    return True at once, the state still empty; it returns once the state
+    is current."""
+    instances = fake_protocol_factory()
+    conn = ATEMConnection('atem_test')
+    assert conn.connect('1.2.3.4')
+    try:
+        proto = instances[-1]
+        _in_the_gap(conn, proto)
+        threading.Timer(0.2, proto.connect).start()
+        started = time.monotonic()
+        assert conn.connect('1.2.3.4') is True
+        assert time.monotonic() - started >= 0.15
+        assert conn.is_ready and 'video-mode' in conn.mixerstate
+        assert len(instances) == 1                   # joined, not reconnected
+    finally:
+        conn.disconnect()
+
+
+def test_connect_joining_a_session_that_stays_away_returns_false(
+    reset_pool, fake_protocol_factory, short_connect_timeout,
+):
+    """It gives up after CONNECT_TIMEOUT (1 s here), and leaves the session
+    alone: it is shared, and the transport goes on re-establishing it."""
+    instances = fake_protocol_factory()
+    conn = ATEMConnection('atem_test')
+    assert conn.connect('1.2.3.4')
+    try:
+        proto = instances[-1]
+        _in_the_gap(conn, proto)
+        assert conn.connect('1.2.3.4') is False
+        assert conn.is_connected is True             # not torn down
+        assert len(instances) == 1
+        proto.connect()
+        assert _wait_for(lambda: conn.is_ready)
+    finally:
+        conn.disconnect()
+
+
+def test_a_pool_hit_waits_for_a_rehandshaking_session(
+    reset_pool, fake_protocol_factory, short_connect_timeout, short_grace,
+):
+    """acquire_connection promises a ready connection: a pool hit in the
+    gap used to be yielded at once with an empty mixerstate, where every
+    send went to the session being replaced."""
+    from atemwire.pool import ATEMInstanceManager, acquire_connection
+
+    instances = fake_protocol_factory()
+    with acquire_connection('1.2.3.4') as conn:
+        proto = instances[-1]
+        _in_the_gap(conn, proto)
+
+        threading.Timer(0.2, proto.connect).start()
+        with acquire_connection('1.2.3.4') as again:
+            assert again is conn
+            assert again.is_ready and 'video-mode' in again.mixerstate
+
+        _in_the_gap(conn, proto)
+        started = time.monotonic()
+        with pytest.raises(ConnectionDeadError, match='not ready within'):
+            with acquire_connection('1.2.3.4', ready_timeout=0.1):
+                pass
+        assert time.monotonic() - started < 0.5
+        with pytest.raises(RuntimeError):            # the documented raise
+            with acquire_connection('1.2.3.4', ready_timeout=0):
+                pass
+        # The failed acquires gave their refs back; ours is the only one.
+        assert ATEMInstanceManager._instances['1.2.3.4']['ref_count'] == 1
+        assert len(instances) == 1
+
+
+def test_facade_construction_waits_for_a_rehandshaking_session(
+    reset_pool, fake_protocol_factory, short_connect_timeout, short_grace,
+):
+    from atemwire import ATEM
+
+    instances = fake_protocol_factory()
+    with ATEM('1.2.3.4') as first:
+        proto = instances[-1]
+        _in_the_gap(first.raw, proto)
+        with pytest.raises(ConnectionDeadError):
+            ATEM('1.2.3.4', ready_timeout=0.1)
+        threading.Timer(0.2, proto.connect).start()
+        with ATEM('1.2.3.4') as second:
+            assert second.connected is True
+            assert second.video_mode == '1080p50'
+
+
 # ---------------------------------------------------------------------------
 # Last-run macro latch (MRPr)
 # ---------------------------------------------------------------------------

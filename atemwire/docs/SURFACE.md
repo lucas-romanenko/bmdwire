@@ -561,9 +561,9 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
 
 | operation | entry point | parameters | behaviour |
 |---|---|---|---|
-| **download** | `ATEMConnection.download_still` (`connection.py:188`); on the facade, `atem.raw.download_still` | `(slot:int, *, timeout:float=30.0, progress_callback:Callable[[float],None]=None) -> bytes` | Blocking and serialised per connection. Flow: `PLCK(0,slot)` → `LKOB` → `FTSU` → `FTDa`×N/`FTUA` → `FTDC` → unlock. Returns the **RLE-decoded YCbCrA 4:2:2 frame** (w×h×4 bytes; actually a `bytearray`). Convert it with `imaging.atem_to_rgb`. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False, §5.4 item 20), `RuntimeError` (fatal `FTDE`) or `TimeoutError` (after `abort_transfers`) |
+| **download** | `ATEMConnection.download_still` (`connection.py:188`); on the facade, `atem.raw.download_still` | `(slot:int, *, timeout:float=30.0, progress_callback:Callable[[float],None]=None) -> bytes` | Blocking and serialised per connection. Flow: `PLCK(0,slot)` → `LKOB` → `FTSU` → `FTDa`×N/`FTUA` → `FTDC` → unlock. Returns the **RLE-decoded YCbCrA 4:2:2 frame** (w×h×4 bytes; actually a `bytearray`). Convert it with `imaging.atem_to_rgb`. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False, §5.4 item 20; since `2b540db` also when the session goes while it waits, item 34), `RuntimeError` (fatal `FTDE`) or `TimeoutError` (after `abort_transfers`) |
 | **upload** | **no high-level entry point**. Only `AtemProtocol.upload` (`protocol.py:682`) | `(store, index, data, compress=True, compressed=False, name=None, description=None, size=None, task=None) -> None` | Non-blocking: it only queues, and someone must pump `loop()`. `data` is a YCbCrA frame from `imaging.rgb_to_atem`. The MD5 is taken over the uncompressed frame. Flow: `PLCK` → `LKOB` → `FTSD(mode 1 = RLE)` → `FTCD` → `FTDa`… → `FTFD` → `FTDC` → `upload-done(store, slot)`. Progress arrives as `upload-progress(store, slot, percent, done, total)`. `size` is unused. `compressed=True` needs `compress=False`. `aggressive_drain=True` (constructor only, so not reachable through the pool) drains 10 packets per trigger instead of 5; since `d050c10` each budget is sent whole on any connection and it changes nothing (§5.4 item 22). The working reference caller is in WebATEM: `atem_control/uploader.py` (its own `AtemProtocol(ip, aggressive_drain=True)`, pumps until `upload-done`, then checks the `MPfe` hash) |
-| **clear (locked)** | `ATEM.clear_still` / `ATEMConnection.clear_still` (`connection.py:196`); underneath, `AtemProtocol.queue_clear(store, index)` / `dequeue_clear(task)` | `(slot:int, *, timeout:float=5.0) -> None` | `LOCK(0,True)` → `LKOB` → `CSTL` → `clear-dispatched` → unlock. Returns once the clear has been **dispatched**, not confirmed; watch `MPfe.is_used` to confirm. Use this, not the bare `media.clear_still` op (§1.8). Raises `ConnectionDeadError` when not connected (since `1572508`, when not `is_ready`) or `TimeoutError` |
+| **clear (locked)** | `ATEM.clear_still` / `ATEMConnection.clear_still` (`connection.py:196`); underneath, `AtemProtocol.queue_clear(store, index)` / `dequeue_clear(task)` | `(slot:int, *, timeout:float=5.0) -> None` | `LOCK(0,True)` → `LKOB` → `CSTL` → `clear-dispatched` → unlock. Returns once the clear has been **dispatched**, not confirmed; watch `MPfe.is_used` to confirm. Use this, not the bare `media.clear_still` op (§1.8). Raises `ConnectionDeadError` when not connected (since `1572508`, when not `is_ready`; since `2b540db`, also when the session goes before the clear is sent, §5.4 item 34) or `TimeoutError` |
 | capture | `media.capture_still(conn)` | — | single packet `Capt`, listed for completeness |
 
 **Formats and conversion** (`atemwire.mediaconvert`, a C extension; wrappers in `imaging.py`):
@@ -616,7 +616,7 @@ layers, so whether this module is covered by the version number is unstated.
 
 | entry point | signature | notes |
 |---|---|---|
-| `ATEMConnection.download_macro` | `(slot:int, *, timeout:float=10.0) -> bytes` | `connection.py:254`. The pooled path: serialised by the connection's transfer lock, and the worker pumps the loop. Returns `b''` for an empty slot. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False), `TimeoutError`, or `RuntimeError` (rejected by `FTDE`) |
+| `ATEMConnection.download_macro` | `(slot:int, *, timeout:float=10.0) -> bytes` | `connection.py:254`. The pooled path: serialised by the connection's transfer lock, and the worker pumps the loop. Returns `b''` for an empty slot. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False; since `2b540db` also when the session goes while it waits), `TimeoutError`, or `RuntimeError` (rejected by `FTDE`) |
 | `download_macro_bytecode` | `(protocol, slot:int, *, timeout=10.0, progress_callback=None) -> bytes` | `macrotransfer/_io.py:42`. For a **bare** `AtemProtocol`: it pumps `protocol.loop()` itself. `progress_callback` never fires (the protocol suppresses progress for store `0xFFFF`). A fatal `FTDE` surfaces as `TimeoutError` |
 | `upload_macro_bytecode` | `(protocol, slot:int, name:str, description:str, bytecode:bytes, *, timeout=10.0) -> None` | `_io.py:105`. Does **not** pump the loop; on a pooled connection pass `conn.protocol`, and the worker pumps. Raises `RuntimeError` (not connected, or fatal `FTDE`) or `TimeoutError`. Name and description are packed `64s`/`128s` (truncated, with no guaranteed NUL). There is **no upload method on `ATEMConnection` or `ATEM`** |
 | `decode_macro_bytecode` | `(raw:bytes, mx:dict=None) -> list[dict]` | each op is `{'id': <ASC XML op id>, <attr>: str, …}`. `mx` is accepted but unused |
@@ -672,7 +672,7 @@ The top-level `atemwire` exports `Profile`, `ApplyOptions` and `ApplyResult`.
 | properties | `root`, `major_version`, `minor_version`, `product`, `video_mode` | `video_mode` is the raw XML string |
 | `Profile.macros()` | `-> list[{index, name, description, ops}]` | ops in the §3.2 dict form |
 | `Profile.apply` | `(atem, options:ApplyOptions=None) -> ApplyResult` | Takes an `ATEM`, anything with `.send`, or an `AtemProtocol` (wrapped so `send` is synchronous). Setters only queue. It blocks only for a 3 s sleep after a video-mode change and for macro uploads (10 s each, which **need someone pumping the loop**). Sections run in order: video_mode, inputs, settings_flags, color_generators, aux, transition, upstream_keyers, downstream_keys, fade_to_black, media_players, audio, multiview (placeholder), macros, camera_control (placeholder), hyperdecks, talkback (placeholder), program_preview. There is no model or version guard, and no try/except around sections: a non-`ValueError` raised by a macro encoder aborts the whole apply |
-| `download_media_pool_images` | `(atem, progress_callback=None, cancel_check=None, timeout_per_slot=30.0, cache_get=None, cache_put=None) -> list[{slot, name, png_bytes, from_cache}]` | `download_still` per used slot → `atem_to_rgb` → Pillow PNG (the `[profile]` extra). Not called by `from_atem`. A slot that fails is skipped. Since `1572508` it refuses when not `is_ready` and stops (a partial list) once the session goes |
+| `download_media_pool_images` | `(atem, progress_callback=None, cancel_check=None, timeout_per_slot=30.0, cache_get=None, cache_put=None) -> list[{slot, name, png_bytes, from_cache}]` | `download_still` per used slot → `atem_to_rgb` → Pillow PNG (the `[profile]` extra). Not called by `from_atem`. A slot that fails is skipped. Since `1572508` it refuses when not `is_ready` and stops (a partial list) once the session goes; since `2b540db` the slot in flight then fails at once instead of waiting out `timeout_per_slot` (§5.4 item 34) |
 
 **`SaveOptions`** (all default True): `mes: list[MixEffectOptions]` (×4), `downstream_keys`,
 `color_generators`, `fairlight`, `camera_control`, `media_pool_metadata`, `media_pool_images`
@@ -738,9 +738,9 @@ Profile enum tables (`profile/_enums.py`):
 
 | layer | entry point | what it gives you |
 |---|---|---|
-| facade | `atemwire.ATEM(ip)` (`atem.py`), context manager; `close()` is idempotent | A pooled session. Blocks up to 15 s on a cold connect (`RuntimeError` on failure); a warm connect joins at once. **Operations:** `atem.<op>(*args)` forwards to the `messages.<module>.<op>(conn, *args)` functions of 17 modules (`atem.py:72-89`). The `hyperdeck`, `lock`, `file_transfer`, `tally` and `meters` modules are not forwarded, so `set_hyperdeck_settings` is not on the facade. **Reads:** properties `connected`, `video_mode`, `product_name`, `program_source`, `preview_source`, `in_transition`, `transition_style`, `transition_rate`, `ftb_active`; methods `get_program_source(me)`, `get_preview_source(me)`, `get_in_transition(me)`, `get_transition_style(me)`, `get_transition_rate(me)`, `get_ftb_active(me)`; `snapshot()` (= `build_full_state`); `clear_still(slot, timeout=5.0)` (locked); `raw` → the `ATEMConnection` |
-| pool | `atemwire.pool.acquire_connection(ip)` (context manager → `ATEMConnection`); `ATEMInstanceManager.peek_connection / get_instance / release_instance / list_instances` | One session per switcher per process, ref-counted. When the last ref goes, a 2 s grace timer disconnects. Nothing reaps a session whose ref is still held. A dead worker is evicted. `close_all_sessions_at_exit()` is registered with atexit. Single-process only |
-| connection | `atemwire.connection.ATEMConnection(instance_id)` | `connect(ip) -> bool` (blocks up to `CONNECT_TIMEOUT = 15 s`), `disconnect()`, `is_connected`, `mixerstate`, `protocol`, `send(command)`, `download_still`, `download_macro`, `clear_still`, `set_on_died(cb)`, `last_run_macro_index`. It has its own worker thread `AtemConn-<id>`, which pumps `protocol.loop()` every 10 ms and sends queued commands in batches of up to 1200 bytes per packet. A command that fails to render or is over-size is **dropped with a log line**, not raised |
+| facade | `atemwire.ATEM(ip)` (`atem.py`), context manager; `close()` is idempotent | A pooled session. Blocks up to 15 s on a cold connect (`RuntimeError` on failure); a warm connect joins at once (since `2b540db`, once the session is ready, §5.4 item 35). **Operations:** `atem.<op>(*args)` forwards to the `messages.<module>.<op>(conn, *args)` functions of 17 modules (`atem.py:72-89`). The `hyperdeck`, `lock`, `file_transfer`, `tally` and `meters` modules are not forwarded, so `set_hyperdeck_settings` is not on the facade. **Reads:** properties `connected`, `video_mode`, `product_name`, `program_source`, `preview_source`, `in_transition`, `transition_style`, `transition_rate`, `ftb_active`; methods `get_program_source(me)`, `get_preview_source(me)`, `get_in_transition(me)`, `get_transition_style(me)`, `get_transition_rate(me)`, `get_ftb_active(me)`; `snapshot()` (= `build_full_state`); `clear_still(slot, timeout=5.0)` (locked); `raw` → the `ATEMConnection` |
+| pool | `atemwire.pool.acquire_connection(ip)` (context manager → `ATEMConnection`; since `2b540db`, `acquire_connection(ip, *, ready_timeout=None)`); `ATEMInstanceManager.peek_connection / get_instance / release_instance / list_instances` | One session per switcher per process, ref-counted. When the last ref goes, a 2 s grace timer disconnects. Nothing reaps a session whose ref is still held. A dead worker is evicted. `close_all_sessions_at_exit()` is registered with atexit. Single-process only. Since `2b540db` `acquire_connection` yields only a ready session, waiting for a re-handshake on a pool hit (§5.4 item 35); `get_instance` and `peek_connection` promise nothing about readiness |
+| connection | `atemwire.connection.ATEMConnection(instance_id)` | `connect(ip) -> bool` (blocks up to `CONNECT_TIMEOUT = 15 s`; since `2b540db` a connect that joins a session in a re-handshake waits for it too, §5.4 item 35), `disconnect()`, `is_connected`, `mixerstate`, `protocol`, `send(command)`, `download_still`, `download_macro`, `clear_still`, `set_on_died(cb)`, `last_run_macro_index`; since `2b540db`, `wait_until_ready(timeout) -> bool`. It has its own worker thread `AtemConn-<id>`, which pumps `protocol.loop()` every 10 ms and sends queued commands in batches of up to 1200 bytes per packet. A command that fails to render or is over-size is **dropped with a log line**, not raised |
 | bare protocol | `atemwire.protocol.AtemProtocol(ip, port=9910, *, aggressive_drain=False)` | `connect()` sends SYN without blocking. **You** pump `loop()` (one packet per call). Also `send_commands([cmds])` (≤1300 bytes, else `ValueError`), `send_raw`, `on(event, cb) -> id`, `off(event, id)`, `mixerstate`, `connected`, `initialized`, plus the transfer methods (§3). It is **not thread-safe**. **It has no close method**; teardown is `release_locks_now()` → `transport.close_session()` → `transport.sock.close()` → `transport.thread_queue.close()` (`connection.py:723-755`). Passing a `tcp://` ip or `usb=` raises `NotImplementedError` |
 
 Readiness and identity:
@@ -773,7 +773,9 @@ Readiness and identity:
   `2797515`, 5 s since the last packet accepted from the switcher or the last SYN; §5.4 item
   15). The protocol then raises `disconnected` and **empties `mixerstate`**; when the new dump
   completes, `connected` fires again. Meanwhile `ATEMConnection.is_connected` **stays True**;
-  since `661dc4c`, `is_ready` and `ATEM.connected` go False for the gap (§5.4 item 2).
+  since `661dc4c`, `is_ready` and `ATEM.connected` go False for the gap (§5.4 item 2). Since
+  `2b540db` a pool hit, a warm `connect()` and a warm `ATEM(ip)` wait for the new dump, and
+  transfers waiting when the session goes fail at once (§5.4 items 34 and 35).
 - Environment: `ATEMWIRE_PACKET_TRACE=1|true|yes|on` turns on the `atemwire.trace.packet` and
   `atemwire.trace.drain` loggers. No other environment variable is read.
 
@@ -957,6 +959,7 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
 it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and still apply to it.
+Items 34 and 35 were fixed after 1.8.0 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -971,6 +974,7 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
    `661dc4c`:* `is_connected` keeps its meaning (worker alive; `send()` and pool eviction use it).
    The new `ATEMConnection.is_ready` is False from `disconnected` until the next `connected`,
    `ATEM.connected` reads it, and `probe()` reports `connection_status=False` during the gap.
+   Since `2b540db` a warm `ATEM(ip)` waits for the new dump instead of joining the gap (item 35).
 3. **An unknown `VidM` mode code raises inside the parser.** The exception escapes `loop()`, the
    rest of that packet is lost, `video-mode` never lands, and `wait_ready` times out. Since
    `2fc9375` the session re-handshakes three times first (item 17).
@@ -1170,6 +1174,39 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
     (`audio_mixer_type`), and on `'legacy'` the section is built from `AMMO`, `AMIP` and `AMmO`
     in the Fairlight shapes (§2.4, §2.6). The first of each legacy packet is logged raw and
     decoded (`45fafa4`, §2.4) so a user's log can check the layouts. Untested on a switcher.
+34. **A transfer already waiting when the session goes waits out its timeout** (1.8.0). Item 20's
+    gates stop a transfer started in a re-handshake, but not one queued or running when it starts.
+    The protocol raises `disconnected` and empties the transfer lane; nothing tells the waiting
+    caller, so `download_still` sits out its 30 s (`download_macro` 10 s, `clear_still` 5 s) and
+    then blames "another client" for the lock, since the lane reset emptied the lock table. On a
+    Constellation, a `download_media_pool_images` of six slots with a re-handshake during the second
+    lost that slot after 30.0 s with the "another client" line, and returned 43 s after the gap had
+    opened, a gap that lasts well under a second on a LAN. *Fixed in `2b540db`:* the three listen
+    for `disconnected` and raise `ConnectionDeadError` at once (the lane reset releases nothing on
+    the wire, so they don't call `abort_transfers`), and the timeout names another client only while
+    the session is ready. The same capture now returns 2 ms after the gap opens, with the slots
+    before it, and no "another client" line (bmdwire#8).
+35. **A pool hit is handed out in the middle of a re-handshake** (1.8.0). `acquire_connection`
+    promises a ready connection but checks only `is_connected`, which stays True through the gap
+    (item 2): it yields a session whose `mixerstate` is `{}`, where every `send()` goes to the
+    session being replaced. `ATEM(ip)` joins the same way, and a warm `ATEMConnection.connect()`
+    returns True at once, though its docstring says it waits for the state. On a Constellation,
+    three pool hits taken in the gap were yielded in 0.03 ms with no state. *Fixed in `2b540db`:*
+    - `acquire_connection(ip, *, ready_timeout=None)` waits for `is_ready`, up to `ready_timeout`
+      (`CONNECT_TIMEOUT`, 15 s, by default), and raises `ConnectionDeadError`, a `RuntimeError`,
+      if it doesn't come. `ready_timeout=0` only checks. The same three pool hits waited 0.52 s
+      and came back with the whole state.
+    - A connect that joins a session already connected to its address waits the same way, up to
+      `CONNECT_TIMEOUT`, outside its lifecycle lock; on timeout it returns False and leaves the
+      shared session alone.
+    - `ATEM(ip, *, ready_timeout=None)` passes it on. `probe()` passes 0 and is unchanged.
+    - `ATEMConnection.wait_until_ready(timeout) -> bool` is the wait, on an event the protocol's
+      `connected` and `disconnected` set and clear. A connection held for a while can still go
+      into a re-handshake; it waits for it again.
+    - `acquire_connection` releases its reference with the identity guard (`instance=`), so an
+      entry evicted while held doesn't take a reference from its replacement.
+    `get_instance` and `peek_connection` still return a connection whatever its state; `send()`
+    still checks only `is_connected` (bmdwire#65).
 
 ## Counts
 

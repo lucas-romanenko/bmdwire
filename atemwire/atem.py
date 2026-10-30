@@ -97,9 +97,10 @@ class ATEM:
     no other caller holds a reference, a fresh UDP socket is opened and the
     initial state dump is awaited (up to the pool's connect timeout). If a
     session is already pooled for this IP, construction joins it
-    immediately. Closing releases this instance's pool reference; the
-    underlying socket is torn down after the pool's grace period only when
-    the last reference goes away.
+    immediately, once its state is current (see ``acquire_connection``).
+    Closing releases this instance's pool reference; the underlying socket
+    is torn down after the pool's grace period only when the last reference
+    goes away.
 
     Prefer the context manager form::
 
@@ -120,7 +121,10 @@ class ATEM:
 
     Raised exceptions:
         Constructor raises ``RuntimeError`` on connect failure (timeout,
-        unreachable host). The pool ref is released before the exception
+        unreachable host), and ``ConnectionDeadError`` (a ``RuntimeError``)
+        when it joins a pooled session that is in a transport re-handshake
+        and the session is not ready within ``ready_timeout`` (the pool's
+        default, 15 s). The pool ref is released before the exception
         propagates, so no leak.
     """
 
@@ -128,9 +132,9 @@ class ATEM:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def __init__(self, ip: str):
+    def __init__(self, ip: str, *, ready_timeout: Optional[float] = None):
         self._ip = ip
-        self._cm = acquire_connection(ip)
+        self._cm = acquire_connection(ip, ready_timeout=ready_timeout)
         # If connect fails the pool's own try/finally releases the ref
         # before re-raising.
         self._conn: Optional[ATEMConnection] = self._cm.__enter__()

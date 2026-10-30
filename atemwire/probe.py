@@ -47,10 +47,11 @@ def probe(ip_address: str) -> dict:
     }
 
     try:
-        with acquire_connection(ip_address) as conn:
-            # A warm session in the middle of a transport re-handshake has
-            # an empty state: report it as not connected rather than
-            # connected with nothing to say.
+        # ready_timeout=0: a warm session in the middle of a transport
+        # re-handshake has an empty state. Report it as not connected at
+        # once (acquire_connection raises ConnectionDeadError, a
+        # RuntimeError) rather than wait for the new dump.
+        with acquire_connection(ip_address, ready_timeout=0) as conn:
             if not conn.is_ready:
                 return result
             result["connection_status"] = True

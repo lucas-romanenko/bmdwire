@@ -297,3 +297,21 @@ def test_acquire_connection_releases_on_exception(
     time.sleep(0.5)
     with ATEMInstanceManager._instance_lock:
         assert '1.2.3.4' not in ATEMInstanceManager._instances
+
+
+def test_acquire_connection_release_is_identity_guarded(
+    reset_pool, fake_protocol_factory, short_connect_timeout, short_grace,
+):
+    """If the entry is evicted while held (its worker died) and another
+    caller builds a fresh one, leaving the context must not take a
+    reference from the fresh entry's holders."""
+    fake_protocol_factory()
+    with acquire_connection('1.2.3.4') as evicted:
+        with ATEMInstanceManager._instance_lock:
+            del ATEMInstanceManager._instances['1.2.3.4']   # evicted
+        fresh = ATEMInstanceManager.get_instance('1.2.3.4')
+    try:
+        assert fresh['ref_count'] == 1
+        assert fresh.get('disconnect_timer') is None
+    finally:
+        evicted.disconnect()
