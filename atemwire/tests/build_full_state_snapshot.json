@@ -787,6 +787,7 @@
     "auxOutputs": 0,
     "colorGenerators": 2,
     "dsks": 0,
+    "dves": null,
     "fairlightStrips": 2,
     "inputs": 2,
     "macros": 3,
@@ -796,6 +797,8 @@
     "mediaPoolStills": 0,
     "multiviewWindows": 0,
     "outputs": 1,
+    "stingers": null,
+    "superSources": null,
     "usksPerMe": []
   },
   "videoMode": {

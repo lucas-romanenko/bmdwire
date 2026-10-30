@@ -547,7 +547,8 @@ from atemwire.messages.switching import (  # noqa: E402
     aux_source, preview_source, program_source,
 )
 from atemwire.messages.system_info import (  # noqa: E402
-    available_video_modes, device_name, product_name, video_mode,
+    available_video_modes, device_name, product_name, topology_block_counts,
+    video_mode,
 )
 from atemwire.messages.transition import (  # noqa: E402
     active_transition_rate, dip_rate, dip_source, dve_clip,
@@ -914,6 +915,12 @@ class ATEMStateMixin:
         per-unit state packets the ATEM dumps at connect instead — one
         indexed ColV / MPrp / MvIn / FASP packet per unit. fairlightStrips
         is therefore the live strip count, not the input capacity.
+
+        ``dves`` / ``stingers`` / ``superSources`` are the ``_top`` block
+        counts, read where the switcher's protocol version puts them
+        (``topology_block_counts``). Unlike the other counts they are None,
+        not 0, until they are known: a 0 means the switcher said it has
+        none, so a frontend can grey what depends on them.
         """
         top = mx.get('topology')
         mec = mx.get('mixer-effect-config') or {}
@@ -961,6 +968,7 @@ class ATEMStateMixin:
                 (mx.get('multiviewer-input') or {}).get(0) or {}),
             'fairlightStrips': len(mx.get('fairlight-strip-properties') or {}),
             'macros': _index_count(mx.get('macro-properties') or {}),
+            **topology_block_counts(mx),
         }
 
     # =========================================================================

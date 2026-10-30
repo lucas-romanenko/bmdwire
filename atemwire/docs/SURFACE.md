@@ -429,7 +429,7 @@ describe a packet is logged at DEBUG and never reaches the packet loop.
 | `firmware-version` | `_ver` | `major:u16`, `minor:u16`, `version:str` | bare | — |
 | `product-name` | `_pin` | `name:str`, `model:u8` | bare | — |
 | `device-identity` | `WhoI` | `device_id`, `ip`, `hostname`, `name` (str) — not sent by all firmware | bare | — (not re-exported) |
-| `topology` | `_top` | `me_units`, `sources`, `downstream_keyers`, `aux_outputs`, `mixminus_outputs`, `mediaplayers`, `multiviewers`, `rs485`, `hyperdecks`, `dve`, `stingers`, `supersources` (u8), `multiviewer_routable:bool` | bare | — |
+| `topology` | `_top` | `me_units`, `sources`, `downstream_keyers`, `aux_outputs`, `mixminus_outputs`, `mediaplayers`, `multiviewers`, `rs485`, `hyperdecks`, `dve`, `stingers`, `supersources` (u8), `multiviewer_routable:bool`. The offsets are protocol 2.30's; before it, everything from `multiviewers` on reads one byte late (§5.4 item 38). `system_info.topology_block_counts(mx)` reads the DVE, stinger and SuperSource counts where `_ver` puts them | bare | — |
 | `mixer-effect-config` | `_MeC` | `index`, `keyers:u8` | me | — |
 | `mediaplayer-slots` | `_mpl` | `stills:u8`, `clips:u8` | bare | — |
 | `time` | `Time` | `hours`, `minutes`, `seconds`, `frames`, `dropframe:bool`; `total_seconds()` | bare | `TiRq` (request), `SToD` (sets the clock) |
@@ -439,6 +439,12 @@ describe a packet is logged at DEBUG and never reaches the packet loop.
 | `file-transfer-*` | `FTDa`/`FTDE`/`FTDC`/`FTCD` | `transfer`, `size`/`status`/`count`… | consumed by the transfer engine, **not stored** | §3 |
 | `transfer-complete` | `*XFC` | `store`, `slot`, `upload:bool` | consumed (TCP-proxy transport only); since `baa269c` dropped unparsed on UDP (§5.4 item 18) | — |
 | `InCm` | `InCm` | raw bytes (end of the initial state dump) | bare | — |
+
+**Topology in the log.** At every connect `AtemProtocol` logs at INFO (logger `AtemProtocol`)
+one line beginning `topology at connect:`, with the protocol version from `_ver`, the `_top`
+payload in hex, and the DVE, stinger and SuperSource counts read from it, or why they are unknown
+(`system_info.topology_diagnostic`). It is there so that a log from any model can confirm the
+layout. A failure to describe it is logged at DEBUG and never reaches the connect.
 
 ### 2.6 `build_full_state(conn)` (the assembled snapshot)
 
@@ -489,14 +495,16 @@ sources: [ {source, long, short, port_type, available_aux, available_key_source,
             available_multiview, available_me1..me4} ]
 topology: {meCount, usksPerMe[], dsks, auxOutputs, inputs, outputs, mediaPlayers,
            mediaPoolStills, mediaPoolClips, colorGenerators, multiviewWindows,
-           fairlightStrips, macros}
+           fairlightStrips, macros,
+           dves, stingers, superSources}   (_top block counts; None for all three
+                                            until _top and _ver say, never 0)
 atem_name: WhoI name or _pin product name
 ```
 
 Reader functions not used by `build_full_state`, which a CLI can call directly:
 `transition.dve_style`, `upstream_keyer.usk_fly_keyframe(mx, me, k, which='A'|'B')`,
 `media.mediaplayer_slots/slot_info/selected`, `macros.macro_play_running/macro_play_index`,
-`fade_to_black.*` (also composed), `system_info.video_resolution/sdi_3g_level`,
+`fade_to_black.*` (also composed), `system_info.video_resolution/sdi_3g_level/topology_diagnostic`,
 `hyperdeck.plan_binding_push`, `fairlight.fairlight_master_compressor/limiter`,
 `input_video.input_label`. Helpers in `state`: `me_count(mx)`, `me_keyer_count(mx, me)`,
 `display_fps(mx)`, `decode_name`, `md5_hex`.
@@ -914,10 +922,10 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 - **`atemwire.macrotransfer` stability is unstated.** It is public in practice, but the
   `atemwire/__init__.py` docstring does not list it among the layers covered by the version
   number.
-- **`build_full_state` omits whole areas.** It covers no multiviewer, SuperSource, recording,
-  streaming, tally, camera control, media-pool slots, media-player selection, locks, time or
-  meters, and lists **only the first 12 macros**. (Legacy audio was in this list until
-  `bd2f4bb`; see §5.4 item 33.)
+- **`build_full_state` omits whole areas.** It covers no multiviewer, SuperSource (only its
+  block count, in `topology`), recording, streaming, tally, camera control, media-pool slots,
+  media-player selection, locks, time or meters, and lists **only the first 12 macros**. (Legacy
+  audio was in this list until `bd2f4bb`; see §5.4 item 33.)
 - **Unused constants.** `FTSD`'s `MODE_WRITE_RLE`, `MODE_WRITE` and `MODE_ERASE` are unused (the
   engine uses literals). `profile/_enums._source_symbol()` is dead code.
 - **`SaveOptions.media_pool_images` and `ApplyOptions.restore_media_pool_images` are never read.**
@@ -964,7 +972,8 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 18, 19 and 20, and part of item 17 were fixed after 1.3.0 and still apply to it. Items 21 to 25
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
 it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and still apply to it.
-Items 34 to 37 were fixed after 1.8.0 and still apply to it.
+Items 34 to 37 were fixed after 1.8.0 and still apply to it. Item 38 was fixed after 1.9.0 and
+still applies to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1242,6 +1251,24 @@ Items 34 to 37 were fixed after 1.8.0 and still apply to it.
     no requests together and no `FTDE 6`; the downloader took a turn after every upload, so four
     uploads took 10 s instead of 5.7 s. Alone, four uploads take the same 2.7 to 2.9 s as before
     (bmdwire#63).
+38. **`_top` is read at protocol 2.30's offsets whatever the switcher's protocol** (1.9.0). 2.30
+    (firmware 8.1.1) inserted the multiviewer count at offset 6 (atem-connection's `TopologyCommand`
+    reads every later byte one place later above 2.29). `TopologyField` declares that layout only,
+    so on a switcher reporting 2.22 to 2.29 `multiviewers` is the serial-port count, `rs485` the
+    HyperDeck count, `hyperdecks` the DVE count, and `dve`, `stingers` and `supersources` each the
+    byte after their own. `build_full_state` carried none of the block counts. *Fixed in
+    `8defba1`:* `system_info.topology_block_counts(mx)` reads the DVE, stinger and SuperSource
+    counts at the offset `_ver` calls for (`TOPOLOGY_LAYOUTS`: 9 from 2.30, 8 from 2.22), and
+    `topology` in the snapshot carries them as `dves`, `stingers` and `superSources`. All three are
+    None, never 0, until `_top` and `_ver` have both arrived, for a protocol older than 2.22 or not
+    2.x, and for a payload shorter than its layout's (28 bytes from 2.30, 18 before), so a frontend
+    can grey on a 0. Every connect logs the payload and what was read from it (§2.5). The class
+    attributes are unchanged, and `_build_hyperdecks` still sizes the HyperDeck slots from
+    `hyperdecks`: on 2.29 and older it lists as many slots as the switcher has DVEs. The 2.30
+    layout matches two 1 M/E Constellation HDs (`_ver` 2.30, 28 bytes, 1 DVE, 1 stinger, no
+    SuperSource, as the spec sheet lists) and the seven payloads in upstream pyatem's
+    `TopologyField` table, one of them with no DVE; the older one is atem-connection's, untested on
+    a switcher.
 
 ## Counts
 
@@ -1256,7 +1283,7 @@ Measured by importing the package, not tallied by hand.
 | **State: `Recv` classes (= distinct incoming opcodes parsed)** | **92** (4 codes, `AiVM`, `FEna`, `FTDa` and `STAB`, are both a command and a state packet) |
 | … parsed state attributes across them | 526 (public, index attributes included) |
 | … known-but-unparsed codes stored raw | 27 |
-| Reader functions `reader(mx, …)` | 93 |
+| Reader functions `reader(mx, …)` | 95 |
 | **Transfer and special operations** | **10**: 5 multi-packet wire flows (still download, still upload, locked still clear, macro download, macro upload); 3 composite flows built on them (profile save, profile apply, media-pool PNG export); 2 offline codecs (macro bytecode, image/RLE conversion) |
 | … macro bytecode op codes (encode + decode) | 146 |
 | … profile: sections saved / applied; control opcodes apply emits | 14 / 10; 43 |

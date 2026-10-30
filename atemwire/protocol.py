@@ -26,6 +26,7 @@ from atemwire.messages.audio_legacy import (
     audio_mixer_type,
     legacy_audio_diagnostic,
 )
+from atemwire.messages.system_info import topology_diagnostic
 from atemwire.imaging import rle_decode
 
 
@@ -302,6 +303,7 @@ class AtemProtocol:
             self.initialized = True
             self.send_commands([TimeRequestCommand()])
             self._log_audio_mixer()
+            self._log_topology()
             self._raise('connected')
             return
         if isinstance(packet, Wakeup):
@@ -699,6 +701,7 @@ class AtemProtocol:
             if _is_tcp_transport(self.transport):
                 self.initialized = True
                 self._log_audio_mixer()
+                self._log_topology()
                 self._raise('connected')
         self._raise('change', key, contents)
 
@@ -724,6 +727,16 @@ class AtemProtocol:
             return
         note = '' if mixer == 'legacy' else ' (the state dump had neither FAMP nor AMMO)'
         self.log.info('legacy-audio: mixer at connect: %s%s', mixer, note)
+
+    def _log_topology(self):
+        """At each connect, log the ``_top`` payload, the protocol version
+        and the block counts read from them at INFO, so a log from any
+        model can confirm the layout (``system_info.TOPOLOGY_LAYOUTS``).
+        Never raises."""
+        try:
+            self.log.info('topology at connect: %s', topology_diagnostic(self.mixerstate))
+        except Exception:
+            self.log.debug('topology at connect: could not describe it', exc_info=True)
 
     def _check_dump_complete(self):
         """At ``InCm``: raise ``IncompleteStateDump`` when the dump had no

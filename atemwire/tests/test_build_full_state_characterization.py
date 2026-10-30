@@ -56,6 +56,7 @@ import json
 import os
 from types import SimpleNamespace
 
+from atemwire.messages.system_info import FirmwareVersionField, TopologyField
 from atemwire.state import build_full_state
 from atemwire.testing import FakeAtemProtocol
 
@@ -71,6 +72,18 @@ _MULTI_ME_SNAPSHOT_PATH = os.path.join(
 
 def _node(**attrs):
     return SimpleNamespace(**attrs)
+
+
+def _top(*first_bytes):
+    """A real protocol 2.30 ``_top`` (28 bytes) from its first bytes, in
+    TopologyField's order: me_units, sources, downstream_keyers,
+    aux_outputs, mixminus_outputs, mediaplayers, multiviewers, rs485,
+    hyperdecks, dve, stingers, supersources, multiviewer routable. The
+    block counts are read from the payload, so a SimpleNamespace won't do."""
+    return TopologyField(bytes(first_bytes).ljust(28, b'\0'))
+
+
+_PROTOCOL_2_30 = FirmwareVersionField(b'\x00\x02\x00\x1e')
 
 
 class _FakeVideoMode:
@@ -291,11 +304,8 @@ def _make_multi_me_mixerstate():
     mx.update({
         # _top — 2 M/E units. hyperdecks/dsks etc. set explicitly so the
         # snapshot pins capability-driven sizing rather than fallbacks.
-        'topology': _node(me_units=2, sources=40, downstream_keyers=2,
-                          aux_outputs=6, mixminus_outputs=0, mediaplayers=2,
-                          multiviewers=2, rs485=1, hyperdecks=2, dve=1,
-                          stingers=1, supersources=1,
-                          multiviewer_routable=True),
+        'topology': _top(2, 40, 2, 6, 0, 2, 2, 1, 2, 1, 1, 1, 1),
+        'firmware-version': _PROTOCOL_2_30,
         'mixer-effect-config': {0: _node(index=0, keyers=4),
                                 1: _node(index=1, keyers=2)},
 
@@ -489,12 +499,9 @@ def test_topology_counts_trace_to_wire_fields():
     fake.last_run_macro_index = 0
     fake.mixerstate.update(_make_mixerstate())
     fake.mixerstate.update({
-        # _top (TopologyField)
-        'topology': _node(me_units=2, sources=40, downstream_keyers=4,
-                          aux_outputs=6, mixminus_outputs=0, mediaplayers=4,
-                          multiviewers=2, rs485=1, hyperdecks=4, dve=1,
-                          stingers=1, supersources=1,
-                          multiviewer_routable=True),
+        # _top (TopologyField), at the offsets _ver (2.30) calls for
+        'topology': _top(2, 40, 4, 6, 0, 4, 2, 1, 4, 1, 2, 3, 1),
+        'firmware-version': _PROTOCOL_2_30,
         # _MeC (MixerEffectConfigField, one per M/E)
         'mixer-effect-config': {0: _node(index=0, keyers=4),
                                 1: _node(index=1, keyers=2)},
@@ -520,6 +527,9 @@ def test_topology_counts_trace_to_wire_fields():
         'multiviewWindows': 10,  # MvIn windows on MV 0 (max index + 1)
         'fairlightStrips': 2,    # FASP entry count ('1.0' + '2001.0')
         'macros': 3,             # MPrp slots (max index 2 + 1)
+        'dves': 1,               # _top byte 9 (protocol 2.30)
+        'stingers': 2,           # _top byte 10
+        'superSources': 3,       # _top byte 11
     }
 
 
@@ -535,6 +545,9 @@ def test_topology_handshake_defaults_and_mec_fallback():
         'mediaPlayers': 0, 'mediaPoolStills': 0, 'mediaPoolClips': 0,
         'colorGenerators': 0, 'multiviewWindows': 0, 'fairlightStrips': 0,
         'macros': 0,
+        # Unknown until _top and _ver say otherwise; never a 0 that would
+        # read as "this switcher has none".
+        'dves': None, 'stingers': None, 'superSources': None,
     }
 
     # _MeC arriving before _top still yields a usable meCount/usksPerMe.

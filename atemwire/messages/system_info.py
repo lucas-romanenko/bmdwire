@@ -256,6 +256,14 @@ class TopologyField(Recv):
     11     1    u8     SuperSource blocks
     12     1    u8     (multiviewer routable, exposed as bool)
     ====== ==== ====== ===========
+
+    The declared offsets are the layout of protocol 2.30 (firmware 8.1.1)
+    and later, which put the multiviewer count at offset 6 and moved every
+    byte after it down by one. On 2.22 to 2.29, offsets 6 to 10 are the
+    serial ports, HyperDecks, DVE, stinger and SuperSource counts, so
+    ``multiviewers`` to ``supersources`` here read one byte late.
+    ``topology_block_counts(mx)`` reads the three block counts at the
+    offsets the switcher's ``_ver`` calls for (``TOPOLOGY_LAYOUTS``).
     """
     CODE = '_top'
     PRETTY = 'topology'
@@ -482,6 +490,79 @@ def device_name(mx, default=''):
     if node is None:
         return default
     return decode_name(getattr(node, 'name', None), default)
+
+
+# Where ``_top`` keeps the DVE, stinger and SuperSource counts, by protocol
+# version (``_ver``), newest first: (first version, shortest payload, offset
+# of the DVE byte; the stinger and SuperSource counts follow it).
+# atem-connection (TopologyCommand.deserialize) reads them at 8, 9 and 10 up
+# to 2.29 and one byte later above it, where a multiviewer count sits at 6,
+# and reads byte 17 (18 from 2.30) whatever the length. The 2.30 layout is
+# 28 bytes in upstream pyatem's TopologyField table, which lists the payloads
+# of seven models, and in a 1 M/E Constellation HD's own (_ver 2.30). The
+# oldest protocol atem-connection knows is 2.22, and there is no protocol 3
+# to check against, so those leave the counts unknown.
+TOPOLOGY_LAYOUTS = (
+    ((2, 30), 28, 9),
+    ((2, 22), 18, 8),
+)
+
+_TOPOLOGY_BLOCKS = ('dves', 'stingers', 'superSources')
+
+
+def _topology_layout(mx):
+    """``(dve_offset, raw, version, None)`` when the layout of this
+    switcher's ``_top`` is known, else ``(None, raw, version, why)``."""
+    top = mx.get('topology')
+    raw = getattr(top, 'raw', None)
+    if top is None:
+        return None, None, None, 'no _top'
+    if not isinstance(raw, (bytes, bytearray)):
+        return None, None, None, 'no _top payload'
+    raw = bytes(raw)
+    ver = mx.get('firmware-version')
+    try:
+        version = (int(ver.major), int(ver.minor))
+    except (AttributeError, TypeError, ValueError):
+        return None, raw, None, 'no _ver'
+    if version[0] != 2:
+        return None, raw, version, f'protocol {version[0]}.{version[1]} is not 2.x'
+    for since, length, offset in TOPOLOGY_LAYOUTS:
+        if version >= since:
+            if len(raw) < length:
+                return None, raw, version, (
+                    f'{len(raw)} bytes, the {since[0]}.{since[1]} layout '
+                    f'has {length}')
+            return offset, raw, version, None
+    return None, raw, version, (
+        f'protocol 2.{version[1]} is older than any known _top layout')
+
+
+def topology_block_counts(mx):
+    """The switcher's DVE, stinger and SuperSource block counts from
+    ``_top``: ``{'dves', 'stingers', 'superSources'}``, each an int, or
+    each None when the counts can't be known (no ``_top`` or ``_ver`` yet,
+    a protocol version with no known layout, a payload too short for its
+    layout). A 0 is a count the switcher reported, never a default."""
+    offset, raw, _version, _why = _topology_layout(mx)
+    if offset is None:
+        return dict.fromkeys(_TOPOLOGY_BLOCKS)
+    return {name: raw[offset + i] for i, name in enumerate(_TOPOLOGY_BLOCKS)}
+
+
+def topology_diagnostic(mx):
+    """One line for the log: the protocol version, the ``_top`` payload in
+    hex and the block counts read from it, or why they are unknown."""
+    offset, raw, version, why = _topology_layout(mx)
+    ver = f'{version[0]}.{version[1]}' if version else '?'
+    payload = f'{len(raw)} bytes: {raw.hex()}' if raw is not None else 'none'
+    if offset is None:
+        result = f'block counts unknown ({why})'
+    else:
+        counts = topology_block_counts(mx)
+        result = (' '.join(f'{k}={v}' for k, v in counts.items())
+                  + f' (DVE at offset {offset})')
+    return f'protocol {ver}, _top {payload} -> {result}'
 
 
 def sdi_3g_level(mx, default='LevelB'):
