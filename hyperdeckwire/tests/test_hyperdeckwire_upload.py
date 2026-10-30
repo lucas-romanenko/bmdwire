@@ -18,11 +18,17 @@ import os
 import pytest
 
 import hyperdeckwire.upload as upload_module
-from hyperdeckwire.upload import UploadResult, upload_clip
+from hyperdeckwire.upload import UploadCancelled, UploadResult, upload_clip
 
 
 class _FakeFTP:
     """In-memory FTP stand-in that records every operation."""
+
+    # Test knobs: how many pieces storbinary feeds the callback, and whether
+    # DELE removes the file. Class attributes, since the fake is built inside
+    # the call under test (patch them on the class).
+    chunks = 2
+    delete_works = True
 
     def __init__(self, host, timeout=None):
         self.host = host
@@ -33,6 +39,8 @@ class _FakeFTP:
         self.root_entries = ['1', 'System Volume Information', '.Trashes']
         self.login_should_fail = False
         self.stor_should_fail = False
+        self.slot_files = ['existing.mp4']
+        self.chunks_sent = 0
 
     # context-manager surface
 
@@ -54,7 +62,7 @@ class _FakeFTP:
     def nlst(self, *args):
         self.calls.append(('nlst',) + tuple(args))
         if self.cwd_stack:
-            return ['existing.mp4']
+            return list(self.slot_files)
         return self.root_entries
 
     def cwd(self, path):
@@ -64,15 +72,29 @@ class _FakeFTP:
     def storbinary(self, cmd, fp, callback=None):
         data = fp.read()
         self.calls.append(('storbinary', cmd, len(data)))
-        # Feed the callback a couple of fake chunks so tests can verify it
-        # gets driven during a real upload.
+        self.slot_files.append(cmd.split(' ', 1)[1])   # the deck creates the file at once
+        # Feed the callback the data in ``self.chunks`` pieces so tests can
+        # verify it gets driven during a real upload (and stop it part-way).
         if callback is not None:
-            mid = len(data) // 2
-            callback(data[:mid])
-            callback(data[mid:])
+            step = max(1, len(data) // self.chunks)
+            for i in range(0, len(data), step):
+                callback(data[i:i + step])
+                self.chunks_sent += 1
         if self.stor_should_fail:
             import ftplib
             raise ftplib.error_perm('550 file unavailable')
+
+    sock = None
+
+    def getresp(self):
+        self.calls.append(('getresp',))
+        import ftplib
+        raise ftplib.error_temp('426 Connection closed; transfer aborted.')
+
+    def delete(self, name):
+        self.calls.append(('delete', name))
+        if self.delete_works and name in self.slot_files:
+            self.slot_files.remove(name)
 
 
 @pytest.fixture
@@ -235,3 +257,55 @@ def test_upload_result_throughput_calculation():
                      duration_seconds=2.0, slot_dir='1')
     # 50 MB / 2s = 25 MB/s
     assert r.throughput_mb_s == pytest.approx(25.0)
+
+
+# ---------------------------------------------------------------------------
+# should_cancel: stopping a transfer part-way.
+# ---------------------------------------------------------------------------
+
+def test_cancel_stops_the_transfer_and_removes_the_partial_file(fake_ftp, tmp_clip, monkeypatch):
+    monkeypatch.setattr(upload_module, 'CANCEL_POLL_SECONDS', 0)
+    monkeypatch.setattr(_FakeFTP, 'chunks', 10)
+    asked = []
+
+    def should_cancel():
+        asked.append(1)
+        return len(asked) >= 3
+
+    with pytest.raises(UploadCancelled) as info:
+        upload_clip('10.0.0.1', tmp_clip, should_cancel=should_cancel)
+    name = os.path.basename(tmp_clip)
+    assert info.value.name == name
+    assert info.value.partial_removed is True
+    assert 0 < info.value.bytes_sent < os.path.getsize(tmp_clip)
+    ftp = fake_ftp[0]
+    assert ('delete', name) in ftp.calls
+    assert name not in ftp.slot_files
+    assert ftp.chunks_sent == 2            # the third chunk's check stopped it
+
+
+def test_cancel_says_so_when_the_partial_file_stays(fake_ftp, tmp_clip, monkeypatch):
+    monkeypatch.setattr(upload_module, 'CANCEL_POLL_SECONDS', 0)
+    monkeypatch.setattr(_FakeFTP, 'delete_works', False)
+    with pytest.raises(UploadCancelled, match='still on the deck') as info:
+        upload_clip('10.0.0.1', tmp_clip, should_cancel=lambda: True)
+    assert info.value.partial_removed is False
+
+
+def test_should_cancel_is_asked_at_most_once_per_poll_interval(fake_ftp, tmp_clip, monkeypatch):
+    monkeypatch.setattr(upload_module, 'CANCEL_POLL_SECONDS', 3600)
+    monkeypatch.setattr(_FakeFTP, 'chunks', 10)
+    asked = []
+    result = upload_clip('10.0.0.1', tmp_clip, should_cancel=lambda: asked.append(1) or True)
+    assert asked == []                     # a fast transfer is never interrupted
+    assert result.name == os.path.basename(tmp_clip)
+
+
+def test_a_should_cancel_that_raises_does_not_stop_the_upload(fake_ftp, tmp_clip, monkeypatch):
+    monkeypatch.setattr(upload_module, 'CANCEL_POLL_SECONDS', 0)
+
+    def broken():
+        raise RuntimeError('database went away')
+
+    result = upload_clip('10.0.0.1', tmp_clip, should_cancel=broken)
+    assert result.name == os.path.basename(tmp_clip)
