@@ -276,3 +276,36 @@ def test_our_release_echo_with_another_client_seen_waits_the_handover(proto, clo
     clock.t += LOCK_HANDOVER
     proto._service_yields()
     assert last(proto) == ['PartialLockCommand'], 'nobody took it: ours again'
+
+
+def test_a_late_announcement_of_our_own_grant_is_not_another_client(proto, clock):
+    # A transfer (or a clear) shorter than a frame is released before the
+    # switcher announces its grant: that LKST comes after our release. It
+    # is ours, and must not make every later turn wait LOCK_HANDOVER.
+    for slot in (1, 2):
+        proto.download(0, slot)
+        if slot == 1:
+            grant(proto)
+        else:
+            clock.t += LOCK_COURTESY
+            proto._service_yields()
+            grant(proto)
+        clock.t += 0.01
+        ftdc(proto, proto.transfer.tid)          # done, released
+        clock.t += 0.02
+        lkst(proto, 0, True)                     # our grant, announced late
+        lkst(proto, 0, False)                    # and our release
+    assert proto._others_seen is None
+    # The next transfers, a normal length, alone: no handover.
+    proto.download(0, 3)
+    proto.download(0, 4)
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    grant(proto)
+    clock.t += 2.0
+    ftdc(proto, proto.transfer.tid)
+    clock.t += 0.04
+    lkst(proto, 0, False)                        # our release's echo
+    clock.t += LOCK_COURTESY
+    proto._service_yields()
+    assert last(proto) == ['PartialLockCommand'], 'waited a handover for nobody'

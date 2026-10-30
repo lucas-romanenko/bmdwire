@@ -257,6 +257,8 @@ class AtemProtocol:
         # monotonic time another client was last seen at the store (its
         # LKST, its FTDC, an FTDE 6 to us); None if never.
         self._others_seen = None
+        # store -> monotonic time of our last LKOB for it.
+        self._last_grant = {}
         self.mode = None
         self.transfer_queue = {}
         self.transfer_id = _first_transfer_id()
@@ -412,6 +414,7 @@ class AtemProtocol:
         if key == 'lock-obtained':
             self.log.info('Got lock for {}'.format(contents.store))
             self.locks[contents.store] = True
+            self._last_grant[contents.store] = time.monotonic()
             self._lock_requested.pop(contents.store, None)
             self._transfer_trigger(contents.store)
             return
@@ -427,7 +430,11 @@ class AtemProtocol:
             # is theirs now.
             if not self.locks.get(contents.store):
                 self._foreign_held.add(contents.store)
-                self._others_seen = time.monotonic()
+                granted = self._last_grant.get(contents.store)
+                if granted is None or time.monotonic() - granted > LOCK_ECHO_WINDOW:
+                    # Not the late announcement of a grant of ours (a transfer,
+                    # or a clear, shorter than a frame): another client.
+                    self._others_seen = time.monotonic()
                 if contents.store in self._yielding:
                     self._yielding[contents.store] = [time.monotonic(), None]
                     # Theirs now: the next turn after their release is ours
@@ -798,6 +805,7 @@ class AtemProtocol:
         self._yielding.clear()
         self._own_release.clear()
         self._foreign_held.clear()
+        self._last_grant.clear()
 
     def release_locks_now(self):
         """Give back every store lock we hold, SYNCHRONOUSLY, for teardown.
