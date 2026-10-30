@@ -1062,6 +1062,7 @@
     "auxOutputs": 6,
     "colorGenerators": 2,
     "dsks": 2,
+    "dves": 1,
     "fairlightStrips": 2,
     "inputs": 2,
     "macros": 3,
@@ -1071,6 +1072,8 @@
     "mediaPoolStills": 0,
     "multiviewWindows": 0,
     "outputs": 1,
+    "stingers": 1,
+    "superSources": 1,
     "usksPerMe": [
       4,
       2
