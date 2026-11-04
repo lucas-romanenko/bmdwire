@@ -556,13 +556,15 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   `FTDC` for it goes to every session with that id. Every session used to start at 43; since
   `6876ba2` each starts at a random id in 1..0xFFFF, wrapping without 0 (§5.4 item 36).
 - **`FTDE` status handling:**
-  - 1 (try again): re-send the request with the same tid.
+  - 1 (try again): re-send the request with the same tid. Since `588a389` after a pause that doubles
+    from `TRY_AGAIN_FIRST` (0.05 s) to `TRY_AGAIN_MAX` (1 s); after `TRY_AGAIN_ATTEMPTS` (20)
+    refusals the task fails like a fatal status, raised as `file-transfer-error` (§5.4 item 43).
   - 5 (no lock): re-request the lock.
   - 6 (another session collided): release, keep the task, re-request on the next release.
   - Any other status: fatal for that task. The task is dropped, the lock released, and
     `file-transfer-error` raised.
 
-  Statuses 1, 5 and 6 never reach callers.
+  Statuses 1, 5 and 6 never reach callers (since `588a389`, 1 does after 20 refusals in a row).
 - **Upload pacing:** the switcher grants budgets with `FTCD(size, count)`. Chunks go out as `FTDa`
   (an RLE header word is never split), then `FTFD(name, description, md5)` once the send queue
   drains. Download chunks are acked one by one with `FTUA(tid, 0)`. Since `d050c10` `FTFD` goes
@@ -571,12 +573,16 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   `abort_transfers()`. Timeouts live in the callers below.
 - Lane control: `AtemProtocol.abort_transfers()` clears the lane and releases held locks;
   `release_locks_now()` writes the unlocks straight to the socket and is meant for teardown.
+  Since `588a389` a still download that had a chunk within `DRAIN_STALL` (5 s) is not cut off: its
+  chunks are FTUA'd and dropped, the lock is released at its `FTDC` (or `FTDE`, or after
+  `DRAIN_STALL` with nothing, or `DRAIN_MAX`, 120 s, in all), and the next transfer waits for
+  that (§5.4 item 44).
 
 ### 3.1 Stills
 
 | operation | entry point | parameters | behaviour |
 |---|---|---|---|
-| **download** | `ATEMConnection.download_still` (`connection.py:188`); on the facade, `atem.raw.download_still` | `(slot:int, *, timeout:float=30.0, progress_callback:Callable[[float],None]=None) -> bytes` | Blocking and serialised per connection. Flow: `PLCK(0,slot)` → `LKOB` → `FTSU` → `FTDa`×N/`FTUA` → `FTDC` → unlock. Returns the **RLE-decoded YCbCrA 4:2:2 frame** (w×h×4 bytes; actually a `bytearray`). Convert it with `imaging.atem_to_rgb`. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False, §5.4 item 20; since `2b540db` also when the session goes while it waits, item 34), `RuntimeError` (fatal `FTDE`) or `TimeoutError` (after `abort_transfers`) |
+| **download** | `ATEMConnection.download_still` (`connection.py:188`); on the facade, `atem.raw.download_still` | `(slot:int, *, timeout:float=30.0, progress_callback:Callable[[float],None]=None, stall_timeout:float=None) -> bytes` | Blocking and serialised per connection. With `stall_timeout` (since `588a389`) it gives up once that long passes with no chunk arriving (lock wait included) and `timeout` caps the whole download (§5.4 item 45). Flow: `PLCK(0,slot)` → `LKOB` → `FTSU` → `FTDa`×N/`FTUA` → `FTDC` → unlock. Returns the **RLE-decoded YCbCrA 4:2:2 frame** (w×h×4 bytes; actually a `bytearray`). Convert it with `imaging.atem_to_rgb`. Raises `ConnectionDeadError` (since `1572508` also while `is_ready` is False, §5.4 item 20; since `2b540db` also when the session goes while it waits, item 34), `RuntimeError` (fatal `FTDE`) or `TimeoutError` (after `abort_transfers`) |
 | **upload** | **no high-level entry point**. Only `AtemProtocol.upload` (`protocol.py:682`) | `(store, index, data, compress=True, compressed=False, name=None, description=None, size=None, task=None) -> None` | Non-blocking: it only queues, and someone must pump `loop()`. `data` is a YCbCrA frame from `imaging.rgb_to_atem`. The MD5 is taken over the uncompressed frame. Flow: `PLCK` → `LKOB` → `FTSD(mode 1 = RLE)` → `FTCD` → `FTDa`… → `FTFD` → `FTDC` → `upload-done(store, slot)`. Progress arrives as `upload-progress(store, slot, percent, done, total)`. `size` is unused. `compressed=True` needs `compress=False`. `aggressive_drain=True` (constructor only, so not reachable through the pool) drains 10 packets per trigger instead of 5; since `d050c10` each budget is sent whole on any connection and it changes nothing (§5.4 item 22). The working reference caller is in WebATEM: `atem_control/uploader.py` (its own `AtemProtocol(ip, aggressive_drain=True)`, pumps until `upload-done`, then checks the `MPfe` hash) |
 | **clear (locked)** | `ATEM.clear_still` / `ATEMConnection.clear_still` (`connection.py:196`); underneath, `AtemProtocol.queue_clear(store, index)` / `dequeue_clear(task)` | `(slot:int, *, timeout:float=5.0) -> None` | `LOCK(0,True)` → `LKOB` → `CSTL` → `clear-dispatched` → unlock. Returns once the clear has been **dispatched**, not confirmed; watch `MPfe.is_used` to confirm. Use this, not the bare `media.clear_still` op (§1.8). Raises `ConnectionDeadError` when not connected (since `1572508`, when not `is_ready`; since `2b540db`, also when the session goes before the clear is sent, §5.4 item 34) or `TimeoutError` |
 | capture | `media.capture_still(conn)` | — | single packet `Capt`, listed for completeness |
@@ -590,10 +596,12 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   - Chroma is taken from the **second pixel of each pair only**, not averaged.
   - `premultiply` multiplies RGB by alpha first.
 - `atem_to_rgb(data, width, height) -> bytes`: the inverse, returning RGBA8888. Alpha 0 round-trips
-  to 12.
+  to 12. Since `588a389` the Python wrapper converts in `CONVERT_PIECE` (1 MB) pieces, so the GIL is
+  free between them (§5.4 item 46).
 - **Both converters parse `width`/`height` and never use them.** They walk the byte length, which
   must be a multiple of 8 (`ValueError` otherwise). Output length equals input length.
-- `rle_encode(data) -> bytes` (C) and `rle_decode(data) -> bytearray` (pure Python) work on 8-byte
+- `rle_encode(data) -> bytes` (C) and `rle_decode(data) -> bytearray` (pure Python; since `588a389` it
+  finds the headers with `bytes.find` and copies the literal runs whole) work on 8-byte
   words. The first word of a run is written literally. If it then repeats at least 3 more times, the
   repeats become `FE×8` + a big-endian u64 count + the word (`mediaconvertmodule.c:266-298`). Input that
   contains the word `FEFEFEFEFEFEFEFE` raises.
@@ -777,8 +785,12 @@ Readiness and identity:
   `7e42caa`, a re-handshake drops packets carrying the replaced session's id, and while the SYN
   is out, anything but its reply (§5.4 item 16).
 - Every reliable packet is ACKed with the contiguous high-water mark, by the transport's **own
-  UDP thread**. A session therefore survives an unpumped loop; events only wait.
-- Duplicates are dropped. Out-of-order packets are parked (up to 512 ahead). Retransmission is
+  UDP thread**. A session therefore survives an unpumped loop; events only wait. Since `588a389` the
+  thread reads every datagram waiting when it wakes (up to `DRAIN_MAX`, 512) and ACKs them once,
+  cumulatively, after them (and every `ACK_EVERY`, 32, of a long run); outside a drain the ACK
+  goes at once. It sends everything queued for it per wake, too (§5.4 item 42).
+- Duplicates are dropped. Since `588a389` a resend of a packet already received is ACKed again, and the
+  duplicate check is an O(1) window of the last 1024 sequences. Out-of-order packets are parked (up to 512 ahead). Retransmission is
   **only on the switcher's request** (go-back-N, max 128). There is no client-side retransmit
   timer, and the switcher's ACK number is never read. Since `d050c10` it is read, and what it
   hasn't acknowledged in 250 ms is resent; a reliable packet the kernel refuses keeps its
@@ -1180,7 +1192,10 @@ fixed after 1.9.0 and still apply to it.
     takes it, but macOS 12 refuses anything above `kern.ipc.maxsockbuf` with errno 55
     (`ENOBUFS`): the constructor raised, and no switcher could be connected from that system.
     *Fixed in `968798e`:* the request steps down 16, 8, 4, 1 MB and keeps the first size taken,
-    or the system's default if it takes none.
+    or the system's default if it takes none. Since `588a389` the size granted is read back
+    (`UdpProtocol.rcvbuf`; Linux reports double, halved) and, when it is less than asked, logged
+    once per process with the cap to raise (`net.core.rmem_max`): on Ubuntu's default of 208 KB
+    a 4K still overflowed it (39,258 receive buffer errors in 220,040 datagrams, 2026-11-04).
 31. **A caller's timeout hands the store back early** (1.5.1). `abort_transfers()` cleared the wait
     for another client's turn with the queue. A caller that times out and retries (WebATEM's media
     pool: 15 s, then again) asked at once, though the switcher may have handed the store over
@@ -1302,6 +1317,39 @@ fixed after 1.9.0 and still apply to it.
     *Fixed in `4be0f40`:* both spellings are read, and save and the macro decoder write ASC's.
     ASC's `4KHDp30`, `4KHDp60`, `8KHDp30` and `8KHDp60` have no wire number in any source this
     library follows, so they stay unknown modes (item 3).
+
+42. **The UDP thread falls behind a still download** (1.10.0). A 4K Plus sends a still's chunks
+    back to back, ~150 before it waits for their `FTUA`s, and resends all it has not had ACKed
+    every ~80 ms. The thread woke, read one datagram and sent one ACK per packet, scanned a
+    1024-entry deque twice per packet, sent one queued packet (each `FTUA`) per wake, and dropped
+    a resend of something it had without ACKing again. Beside any other busy thread it fell
+    behind the wire and the resends kept it there: captures from a 4K Plus (2026-11-04) show ACK
+    p50 ~110 ms, p90 300–800 ms, 59–76% of inbound a resend, and a 12 MB still that never
+    finished. *Fixed in `588a389`:* the drain and cumulative ACK of §4.2, ACKs for resends, an O(1)
+    duplicate window, and every queued packet sent per wake. Offline, against a fake switcher
+    modelled on the captures with one busy thread beside the client, a 4K still went from not
+    finishing in 30 s (140–280× resends) to 2.3–3.6 s with none. A thread spinning in pure Python
+    still slows it to ~12 s and needs a GIL switch interval of 1 ms (WebATEM sets one).
+43. **`FTDE 1` is asked again every ~10 ms, for ever** (1.10.0). While the switcher's transfer
+    engine was held (item 44), a session sent ~900 requests in 13 s. *Fixed in `588a389`:* the pause
+    and the cap of §3.0.
+44. **A caller's timeout cuts a download off mid-stream** (1.10.0). `abort_transfers()` released
+    the store lock while the switcher was still sending; its transfer engine stayed with that
+    transfer, unacknowledged, and refused every later request from every session with `FTDE 1`
+    (WebATEM's 15 s against a 4K still, a 4K Plus capture, 2026-11-04; the state of bmdwire#64).
+    *Fixed in `588a389`:* the abandoned download is drained to its end (§3.0). How ATEM Software
+    Control ends a download early is not known (no capture of it); draining needs nothing the
+    switcher doesn't already do.
+45. **One timeout for every still** (1.10.0). `download_still(timeout=...)` was the whole
+    download, so a timeout that suits 1080p (~2 s) cuts a 4K or 8K still off, and one long
+    enough for them hides a stalled transfer. *Fixed in `588a389`:* `stall_timeout` (§3.1).
+46. **A still's conversion stops every other thread** (1.10.0). `atem_to_rgb` is one C call that
+    holds the GIL: 33 ms for a 1080p frame, 128 ms for a 4K one (measured), longer than the
+    switcher's ~80 ms resend timer, so every connection's UDP thread in the process stood still;
+    and `rle_decode` walked the frame 8 bytes at a time in Python on the connection's worker.
+    *Fixed in `588a389`:* the conversion runs in pieces (the longest stall 6.9 ms) and
+    `rle_decode` copies the literal runs whole (a 12 MB 4K test frame: 133 ms before, 18 ms
+    after, same bytes).
 
 ## Counts
 
