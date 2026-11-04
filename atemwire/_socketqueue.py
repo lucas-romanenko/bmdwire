@@ -37,6 +37,16 @@ class SocketQueue(queue.Queue):
         self._getsocket.recv(1)
         return super().get(**kwargs)
 
+    def get_waiting(self):
+        """Every item put so far, without blocking: one read of the wakeup
+        bytes, then that many items. For a reader woken by select() that
+        should empty the queue in one go instead of one item per wakeup."""
+        try:
+            marks = self._getsocket.recv(4096, socket.MSG_DONTWAIT)
+        except (BlockingIOError, InterruptedError):
+            return []
+        return [super(SocketQueue, self).get() for _ in range(len(marks))]
+
     def close(self):
         """Free the socketpair FDs. Idempotent. Without this the pair was
         GC-only — every leaked protocol pinned 2 FDs (2026-07-06)."""
