@@ -29,7 +29,8 @@ import struct
 
 import pytest
 
-from atemwire.protocol import LOCK_COURTESY, LOCK_HANDOVER, LOCK_QUIET, AtemProtocol
+from atemwire.protocol import (LOCK_COURTESY, LOCK_HANDOVER, LOCK_QUIET, TRY_AGAIN_FIRST,
+                               AtemProtocol)
 from atemwire.transport import BaseProtocol, Packet, UdpProtocol
 
 CHUNK = 1392                     # the switcher's 1396, in whole 8-byte words
@@ -390,13 +391,15 @@ def test_ftde_6_still_leaves_the_request_to_the_release_broadcast(proto, clock):
     assert names(proto.packets[-1]) == ['PartialLockCommand']
 
 
-def test_a_retried_upload_starts_again_with_its_metadata(proto):
+def test_a_retried_upload_starts_again_with_its_metadata(proto, clock):
     _upload(proto, 3)
     grant(proto)
     tid = proto.transfer.tid
     budget(proto, 4)
     assert metadata_sent(proto) == 1
     proto.save_field_data(b'FTDE', struct.pack('>HBx', tid, 1))     # try again
+    clock.t += TRY_AGAIN_FIRST                    # asked again after a pause
+    proto._service_yields()
     assert names(proto.packets[-1]) == ['TransferUploadRequestCommand']
     del proto.chunks[:]
     budget(proto, 10)

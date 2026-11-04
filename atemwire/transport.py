@@ -7,6 +7,7 @@ import os
 import select
 import socket
 import struct
+import sys
 import threading
 import time
 from queue import Queue
@@ -188,6 +189,41 @@ class Packet:
             label = ' ' + self.label
         return '<Packet flags={} data={} sequence={}{}{}>'.format(flags, data_len, self.sequence_number, extra, label)
 
+class _SeenWindow:
+    """The last ``maxlen`` sequence numbers received, as an insertion-ordered
+    set: ``in`` is O(1). It replaced a ``deque(maxlen=1024)`` that every
+    packet scanned once for the duplicate check and once more per step of
+    the ACK walk; during a 4K still download, at the switcher's line rate,
+    that scanning alone kept the UDP thread behind the wire (2026-11-04)."""
+
+    def __init__(self, maxlen):
+        self.maxlen = maxlen
+        self._seen = {}
+
+    def append(self, seq):
+        self._seen.pop(seq, None)
+        self._seen[seq] = None
+        if len(self._seen) > self.maxlen:
+            del self._seen[next(iter(self._seen))]
+
+    def clear(self):
+        self._seen.clear()
+
+    def __contains__(self, seq):
+        return seq in self._seen
+
+    def __len__(self):
+        return len(self._seen)
+
+    def __iter__(self):
+        return iter(self._seen)
+
+
+# The receive buffer is asked for once per connection; the warning that the
+# system capped it is logged once per process, not once per switcher.
+_rcvbuf_warned = False
+
+
 class BaseProtocol:
     def __init__(self):
         self.send_queue = collections.deque(maxlen=1024)
@@ -296,6 +332,19 @@ class UdpProtocol(BaseProtocol):
     SEND_RETRY_ERRNOS = frozenset({errno.ENOBUFS, errno.EAGAIN})
     SEND_RETRIES = 20
 
+    # The UDP thread reads every datagram waiting on the socket each time
+    # it wakes, up to DRAIN_MAX, and acknowledges them with one cumulative
+    # ACK (at least every ACK_EVERY packets of a longer run) instead of one
+    # ACK per packet. ACK numbers are cumulative, and the switcher answers
+    # our own uploads the same way, one ACK per 16 packets. It sends a still
+    # at line rate (a 4K Plus, 2026-11-04: ~150 chunks back to back, then
+    # all it has not had ACKed again every ~80 ms); a thread that woke, read
+    # one datagram and sent one ACK per packet fell behind it whenever
+    # anything else in the process wanted the CPU, and every resend it then
+    # had to wade through put it further behind.
+    DRAIN_MAX = 512
+    ACK_EVERY = 32
+
     def __init__(self, ip, port=9910, timeout=5, *, aggressive_drain=False):
         super().__init__()
         self.ip = ip
@@ -313,12 +362,15 @@ class UdpProtocol(BaseProtocol):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(self.timeout)
         # macOS refuses more than kern.ipc.maxsockbuf with errno 55 (ENOBUFS) instead of capping.
+        asked = None
         for megabytes in (16, 8, 4, 1):
             try:
                 self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024 * megabytes)
+                asked = 1024 * 1024 * megabytes
                 break
             except OSError:
                 pass
+        self.rcvbuf = self._check_rcvbuf(asked)
         try:
             # Room for an upload budget sent back to back (768 chunks of
             # ~1.4 KB); the system may cap it lower, which is fine.
@@ -375,7 +427,12 @@ class UdpProtocol(BaseProtocol):
         self.enable_ack = False
         self.had_traffic = False
 
-        self.received_packets = collections.deque(maxlen=1024)
+        self.received_packets = _SeenWindow(1024)
+        # While the UDP thread drains a burst (_drain_socket), the ACK the
+        # packets are owed is sent once, after them; outside a drain (a
+        # direct _receive_packet_low call) it goes at once, as before.
+        self._batching = False
+        self._acks_owed = 0
         self.retransmission_buffer = {}
         # The switcher's acknowledgement of our reliable packets (the
         # highest sequence it has, gap-free; None until its first ACK), and
@@ -476,6 +533,10 @@ class UdpProtocol(BaseProtocol):
                 pass
 
     def _udp_thread_loop(self):
+        # Non-blocking for the drain: select() says when to read, and a
+        # socket with a timeout polls again before every recvfrom and
+        # sendto, each one more trip for the GIL.
+        self.sock.setblocking(False)
         while True:
             # Measured from _last_heard, not from select()'s last return:
             # our own sends and dropped datagrams wake select() too.
@@ -496,25 +557,92 @@ class UdpProtocol(BaseProtocol):
             self._fire_wake()
             for queue in readable:
                 if queue is self.sock:
-                    packet = self._receive_packet_low()
-                    if packet is not None:
-                        self.thread_recv_queue.put(packet)
+                    self._drain_socket()
                 elif queue is self.thread_queue:
-                    item = queue.get()
-                    if item is None:
-                        # wake_at's sentinel: select() returned, so the
-                        # next one takes the new timeout.
-                        continue
-                    try:
-                        self._send_on_udp_thread(item)
-                    except OSError as e:
-                        self.log.error(e)
-                        # Queue a None to signal the socket died
-                        self.thread_recv_queue.put(None)
-                        return
+                    # Everything queued, not one packet per wakeup: during a
+                    # download the protocol queues an FTUA for every chunk,
+                    # and a select() round trip per FTUA held the switcher's
+                    # transfer window shut (2026-11-04).
+                    for item in queue.get_waiting():
+                        if item is None:
+                            # wake_at's sentinel: select() returned, so the
+                            # next one takes the new timeout.
+                            continue
+                        try:
+                            self._send_on_udp_thread(item)
+                        except OSError as e:
+                            self.log.error(e)
+                            # Queue a None to signal the socket died
+                            self.thread_recv_queue.put(None)
+                            return
                 else:
                     self.thread_recv_queue.put(None)
                     raise RuntimeError("Unexpected result from select()")
+
+    def _drain_socket(self):
+        """Read every datagram waiting (up to DRAIN_MAX), handing packets to
+        the protocol as they come, then send the ACK they are owed: one per
+        burst, and one every ACK_EVERY packets of a long one, so the
+        switcher's window keeps moving."""
+        self._batching = True
+        try:
+            for _ in range(UdpProtocol.DRAIN_MAX):
+                try:
+                    packet = self._receive_packet_low()
+                except (BlockingIOError, InterruptedError):
+                    break
+                # True: dropped (a duplicate) or already handed on (the
+                # in-order gate's drain); nothing for the protocol.
+                if packet is not None and packet is not True:
+                    self.thread_recv_queue.put(packet)
+                if self._acks_owed >= UdpProtocol.ACK_EVERY:
+                    self._flush_ack()
+        finally:
+            self._batching = False
+            self._flush_ack()
+
+    def _ack_owed(self):
+        """A received packet wants acknowledging: now, or at the end of the
+        drain in progress."""
+        self._acks_owed += 1
+        if not self._batching:
+            self._flush_ack()
+
+    def _flush_ack(self):
+        if not self._acks_owed:
+            return
+        self._acks_owed = 0
+        ack = Packet()
+        ack.flags = UdpProtocol.FLAG_ACK
+        ack.acknowledgement_number = self.ack_number
+        ack.remote_sequence_number = 0x61
+        self._send_packet(ack)
+
+    def _check_rcvbuf(self, asked):
+        """The receive buffer the system gave us, in bytes (None if it can't
+        say). Linux caps SO_RCVBUF at net.core.rmem_max without a word, and
+        its default (208 KB) is a fraction of one 4K still in flight: the
+        kernel then drops what the UDP thread hasn't read yet (a 4K Plus,
+        2026-11-04: 39,258 receive buffer errors in 220,040 datagrams). Say
+        so once per process, with the size we got."""
+        global _rcvbuf_warned
+        try:
+            got = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+        except (AttributeError, OSError):
+            return None
+        if not isinstance(got, int):
+            return None
+        if sys.platform.startswith('linux'):
+            got //= 2                    # Linux reports double what it grants
+        if asked is not None and got < asked and not _rcvbuf_warned:
+            _rcvbuf_warned = True
+            logging.getLogger('UdpTransport').warning(
+                f"UDP receive buffer is {got // 1024} KB, asked for "
+                f"{asked // (1024 * 1024)} MB: the system caps it "
+                f"(net.core.rmem_max on Linux). Large still downloads can "
+                f"overflow it and stall; raise the cap, e.g. "
+                f"sysctl -w net.core.rmem_max={asked}")
+        return got
 
     def _send_on_udp_thread(self, packet):
         try:
@@ -754,6 +882,15 @@ class UdpProtocol(BaseProtocol):
         is_retransmissions = packet.flags & UdpProtocol.FLAG_RETRANSMISSION
         if is_retransmissions:
             if self.remote_sequence_number in self.received_packets:
+                # A resend of something we have: our ACK for it hasn't
+                # reached the switcher (lost, or still behind a backlog), so
+                # say it again. Dropped silently, as it was, the switcher
+                # resent its whole window every ~80 ms until the next new
+                # packet happened to carry an ACK (2026-11-04).
+                if (packet.flags & UdpProtocol.FLAG_RELIABLE
+                        and (self.enable_ack
+                             or self.state == UdpProtocol.STATE_ESTABLISHED)):
+                    self._ack_owed()
                 return True
 
         self.received_packets.append(self.remote_sequence_number)
@@ -776,12 +913,7 @@ class UdpProtocol(BaseProtocol):
                      or self.state == UdpProtocol.STATE_ESTABLISHED)) or \
                 (not self.enable_ack and len(packet.data) == 0):
             self.enable_ack = True
-            # ACK this
-            ack = Packet()
-            ack.flags = UdpProtocol.FLAG_ACK
-            ack.acknowledgement_number = self.ack_number
-            ack.remote_sequence_number = 0x61
-            self._send_packet(ack)
+            self._ack_owed()
 
         # ---- In-order delivery gate (see __init__ notes) ----
         # Applies to reliable packets after rx-establishment; handshake and

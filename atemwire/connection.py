@@ -257,12 +257,20 @@ class ATEMConnection:
         return self._protocol
 
     def download_still(self, slot: int, *, timeout: float = 30.0,
-                       progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
+                       progress_callback: Optional[Callable[[float], None]] = None,
+                       stall_timeout: Optional[float] = None) -> bytes:
         """Blocking native download of a STILL slot over this connection's
         normal packet loop. Returns RLE-decoded frame bytes ready for
-        ``atemwire.imaging.atem_to_rgb``. See ``_download_transfer``."""
+        ``atemwire.imaging.atem_to_rgb``. See ``_download_transfer``.
+
+        ``stall_timeout``: give up once this long passes with no data
+        arriving (waiting for the lock counts as no data), while ``timeout``
+        caps the whole download. A 4K still is 12 MB or more on the wire and
+        an 8K one four times that, so one fixed timeout is either too short
+        for them or far too long to notice a transfer that stopped."""
         return self._download_transfer(
-            0, slot, timeout=timeout, progress_callback=progress_callback)
+            0, slot, timeout=timeout, progress_callback=progress_callback,
+            stall_timeout=stall_timeout)
 
     def clear_still(self, slot: int, *, timeout: float = 5.0) -> None:
         """Blocking LOCKED clear of a STILL slot.
@@ -360,7 +368,8 @@ class ATEMConnection:
         return self._download_transfer(0xFFFF, slot, timeout=timeout)
 
     def _download_transfer(self, store: int, index: int, *, timeout: float,
-                           progress_callback: Optional[Callable[[float], None]] = None) -> bytes:
+                           progress_callback: Optional[Callable[[float], None]] = None,
+                           stall_timeout: Optional[float] = None) -> bytes:
         """Shared blocking native-transfer wait (ASC-style shared-session
         path, 2026-07-02).
 
@@ -399,13 +408,16 @@ class ATEMConnection:
                     result['data'] = data
                     done.set()
 
+            last_data = [time.monotonic()]
+
             def _on_progress(store_id, slot_idx, fraction):
-                if (progress_callback is not None
-                        and store_id == store and slot_idx == index):
-                    try:
-                        progress_callback(fraction)
-                    except Exception:
-                        pass
+                if store_id == store and slot_idx == index:
+                    last_data[0] = time.monotonic()
+                    if progress_callback is not None:
+                        try:
+                            progress_callback(fraction)
+                        except Exception:
+                            pass
 
             def _on_error(contents):
                 # The protocol raises this ONLY for a fatal status (the
@@ -433,7 +445,31 @@ class ATEMConnection:
             lost_id = protocol.on('disconnected', _on_lost)
             try:
                 protocol.download(store, index)
-                done.wait(timeout)
+                deadline = time.monotonic() + timeout
+                stalled = False
+                def _heard():
+                    # The protocol's own clock as well: progress events need
+                    # a known video mode, chunks don't.
+                    lane = getattr(protocol, '_transfer_last_data', None)
+                    if isinstance(lane, (int, float)) and lane > last_data[0]:
+                        last_data[0] = lane
+                    return last_data[0]
+
+                while True:
+                    now = time.monotonic()
+                    _heard()
+                    wait_until = deadline
+                    if stall_timeout is not None:
+                        wait_until = min(deadline, last_data[0] + stall_timeout)
+                    if done.wait(max(0.0, wait_until - now)):
+                        break
+                    now = time.monotonic()
+                    if now >= deadline:
+                        break
+                    if (stall_timeout is not None
+                            and now - _heard() >= stall_timeout):
+                        stalled = True
+                        break
                 if 'data' in result:
                     return result['data']
                 if result.get('lost'):
@@ -466,6 +502,10 @@ class ATEMConnection:
                     hint = (" — media store lock never granted; another "
                             "client is holding it" if lock_never_granted
                             else "")
+                    if stalled:
+                        raise TimeoutError(
+                            f"download: store {store} slot {index} on "
+                            f"{ip} stalled (no data for {stall_timeout}s){hint}")
                     raise TimeoutError(
                         f"download: store {store} slot {index} on "
                         f"{ip} timed out ({timeout}s){hint}")

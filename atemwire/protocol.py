@@ -90,6 +90,28 @@ LOCK_HANDOVER = 0.1
 # then, not the releaser, and ask LOCK_COURTESY after it like any waiter.
 LOCK_ECHO_WINDOW = 0.25
 
+# FTDE 1 (try again) is asked again after a pause that doubles from
+# TRY_AGAIN_FIRST to TRY_AGAIN_MAX, and after TRY_AGAIN_ATTEMPTS refusals
+# in a row the transfer fails (raised as a fatal file-transfer-error) and
+# its lock is given back. It used to be asked again at once, every ~10 ms
+# with no end: ~900 requests in 13 s on a 4K Plus whose transfer engine
+# was held by a download we had abandoned (2026-11-04).
+TRY_AGAIN_FIRST = 0.05
+TRY_AGAIN_MAX = 1.0
+TRY_AGAIN_ATTEMPTS = 20
+
+# A download its caller stops waiting for is not abandoned mid-stream: the
+# switcher's transfer engine stays busy with a transfer that is neither
+# acknowledged nor finished, and answers every later request, from every
+# session, with FTDE 1 (bmdwire#64; a 4K Plus did it for good after our
+# lock release at 15 s into a still, capture of 2026-11-04). The abandoned
+# transfer is acknowledged (FTUA) to its end and its data dropped, and the
+# store lock is given back at its FTDC, as for a finished one. If the
+# switcher sends nothing of it for DRAIN_STALL, or it runs past DRAIN_MAX,
+# the lock is given back anyway, as before.
+DRAIN_STALL = 5.0
+DRAIN_MAX = 120.0
+
 
 def _first_transfer_id():
     """A session's first transfer id, at random in 1..0xFFFF.
@@ -275,6 +297,14 @@ class AtemProtocol:
         self.transfer_buffer_bytes = 0
         self.transfer = None
         self.transfer_requested = False
+        # When an FTDE 1 retry may be asked (TRY_AGAIN_*), None if none is
+        # waiting.
+        self._try_again_due = None
+        # An abandoned download being drained to its end (DRAIN_STALL):
+        # {'tid', 'store', 'since', 'last'}, or None.
+        self._draining = None
+        # When the transfer in flight last had a chunk (None before its first).
+        self._transfer_last_data = None
         self.transfer_packets = 0
         self.transfer_budget = []
 
@@ -541,6 +571,12 @@ class AtemProtocol:
             self._queue_chunks()
             return
         elif key == 'file-transfer-data':
+            d = self._draining
+            if d is not None and contents.transfer == d['tid']:
+                # The abandoned download: acknowledged, its data dropped.
+                d['last'] = time.monotonic()
+                self.send_commands([TransferAckCommand(d['tid'], 0)])
+                return
             if self.transfer is None:
                 # Straggler chunk after abort_transfers / lane reset — the
                 # packet is already ACKed, so raising here would also drop
@@ -548,6 +584,7 @@ class AtemProtocol:
                 self.log.debug('FTDa with no transfer in flight — ignoring')
                 return
             if contents.transfer == self.transfer.tid:
+                self._transfer_last_data = time.monotonic()
                 self.transfer_packets += 1
                 self.transfer_buffer.append(contents.data)
                 self.transfer_buffer_bytes += len(contents.data)
@@ -579,6 +616,12 @@ class AtemProtocol:
                 self.log.debug(f"file-transfer-error: {str(contents)}")
             else:
                 self.log.error(f"file-transfer-error: {str(contents)}")
+            d = self._draining
+            if d is not None and contents.transfer == d['tid']:
+                self.log.info(f'abandoned download {d["tid"]} ended '
+                              f'(FTDE {contents.status})')
+                self._end_drain()
+                return
             if self.transfer is None:
                 # Straggler FTDE after abort_transfers / lane reset.
                 self.log.debug('FTDE with no transfer in flight — ignoring')
@@ -592,9 +635,26 @@ class AtemProtocol:
                 return
             self.transfer_requested = False
             if contents.status == 1:
-                # Status is try-again
-                self.log.debug('Retrying transfer')
-                self._transfer_trigger(self.transfer.store, retry=True)
+                # Status is try-again: ask again after a pause that doubles
+                # each time, and give up after TRY_AGAIN_ATTEMPTS.
+                task = self.transfer
+                task.try_again = getattr(task, 'try_again', 0) + 1
+                if task.try_again > TRY_AGAIN_ATTEMPTS:
+                    self.log.error(
+                        f'transfer of {task.store}:{task.slot} refused '
+                        f'{TRY_AGAIN_ATTEMPTS} times (FTDE 1, try again): '
+                        f'giving up; the switcher\'s transfer engine is busy')
+                    self._fail_transfer(contents)
+                    return
+                pause = min(TRY_AGAIN_MAX,
+                            TRY_AGAIN_FIRST * 2 ** (task.try_again - 1))
+                self.log.debug(f'Retrying transfer in {pause:.2f} s '
+                               f'(try again {task.try_again})')
+                if self._can_wake():
+                    self._try_again_due = time.monotonic() + pause
+                    self._wake_at(self._try_again_due)
+                else:
+                    self._transfer_trigger(task.store, retry=True)
             elif contents.status == 5:
                 self.locks[self.transfer.store] = False
                 self._transfer_trigger(self.transfer.store, retry=True)
@@ -617,33 +677,16 @@ class AtemProtocol:
                 self._others_seen = time.monotonic()
                 self._release_then_continue(store, request_next=False)
             else:
-                # Fatal for THIS transfer (e.g. code 2 = rejected mode/slot):
-                # retrying the same request would fail identically forever.
-                # Historically the task was left at the queue head with the
-                # store lock held — a wedged lane where every later transfer
-                # queued behind the corpse until a caller timeout aborted.
-                # Drop the failed task and trigger the next; when the queue
-                # is empty the trigger's cleanup path releases the lock.
-                if self.transfer is not None:
-                    store = self.transfer.store
-                    queue = self.transfer_queue.get(store) or []
-                    if queue and queue[0] is self.transfer:
-                        self.transfer_queue[store] = queue[1:]
-                    self.transfer = None
-                    self.transfer_buffer = []
-                    self.transfer_buffer_bytes = 0
-                    self._release_then_continue(store)
-                # Tell subscribers (macrotransfer's upload waiter) the real
-                # cause. Before this, the event was handled entirely
-                # in-branch and NEVER raised — a fatal macro-upload
-                # rejection surfaced as a bland 10 s TimeoutError instead
-                # of "ATEM rejected macro upload (status=…)". Raised only
-                # for FATAL statuses; the 1/5 lock-dance recoveries above
-                # stay internal.
-                self._raise('file-transfer-error', contents)
+                self._fail_transfer(contents)
             return
         elif key == 'file-transfer-data-complete':
             self.log.debug('Transfer complete')
+            d = self._draining
+            if d is not None and contents.transfer == d['tid']:
+                self.log.info(f'abandoned download {d["tid"]} finished; '
+                              f'its data dropped')
+                self._end_drain()
+                return
             if self.transfer is None:
                 # The ATEM announces transfer completions to ALL sessions —
                 # this is another session's transfer (watcher, uploader, a
@@ -833,6 +876,53 @@ class AtemProtocol:
         self._raise('upload-progress', self.transfer.store, self.transfer.slot, fraction * 100, self.transfer.send_done,
                     self.transfer.send_length)
 
+    def _fail_transfer(self, contents):
+        """Fatal for THIS transfer (e.g. code 2 = rejected mode/slot, or
+        TRY_AGAIN_ATTEMPTS refusals): retrying the same request would fail
+        identically forever. Historically the task was left at the queue
+        head with the store lock held — a wedged lane where every later
+        transfer queued behind the corpse until a caller timeout aborted.
+        Drop the failed task and trigger the next; when the queue is empty
+        the trigger's cleanup path releases the lock."""
+        self._try_again_due = None
+        if self.transfer is not None:
+            store = self.transfer.store
+            queue = self.transfer_queue.get(store) or []
+            if queue and queue[0] is self.transfer:
+                self.transfer_queue[store] = queue[1:]
+            self.transfer = None
+            self.transfer_buffer = []
+            self.transfer_buffer_bytes = 0
+            self._release_then_continue(store)
+        # Tell subscribers (macrotransfer's upload waiter, download_still)
+        # the real cause. Before this, the event was handled entirely
+        # in-branch and NEVER raised — a fatal macro-upload rejection
+        # surfaced as a bland 10 s TimeoutError instead of "ATEM rejected
+        # macro upload (status=…)". Raised only for FATAL statuses; the
+        # 1/5/6 lock-dance recoveries stay internal.
+        self._raise('file-transfer-error', contents)
+
+    def _end_drain(self):
+        """The abandoned download is over (its FTDC or FTDE, or DRAIN_STALL /
+        DRAIN_MAX): give its store lock back and carry on with the queue."""
+        d, self._draining = self._draining, None
+        if d is not None:
+            self._release_then_continue(d['store'])
+
+    def _service_drain(self):
+        d = self._draining
+        if d is None:
+            return
+        now = time.monotonic()
+        if now - d['last'] >= DRAIN_STALL or now - d['since'] >= DRAIN_MAX:
+            self.log.warning(
+                f'abandoned download {d["tid"]} stopped ('
+                f'{"nothing for %.0f s" % (now - d["last"]) if now - d["last"] >= DRAIN_STALL else "over %.0f s" % DRAIN_MAX}'
+                f'): giving its lock back')
+            self._end_drain()
+        else:
+            self._wake_at(min(d['last'] + DRAIN_STALL, d['since'] + DRAIN_MAX))
+
     def _reset_transfer_lane(self):
         """Offline reset of the transfer state machine — no wire sends.
 
@@ -843,6 +933,8 @@ class AtemProtocol:
         self.transfer_queue = {}
         self.transfer = None
         self.transfer_requested = False
+        self._try_again_due = None
+        self._draining = None
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
         self.locks = {}
@@ -898,12 +990,41 @@ class AtemProtocol:
         transfer on this connection queues behind it ('Request already
         submitted, do nothing') — a wedged transfer lane on a connection
         that is otherwise healthy. Releases any store locks we believe we
-        hold so the next transfer re-requests cleanly."""
+        hold so the next transfer re-requests cleanly.
+
+        A still download the switcher is sending is not cut off: it is
+        drained to its end and its lock given back then (DRAIN_STALL)."""
+        t = self.transfer
+        last = self._transfer_last_data
+        drain = (isinstance(t, TransferTask) and not t.upload and not t.clear
+                 and t.store != 0xffff and self.transfer_requested
+                 and t.tid is not None and self.locks.get(t.store)
+                 and last is not None
+                 and time.monotonic() - last < DRAIN_STALL
+                 and self._can_wake() and self._draining is None)
         self.transfer_queue = {}
         self.transfer = None
         self.transfer_requested = False
+        self._try_again_due = None
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
+        if drain:
+            now = time.monotonic()
+            self._draining = {'tid': t.tid, 'store': t.store,
+                              'since': now, 'last': now}
+            self.log.info(f'download {t.tid} of {t.store}:{t.slot} abandoned '
+                          f'by its caller: acknowledging it to its end '
+                          f'before giving the lock back')
+            self._lock_requested.clear()
+            self._wake_at(now + DRAIN_STALL)
+            for lock in list(self.locks):
+                if lock != t.store and self.locks[lock]:
+                    try:
+                        self.send_commands([LockCommand(lock, False)])
+                    except Exception:
+                        pass
+                    self.locks[lock] = False
+            return
         # A lock request in flight must not outlive the abort: the queue it
         # was for is gone. Another client's turn does: a caller that timed
         # out waiting for it (WebATEM's media pool gives a download 15 s)
@@ -1159,6 +1280,11 @@ class AtemProtocol:
         over is only woken for again, its time perhaps moved by someone at
         work, so the trigger runs once per turn, not once per tick."""
         now = time.monotonic()
+        self._service_drain()
+        if (self._try_again_due is not None and now >= self._try_again_due
+                and self.transfer is not None):
+            self._try_again_due = None
+            self._transfer_trigger(self.transfer.store, retry=True)
         for store in list(self._yielding):
             due = self._yield_due(store)
             if not self.transfer_queue.get(store):
@@ -1174,6 +1300,19 @@ class AtemProtocol:
 
     def _transfer_trigger(self, store, retry=False):
         next = None
+
+        if self._draining is not None:
+            # The store lock is ours until the abandoned download ends; a
+            # request now would meet its busy engine (FTDE 1).
+            self.log.debug('an abandoned download is still finishing; '
+                           'the next transfer waits for it')
+            return
+        if self._try_again_due is not None:
+            if time.monotonic() < self._try_again_due:
+                self._wake_at(self._try_again_due)
+                return
+            self._try_again_due = None
+            retry = True
 
         self.log.info(f'transfer trigger for store {store} (retry={retry})')
 
@@ -1281,6 +1420,7 @@ class AtemProtocol:
             cmd = TransferDownloadRequestCommand(self.transfer.tid, self.transfer.store, self.transfer.slot)
             self.log.info('Requesting download of {}:{}'.format(next.store, next.slot))
         self.transfer_requested = True
+        self._transfer_last_data = None
         if self.transfer.upload:
             # Each attempt sends its metadata and its data from the start.
             self.transfer.metadata_sent = False
