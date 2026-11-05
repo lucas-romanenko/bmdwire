@@ -280,6 +280,22 @@ class BaseProtocol:
                 self.queue_callback(len(self.send_queue), len(p.data) - 4)
 
 
+class NoFreeConnection(RuntimeError):
+    """The switcher answered our hello with 0x03 ("no room") instead of 0x02:
+    every client slot it has is taken (ATEM Software Control, panels, other
+    clients, or sessions abandoned without a goodbye). Raised at once by a
+    connect, instead of waiting out the connect timeout: retrying straight
+    away gets the same answer. A ``RuntimeError``, so callers that catch a
+    failed connect keep catching it."""
+
+    MESSAGE = ('no free connection on this switcher (ATEM Software Control, '
+               'panels or other clients are using all its slots)')
+
+    def __init__(self, ip=None):
+        self.ip = ip
+        super().__init__(f'ATEM {ip}: {self.MESSAGE}' if ip else self.MESSAGE)
+
+
 class UdpProtocol(BaseProtocol):
     STATE_CLOSED = 0
     STATE_SYN_SENT = 1
@@ -426,6 +442,8 @@ class UdpProtocol(BaseProtocol):
 
         self.enable_ack = False
         self.had_traffic = False
+        # The switcher answered the hello 0x03, "no room" (NoFreeConnection).
+        self.refused = False
 
         self.received_packets = _SeenWindow(1024)
         # While the UDP thread drains a burst (_drain_socket), the ACK the
@@ -1105,6 +1123,14 @@ class UdpProtocol(BaseProtocol):
 
         self.log.debug('Got response 0x{:02X} to handshake'.format(response_code))
 
+        if response_code == 0x03:
+            # "No room": the switcher's session table is full. Nothing to
+            # ACK; whoever waits on this connect sees ``refused`` and stops
+            # (NoFreeConnection) instead of re-SYNing until its timeout.
+            self.refused = True
+            self.log.warning(f'{self.ip}: {NoFreeConnection.MESSAGE}')
+            return
+
         if response_code == 0x02:
             self.state = UdpProtocol.STATE_ESTABLISHED
 
@@ -1163,6 +1189,7 @@ class UdpProtocol(BaseProtocol):
         # the next full reconnect. Clear it and the traffic flag.
         self.received_packets.clear()
         self.had_traffic = False
+        self.refused = False
         # A fresh SYN gets a full silence window.
         self._last_heard = time.monotonic()
 
@@ -1199,6 +1226,10 @@ class UdpProtocol(BaseProtocol):
                 # an unreachable ATEM un-timeout-able and un-killable —
                 # hung upload processes + orphaned worker threads
                 # (2026-07-06).
+                return None
+            if packet is None and self.state == UdpProtocol.STATE_SYN_SENT and self.refused:
+                # Answered "no room": asking again straight away gets the
+                # same answer. The caller decides (NoFreeConnection).
                 return None
             if packet is None and self.state == UdpProtocol.STATE_SYN_SENT:
                 # No response in connect, retry connection
@@ -1240,6 +1271,11 @@ class UdpProtocol(BaseProtocol):
                 # Got response for the first handshake packet
                 self.had_traffic = True
                 self._handshake(packet)
+                if self.refused:
+                    # Return now, so whoever pumps sees ``refused`` (it
+                    # would otherwise wait for the next 5 s tick, which
+                    # re-SYNs and forgets the answer).
+                    return None
             elif self.state == UdpProtocol.STATE_ESTABLISHED:
                 if packet.length == 12:
                     # This is a control packet, deal with it in the transport layer

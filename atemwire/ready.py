@@ -18,6 +18,8 @@ import threading
 import time
 from typing import Optional
 
+from atemwire.transport import NoFreeConnection
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +35,7 @@ def wait_ready(
     pump_interval: float = 0.01,
     extra_settle: float = 0.0,
     stop_event: Optional[threading.Event] = None,
+    stall_timeout: Optional[float] = None,
 ) -> dict:
     """Block until ``protocol`` has completed the ATEM's initial state dump.
 
@@ -50,9 +53,16 @@ def wait_ready(
         to busy-loop (the media pool watcher does this during connect).
     :param extra_settle: additional pumping seconds AFTER ready.
     :param stop_event: optional cancellation signal.
+    :param stall_timeout: give up once nothing has arrived from the switcher
+        for this long (no progress), however much of ``timeout`` is left. A
+        big state dump over a slow link keeps arriving and is waited for; a
+        switcher that went quiet is not. None: ``timeout`` alone.
 
     :returns: ``protocol.mixerstate`` on success.
-    :raises TimeoutError: if not ready within ``timeout`` seconds.
+    :raises TimeoutError: if not ready within ``timeout`` seconds, or with
+        nothing from the switcher for ``stall_timeout``.
+    :raises NoFreeConnection: at once, if the switcher answered the hello
+        "no room" (0x03: its session table is full).
     :raises WaitAborted: if ``stop_event`` is set before ready.
     """
     # Fast path: initial state already dumped. ``protocol.connected`` is
@@ -75,7 +85,9 @@ def wait_ready(
     # connect attempt, and a leaked closure per attempt accumulates on
     # long-lived protocols (2026-07-06).
     try:
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline = started + timeout
+        transport = getattr(protocol, 'transport', None)
         while time.monotonic() < deadline:
             if stop_event is not None and stop_event.is_set():
                 raise WaitAborted("stop_event set before ready")
@@ -83,6 +95,13 @@ def wait_ready(
                 protocol.loop()
             except Exception as e:
                 logger.debug("wait_ready: protocol.loop() error: %s", e)
+            if getattr(transport, 'refused', False) is True:
+                raise NoFreeConnection(getattr(transport, 'ip', None))
+            if stall_timeout is not None:
+                heard = max(started, getattr(transport, 'last_rx_monotonic', 0.0) or 0.0)
+                if time.monotonic() - heard > stall_timeout:
+                    raise TimeoutError(
+                        f"wait_ready: nothing from the switcher for {stall_timeout}s")
             if (
                 (connected['flag'] or getattr(protocol, 'initialized', False))
                 and 'video-mode' in protocol.mixerstate
