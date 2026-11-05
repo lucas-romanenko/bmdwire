@@ -176,3 +176,49 @@ def test_connect_progress_says_where_it_is(clean_pool):
     with NoRoomSwitcher() as sw:
         conn.connect(sw.ip)
     assert conn.connect_progress()['stage'] == 'no room'
+
+
+class _LostHello(NoRoomSwitcher):
+    """Drops the first hello (its answer lost on a lossy link), then answers
+    the transport's next one and welcomes."""
+
+    def __init__(self):
+        super().__init__(code=0x02)
+        self.dropped = False
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                data, peer = self.sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            if len(data) >= 13 and (data[0] >> 3) & 0x02 and data[12] == 0x01:
+                self.hellos += 1
+                if not self.dropped:
+                    self.dropped = True
+                    continue
+                self.sock.sendto(struct.pack('>HHHHHH', (0x02 << 11) | 20, 0x1337, 0, 0, 0, 0)
+                                 + bytes([0x02, 0, 0, 0, 0, 0, 0, 0]), peer)
+
+
+def test_one_lost_hello_is_not_a_failed_connect():
+    """Before the switcher answers, the wait allows two hellos: the transport
+    re-sends one 5 s after the first, inside CONNECT_HELLO_TIMEOUT."""
+    with _LostHello() as sw:
+        p = AtemProtocol(ip=sw.ip)
+        p.connect()
+        try:
+            t0 = time.monotonic()
+            # welcomed on the second hello and then silent: it fails on the
+            # 5 s stall AFTER the answer, not on the lost first hello
+            with pytest.raises(TimeoutError, match='nothing from the switcher for 0.5'):
+                wait_ready(p, timeout=30, stall_timeout=0.5, hello_timeout=_connection.CONNECT_HELLO_TIMEOUT,
+                           pump_interval=0.005)
+            took = time.monotonic() - t0
+        finally:
+            p.transport.close_session()
+            p.transport.sock.close()
+    # (a third hello is the transport re-handshaking on the silence after the answer)
+    assert sw.hellos >= 2 and 4.5 < took < 12, (sw.hellos, took)

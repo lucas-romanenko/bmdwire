@@ -81,6 +81,10 @@ CONNECT_TIMEOUT = 15.0
 # CONNECT_TIMEOUT stays the wait for a pooled session that is re-handshaking.
 CONNECT_STALL_TIMEOUT = 5.0
 CONNECT_MAX = 60.0
+# Until the switcher has answered at all: two hellos (the transport re-sends
+# one every 5 s), so a single lost hello or answer on a lossy link is not a
+# failed connect. 5 s alone failed ~2 % of connects at 1 % loss (replayed).
+CONNECT_HELLO_TIMEOUT = 10.0
 
 # Cadence at which the worker pumps protocol.loop() while idle.
 PUMP_INTERVAL = 0.01
@@ -739,6 +743,7 @@ class ATEMConnection:
                     self._protocol,
                     timeout=CONNECT_MAX,
                     stall_timeout=CONNECT_STALL_TIMEOUT,
+                    hello_timeout=CONNECT_HELLO_TIMEOUT,
                     pump_interval=PUMP_INTERVAL,
                     stop_event=self._stop_event,
                 )
