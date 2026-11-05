@@ -91,6 +91,7 @@ from contextlib import contextmanager
 
 from atemwire import connection as _connection
 from atemwire.connection import ATEMConnection, ConnectionDeadError  # noqa: F401
+from atemwire.transport import NoFreeConnection
 
 logger = logging.getLogger(__name__)
 
@@ -417,8 +418,11 @@ def acquire_connection(ip_address: str, *, ready_timeout=None):
     watcher should ride THIS pooled connection via ``get_instance`` rather
     than open a second socket; every extra session costs the switcher a slot.)
 
+    :raises NoFreeConnection: at once, when the switcher answers "no room"
+        (every slot taken); a ``RuntimeError``.
     :raises RuntimeError: if the underlying connection fails to become ready
-        within the connection's configured timeout. A pooled session that
+        (nothing from the switcher for ``CONNECT_STALL_TIMEOUT``, or
+        ``CONNECT_MAX`` in all). A pooled session that
         doesn't become ready in ``ready_timeout`` raises
         ``ConnectionDeadError``, a ``RuntimeError``.
     """
@@ -433,6 +437,8 @@ def acquire_connection(ip_address: str, *, ready_timeout=None):
         if not (conn.is_connected and conn.ip_address == ip_address):
             ok = conn.connect(ip_address)
             if not ok:
+                if getattr(conn, 'connect_refused', False):
+                    raise NoFreeConnection(ip_address)
                 err = getattr(conn, '_connect_error', None) or 'connect failed'
                 raise RuntimeError(f"ATEM {ip_address}: {err}")
         # A cold connect returns ready; a pool hit may be mid re-handshake,

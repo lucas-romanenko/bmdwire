@@ -15,6 +15,7 @@ Returned dict shape:
         'video_format':      '1080p50' (str) or None,
         'atem_model':        'ATEM 1 M/E Production Studio 4K' (str) or None,
         'connection_status': bool,
+        'no_free_connection': True  # only when the switcher answered "no room"
         'error':             str   # only present on exception
     }
 """
@@ -23,6 +24,7 @@ import logging
 
 from atemwire.messages.system_info import product_name, video_mode
 from atemwire.pool import acquire_connection
+from atemwire.transport import NoFreeConnection
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +33,10 @@ def probe(ip_address: str) -> dict:
     """Acquire a connection to an ATEM, read product-name + video-mode,
     release.
 
-    Warm pool: ~0 ms. Cold / unreachable: pays ``atemwire.connection
-    .CONNECT_TIMEOUT`` (~6 s) before returning the failure dict.
+    Warm pool: ~0 ms. Cold: the handshake and the state dump. Unreachable:
+    ``atemwire.connection.CONNECT_STALL_TIMEOUT`` (5 s with nothing from the
+    switcher) before returning the failure dict. A switcher with every slot
+    taken answers "no room" at once: ``no_free_connection`` is True.
 
     On timeout, and while a warm session is re-handshaking (its state is
     empty until the new dump completes), the returned dict has
@@ -61,6 +65,9 @@ def probe(ip_address: str) -> dict:
                 result["video_format"] = vm.get('format') or None
             return result
 
+    except NoFreeConnection:
+        # The switcher answered "no room": it is there, with every slot taken.
+        return {**result, "no_free_connection": True}
     except RuntimeError:
         # acquire_connection raises on connect timeout; return the standard
         # failure dict (not the error-populated one — timeout is expected for

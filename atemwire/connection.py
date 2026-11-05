@@ -61,7 +61,7 @@ from typing import Any, Callable, Optional
 
 from atemwire.protocol import AtemProtocol
 from atemwire.ready import WaitAborted, wait_ready
-from atemwire.transport import TRACE_ENABLED, Wakeup, drain_log
+from atemwire.transport import TRACE_ENABLED, NoFreeConnection, Wakeup, drain_log
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,14 @@ logger = logging.getLogger(__name__)
 # large switcher, and a connect that times out is worse than one that takes
 # eight seconds.
 CONNECT_TIMEOUT = 15.0
+
+# A cold connect waits for the handshake and the state dump for as long as
+# they keep arriving, and gives up once nothing has come from the switcher
+# for CONNECT_STALL_TIMEOUT (no progress), within a hard cap of CONNECT_MAX.
+# A switcher that answers "no room" (0x03) fails at once (NoFreeConnection).
+# CONNECT_TIMEOUT stays the wait for a pooled session that is re-handshaking.
+CONNECT_STALL_TIMEOUT = 5.0
+CONNECT_MAX = 60.0
 
 # Cadence at which the worker pumps protocol.loop() while idle.
 PUMP_INTERVAL = 0.01
@@ -135,6 +143,7 @@ class ATEMConnection:
         self._stop_event = threading.Event()
         self._ready_event = threading.Event()   # set by worker once mixerstate is populated
         self._connect_error: Optional[str] = None
+        self._connect_refused = False
 
         # ``_handshake_done`` is True once the initial handshake + state
         # dump succeeded for the CURRENT worker. Cleared on disconnect so
@@ -185,6 +194,29 @@ class ATEMConnection:
             return False
         worker = self._worker
         return worker is not None and worker.is_alive()
+
+    @property
+    def connect_refused(self) -> bool:
+        """True when the last ``connect()`` failed because the switcher
+        answered "no room" (``NoFreeConnection``: every slot taken)."""
+        return self._connect_refused
+
+    def connect_progress(self) -> dict:
+        """How far a connect has got, for a page to show while it waits:
+        ``stage`` is ``'hello'`` (no answer yet), ``'state'`` (receiving the
+        switcher's state), ``'ready'``, or ``'no room'``; ``packets`` is how
+        many arrived. Cheap; safe from any thread."""
+        tr = getattr(getattr(self, '_protocol', None), 'transport', None)
+        packets = getattr(tr, 'rx_packet_count', 0) if tr is not None else 0
+        if self._connect_refused or getattr(tr, 'refused', False):
+            stage = 'no room'
+        elif self.is_ready:
+            stage = 'ready'
+        elif packets:
+            stage = 'state'
+        else:
+            stage = 'hello'
+        return {'stage': stage, 'packets': packets}
 
     @property
     def is_ready(self) -> bool:
@@ -595,6 +627,7 @@ class ATEMConnection:
         self._stop_event.clear()
         self._ready_event.clear()
         self._connect_error = None
+        self._connect_refused = False
         self._handshake_done = False
         self._session_ready = False
         self._died_signalled = False
@@ -615,8 +648,8 @@ class ATEMConnection:
         )
         self._worker.start()
 
-        if not self._ready_event.wait(timeout=CONNECT_TIMEOUT):
-            err = self._connect_error or f"timeout after {CONNECT_TIMEOUT}s"
+        if not self._ready_event.wait(timeout=CONNECT_MAX + 1.0):
+            err = self._connect_error or f"timeout after {CONNECT_MAX}s"
             logger.warning(f"Instance {self.instance_id}: connect failed ({err})")
             self._disconnect_locked()
             return False
@@ -704,12 +737,20 @@ class ATEMConnection:
             try:
                 wait_ready(
                     self._protocol,
-                    timeout=CONNECT_TIMEOUT,
+                    timeout=CONNECT_MAX,
+                    stall_timeout=CONNECT_STALL_TIMEOUT,
                     pump_interval=PUMP_INTERVAL,
                     stop_event=self._stop_event,
                 )
-            except TimeoutError:
-                self._connect_error = f"initial state timeout ({CONNECT_TIMEOUT}s)"
+            except NoFreeConnection as e:
+                self._connect_error = str(e)
+                self._connect_refused = True
+                logger.warning(f"Instance {self.instance_id}: {self._connect_error}")
+                self._close_protocol()
+                self._ready_event.set()
+                return
+            except TimeoutError as e:
+                self._connect_error = f"initial state timeout ({e})"
                 logger.warning(f"Instance {self.instance_id}: {self._connect_error}")
                 self._close_protocol()
                 self._ready_event.set()

@@ -765,7 +765,7 @@ Profile enum tables (`profile/_enums.py`):
 |---|---|---|
 | facade | `atemwire.ATEM(ip)` (`atem.py`), context manager; `close()` is idempotent | A pooled session. Blocks up to 15 s on a cold connect (`RuntimeError` on failure); a warm connect joins at once (since `2b540db`, once the session is ready, §5.4 item 35). **Operations:** `atem.<op>(*args)` forwards to the `messages.<module>.<op>(conn, *args)` functions of 17 modules (`atem.py:72-89`). The `hyperdeck`, `lock`, `file_transfer`, `tally` and `meters` modules are not forwarded, so `set_hyperdeck_settings` is not on the facade. **Reads:** properties `connected`, `video_mode`, `product_name`, `program_source`, `preview_source`, `in_transition`, `transition_style`, `transition_rate`, `ftb_active`; methods `get_program_source(me)`, `get_preview_source(me)`, `get_in_transition(me)`, `get_transition_style(me)`, `get_transition_rate(me)`, `get_ftb_active(me)`; `snapshot()` (= `build_full_state`); `clear_still(slot, timeout=5.0)` (locked); `raw` → the `ATEMConnection` |
 | pool | `atemwire.pool.acquire_connection(ip)` (context manager → `ATEMConnection`; since `2b540db`, `acquire_connection(ip, *, ready_timeout=None)`); `ATEMInstanceManager.peek_connection / get_instance / release_instance / list_instances` | One session per switcher per process, ref-counted. When the last ref goes, a 2 s grace timer disconnects. Nothing reaps a session whose ref is still held. A dead worker is evicted. `close_all_sessions_at_exit()` is registered with atexit. Single-process only. Since `2b540db` `acquire_connection` yields only a ready session, waiting for a re-handshake on a pool hit (§5.4 item 35); `get_instance` and `peek_connection` promise nothing about readiness |
-| connection | `atemwire.connection.ATEMConnection(instance_id)` | `connect(ip) -> bool` (blocks up to `CONNECT_TIMEOUT = 15 s`; since `2b540db` a connect that joins a session in a re-handshake waits for it too, §5.4 item 35), `disconnect()`, `is_connected`, `mixerstate`, `protocol`, `send(command)`, `download_still`, `download_macro`, `clear_still`, `set_on_died(cb)`, `last_run_macro_index`; since `2b540db`, `wait_until_ready(timeout) -> bool`. It has its own worker thread `AtemConn-<id>`, which pumps `protocol.loop()` every 10 ms and sends queued commands in batches of up to 1200 bytes per packet. A command that fails to render or is over-size is **dropped with a log line**, not raised |
+| connection | `atemwire.connection.ATEMConnection(instance_id)` | `connect(ip) -> bool` (a cold connect waits while the switcher keeps sending and gives up after `CONNECT_STALL_TIMEOUT = 5 s` with nothing from it, at most `CONNECT_MAX = 60 s`, and at once on a "no room" answer, §5.4 item 47; up to 1.11.0 a fixed `CONNECT_TIMEOUT = 15 s`, which now only bounds the wait for a re-handshaking pooled session; since `2b540db` a connect that joins a session in a re-handshake waits for it too, §5.4 item 35), `disconnect()`, `is_connected`, `mixerstate`, `protocol`, `send(command)`, `download_still`, `download_macro`, `clear_still`, `set_on_died(cb)`, `last_run_macro_index`; since `2b540db`, `wait_until_ready(timeout) -> bool`; since 1.12.0 `connect_refused` and `connect_progress() -> {stage, packets}`. It has its own worker thread `AtemConn-<id>`, which pumps `protocol.loop()` every 10 ms and sends queued commands in batches of up to 1200 bytes per packet. A command that fails to render or is over-size is **dropped with a log line**, not raised |
 | bare protocol | `atemwire.protocol.AtemProtocol(ip, port=9910, *, aggressive_drain=False)` | `connect()` sends SYN without blocking. **You** pump `loop()` (one packet per call). Also `send_commands([cmds])` (≤1300 bytes, else `ValueError`), `send_raw`, `on(event, cb) -> id`, `off(event, id)`, `mixerstate`, `connected`, `initialized`, plus the transfer methods (§3). It is **not thread-safe**. **It has no close method**; teardown is `release_locks_now()` → `transport.close_session()` → `transport.sock.close()` → `transport.thread_queue.close()` (`connection.py:723-755`). Passing a `tcp://` ip or `usb=` raises `NotImplementedError` |
 
 Readiness and identity:
@@ -780,7 +780,10 @@ Readiness and identity:
 ### 4.2 Transport (UDP, `transport.py`)
 
 - The switcher is on UDP **9910**. The handshake is a SYN with `0x01` and session id `0x1337`; the
-  switcher answers with a SYN (`0x02` = accepted) and the client ACKs it. The session id is then
+  switcher answers with a SYN (`0x02` = accepted, `0x03` = no room: every client slot is taken)
+  and the client ACKs an acceptance. A `0x03` sets `transport.refused`, is not ACKed, and is not
+  asked again by the 5 s re-SYN; `wait_ready`, `ATEMConnection.connect` and `acquire_connection`
+  raise `atemwire.NoFreeConnection` (a `RuntimeError`) at once (§5.4 item 47). The session id is then
   adopted from the switcher. The handshake ACK is sent from `loop()`, so it needs pumping. Since
   `7e42caa`, a re-handshake drops packets carrying the replaced session's id, and while the SYN
   is out, anything but its reply (§5.4 item 16).
@@ -959,7 +962,8 @@ simulated switcher state beyond a 1080p50 `video-mode`.
 - `set_fairlight_eq_band` says `frequency_range` takes "0..3"; the wire values are the bitfield
   1/2/4/8.
 - `system_info` calls `TiRq` a keepalive; it is sent once.
-- `probe.py` / `__init__.py` say a cold connect costs ~6 s; `CONNECT_TIMEOUT` is 15 s.
+- `__init__.py` says a cold connect costs ~6 s; it is the handshake and the dump, and an
+  unreachable switcher costs `CONNECT_STALL_TIMEOUT` (5 s) since 1.12.0 (`probe.py` says so).
 - `connection.py:726-734` says an abandoned lock lasts ~5 min; `MEDIA_LOCK.md` measured ~5 s.
 - `_io.py:123` lists an inbound `FTUA` in the upload flow; none is waited for or parsed.
 - The `upstream_keyer` DVE comment calls `rotation` "u16"; the field is i32.
@@ -1350,6 +1354,16 @@ fixed after 1.9.0 and still apply to it.
     *Fixed in `588a389`:* the conversion runs in pieces (the longest stall 6.9 ms) and
     `rle_decode` copies the literal runs whole (a 12 MB 4K test frame: 133 ms before, 18 ms
     after, same bytes).
+47. **A full switcher reads as offline, after 15 s** (1.11.0). A switcher whose session table is
+    full answers the hello `0x03` within a millisecond. The transport left the state at SYN_SENT,
+    ACKed the answer, re-sent the hello every 5 s, and the connect failed after `CONNECT_TIMEOUT`
+    (15 s) as "initial state timeout", the same as a switcher that is off. A cold connect also
+    failed at 15 s even while a big state dump was still arriving over a slow link. *Fixed in
+    1.12.0:* the `0x03` raises `NoFreeConnection` at once (`wait_ready`, `ATEMConnection.connect`,
+    whose `connect_refused` is then True, `acquire_connection`; `probe()` returns
+    `no_free_connection: True`); a cold connect waits while the switcher keeps sending and gives
+    up after `CONNECT_STALL_TIMEOUT` (5 s) with nothing from it, within `CONNECT_MAX` (60 s);
+    `wait_ready(stall_timeout=...)` does the same for a bare protocol.
 
 ## Counts
 

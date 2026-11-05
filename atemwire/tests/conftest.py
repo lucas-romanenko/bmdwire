@@ -89,6 +89,8 @@ def short_grace(monkeypatch):
 
 @pytest.fixture
 def short_connect_timeout(monkeypatch):
-    """Override CONNECT_TIMEOUT and DISCONNECT_JOIN_TIMEOUT for fast tests."""
+    """Override the connect timeouts and DISCONNECT_JOIN_TIMEOUT for fast tests."""
     monkeypatch.setattr('atemwire.connection.CONNECT_TIMEOUT', 1.0)
+    monkeypatch.setattr('atemwire.connection.CONNECT_MAX', 1.0)
+    monkeypatch.setattr('atemwire.connection.CONNECT_STALL_TIMEOUT', 1.0)
     monkeypatch.setattr('atemwire.connection.DISCONNECT_JOIN_TIMEOUT', 0.5)

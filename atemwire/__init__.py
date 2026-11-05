@@ -43,11 +43,13 @@ change in a minor release.
 from atemwire.atem import ATEM
 from atemwire.probe import probe
 from atemwire.profile import ApplyOptions, ApplyResult, Profile
+from atemwire.transport import NoFreeConnection
 
 __all__ = [
     'ATEM',
     'ApplyOptions',
     'ApplyResult',
+    'NoFreeConnection',
     'Profile',
     'probe',
 ]
