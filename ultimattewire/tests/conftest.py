@@ -111,3 +111,41 @@ def fake_binary_socket(monkeypatch):
         monkeypatch.setattr(protocol, "_CONNECT_RETRY_DELAY", 0)
         return sock
     return _install
+
+
+def _load_fake_module():
+    # By file path, not by import name: the tests also run against an
+    # installed wheel, which ships without ultimattewire.tests.
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).with_name("fake_ultimatte.py")
+    spec = importlib.util.spec_from_file_location("_ultimatte_fake_unit", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_FAKE = _load_fake_module()
+
+
+@pytest.fixture
+def fake_unit():
+    """Start fake Ultimattes speaking the documented 9998 protocol on
+    127.0.0.1: ``fake_unit(model="8K", protocol="2.0")``. Each is stopped
+    at the end of the test."""
+    started = []
+
+    def _start(model="8K", protocol="2.0", **attrs):
+        unit = _FAKE.FakeUltimatte(model, protocol)
+        for k, v in attrs.items():
+            setattr(unit, k, v)
+        started.append(unit.start())
+        return unit
+    yield _start
+    for unit in started:
+        unit.stop()
+
+
+@pytest.fixture
+def fake_module():
+    return _FAKE

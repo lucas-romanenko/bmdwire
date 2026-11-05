@@ -12,7 +12,7 @@ pip install bmdwire
 |---|---|---|---|
 | **`atemwire`** | ATEM switchers: the native UDP protocol, a connection pool, macro bytecode, "Save Switcher State" profiles | LGPL-3.0-only | [atemwire/README.md](atemwire/README.md) |
 | **`hyperdeckwire`** | HyperDeck recorders: transport control and clip listing over TCP 9993, clip upload over FTP, and the deck's configuration (network, FTP / Web Media Manager / Ethernet Protocol switches, certificate, users, time) over the API HyperDeck Setup drives | MIT | [hyperdeckwire/README.md](hyperdeckwire/README.md) |
-| **`ultimattewire`** | Ultimatte 12 keyers: archive and restore over the native TCP protocol, Smart Remote 4 compatible zips | MIT | [ultimattewire/README.md](ultimattewire/README.md) |
+| **`ultimattewire`** | Ultimatte 12 keyers: the whole documented text protocol (state, live updates, controls, presets, GPI, frame buffers), archive and restore with Smart Remote 4 compatible zips, network setup | MIT | [ultimattewire/README.md](ultimattewire/README.md) |
 | **`videohubwire`** | Videohub routers: state snapshot, crosspoint routing, labels over TCP 9990 | MIT | [videohubwire/README.md](videohubwire/README.md) |
 
 All four are pure standard library except atemwire, whose small C extension ships prebuilt for Linux, macOS and Windows on CPython 3.10 to 3.14, so installing needs no compiler. Pin the version in a requirements file (`bmdwire==1.12.1`) so a later release cannot change your install under you.

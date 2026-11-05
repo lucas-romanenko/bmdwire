@@ -40,6 +40,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from ultimattewire._errors import UltimatteError
 from ultimattewire._protocol import (CONNECT_TIMEOUT, CONTROL_PORT,
                                      _connect_with_retry)
 
@@ -53,7 +54,7 @@ READBACK_POLL = 0.5
 UNCONFIGURED = "0.0.0.0"     # what Current Addresses reads mid-reapply
 
 
-class UltimatteNetworkError(Exception):
+class UltimatteNetworkError(UltimatteError):
     """The unit refused a block (NAK), or never answered one."""
 
 
@@ -118,7 +119,9 @@ def parse_interface(text, index=0):
     iface.mac = get("MAC Address")
     priority = get("Priority")
     iface.priority = int(priority) if priority.isdigit() else None
-    dynamic = get("Dynamic IP").lower()
+    # "Dynamic IP" as a 12 4K sends it; "DynamicIP" as the protocol
+    # document's example spells it.
+    dynamic = (get("Dynamic IP") or get("DynamicIP")).lower()
     iface.dynamic = True if dynamic == "true" else False if dynamic == "false" else None
     iface.address, iface.netmask = _split_address(get("Current Addresses"))
     iface.gateway = get("Current Gateway")
