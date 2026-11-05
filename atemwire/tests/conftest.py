@@ -93,4 +93,5 @@ def short_connect_timeout(monkeypatch):
     monkeypatch.setattr('atemwire.connection.CONNECT_TIMEOUT', 1.0)
     monkeypatch.setattr('atemwire.connection.CONNECT_MAX', 1.0)
     monkeypatch.setattr('atemwire.connection.CONNECT_STALL_TIMEOUT', 1.0)
+    monkeypatch.setattr('atemwire.connection.CONNECT_HELLO_TIMEOUT', 1.0)
     monkeypatch.setattr('atemwire.connection.DISCONNECT_JOIN_TIMEOUT', 0.5)

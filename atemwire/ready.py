@@ -36,6 +36,7 @@ def wait_ready(
     extra_settle: float = 0.0,
     stop_event: Optional[threading.Event] = None,
     stall_timeout: Optional[float] = None,
+    hello_timeout: Optional[float] = None,
 ) -> dict:
     """Block until ``protocol`` has completed the ATEM's initial state dump.
 
@@ -57,6 +58,9 @@ def wait_ready(
         for this long (no progress), however much of ``timeout`` is left. A
         big state dump over a slow link keeps arriving and is waited for; a
         switcher that went quiet is not. None: ``timeout`` alone.
+    :param hello_timeout: the same, until the switcher has answered at all
+        (default ``stall_timeout``). Give it two of the transport's 5 s hello
+        re-sends, so one lost hello or answer is not a failed connect.
 
     :returns: ``protocol.mixerstate`` on success.
     :raises TimeoutError: if not ready within ``timeout`` seconds, or with
@@ -98,10 +102,12 @@ def wait_ready(
             if getattr(transport, 'refused', False) is True:
                 raise NoFreeConnection(getattr(transport, 'ip', None))
             if stall_timeout is not None:
-                heard = max(started, getattr(transport, 'last_rx_monotonic', 0.0) or 0.0)
-                if time.monotonic() - heard > stall_timeout:
+                last = getattr(transport, 'last_rx_monotonic', 0.0) or 0.0
+                answered = last > started
+                limit = stall_timeout if answered or hello_timeout is None else hello_timeout
+                if time.monotonic() - max(started, last) > limit:
                     raise TimeoutError(
-                        f"wait_ready: nothing from the switcher for {stall_timeout}s")
+                        f"wait_ready: nothing from the switcher for {limit}s")
             if (
                 (connected['flag'] or getattr(protocol, 'initialized', False))
                 and 'video-mode' in protocol.mixerstate
