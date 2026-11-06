@@ -531,13 +531,25 @@ class ATEMConnection:
                                               and self.is_ready)
                     except Exception:
                         pass
+                    # The switcher answering "try again" (FTDE 1) all along
+                    # is not silence: its transfer engine is busy, with
+                    # another client's transfer or one nobody is taking.
+                    busy = 0
+                    try:
+                        t = protocol.transfer
+                        if t is not None and t.store == store and t.slot == index:
+                            busy = getattr(t, 'try_again', 0)
+                    except Exception:
+                        pass
                     try:
                         protocol.abort_transfers()
                     except Exception:
                         pass
                     hint = (" — media store lock never granted; another "
                             "client is holding it" if lock_never_granted
-                            else "")
+                            else f" — the switcher answered busy (try again) "
+                                 f"{busy} times; its transfer engine is taken"
+                            if busy else "")
                     if stalled:
                         raise TimeoutError(
                             f"download: store {store} slot {index} on "
