@@ -127,11 +127,72 @@ def test_a_drain_is_capped(proto, clock):
     assert sent(proto)[-1] == ['LockCommand']
 
 
-def test_an_abort_before_any_data_releases_at_once(proto):
-    started(proto)
+def test_an_abort_before_any_data_waits_for_the_switcher(proto, clock):
+    # The request is out and nothing has come yet: the switcher may be about
+    # to start it (up to 2.5 s to a still's first chunk on a LAN). The lock
+    # is kept until it starts and ends, or refuses, or DRAIN_STALL passes.
+    tid = started(proto)
     proto.abort_transfers()
+    assert sent(proto)[-1] == ['TransferDownloadRequestCommand'], 'no release yet'
+    assert proto._draining is not None and proto.locks.get(0)
+    clock[0] += 1
+    chunk(proto, tid)                            # it starts after all
+    assert sent(proto)[-1] == ['TransferAckCommand']
+    ftdc(proto, tid)
     assert sent(proto)[-1] == ['LockCommand'] and proto.packets[-1][0].state is False
     assert proto._draining is None
+
+
+def test_an_abort_before_any_data_releases_at_a_refusal(proto):
+    tid = started(proto)
+    proto.abort_transfers()
+    ftde(proto, tid, 1)
+    assert sent(proto)[-1] == ['LockCommand'] and proto.packets[-1][0].state is False
+    assert proto._draining is None
+
+
+def test_an_abort_before_any_data_releases_after_the_drain_stall(proto, clock):
+    started(proto)
+    proto.abort_transfers()
+    clock[0] += DRAIN_STALL
+    proto._service_yields()
+    assert sent(proto)[-1] == ['LockCommand'] and proto.packets[-1][0].state is False
+    assert proto._draining is None
+
+
+def test_chunks_of_a_download_we_no_longer_follow_are_acknowledged(proto, clock):
+    # A download given up on whose chunks come after its drain ended: they
+    # are acknowledged all the same, so the switcher's engine is not held
+    # by them (FTDE 1 to every later request), and nothing of the transfer
+    # now running is touched.
+    old = started(proto)
+    proto.abort_transfers()
+    clock[0] += DRAIN_STALL
+    proto._service_yields()                      # drain over, lock given back
+    proto.download(0, 2)
+    clock[0] += 1
+    proto.save_field_data(b'LKST', struct.pack('>H?B', 0, False, 0))
+    clock[0] += 1
+    proto._service_yields()
+    proto.save_field_data(b'LKOB', struct.pack('>Hxx', 0))
+    new = proto.transfer.tid
+    assert new != old
+    before = len(proto.packets)
+    chunk(proto, old)
+    assert sent(proto)[before:] == [['TransferAckCommand']]
+    assert proto.packets[-1][0].transfer == old
+    assert proto.transfer_buffer == [], 'its data is not the new one\'s'
+    ftdc(proto, old)
+    assert proto.transfer is not None and proto.transfer.tid == new, 'still ours'
+    chunk(proto, new)
+    assert proto.transfer_buffer == [b'\x01' * 8]
+
+
+def test_chunks_of_a_transfer_we_never_asked_for_are_left_alone(proto):
+    started(proto)
+    before = len(proto.packets)
+    chunk(proto, (proto.transfer.tid + 1000) % 0xFFFF + 1)
+    assert len(proto.packets) == before
 
 
 def test_an_ftde_ends_the_drain(proto):

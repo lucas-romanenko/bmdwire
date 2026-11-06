@@ -29,7 +29,7 @@ import struct
 
 import pytest
 
-from atemwire.protocol import (LOCK_COURTESY, LOCK_HANDOVER, LOCK_QUIET, TRY_AGAIN_FIRST,
+from atemwire.protocol import (DRAIN_STALL, LOCK_COURTESY, LOCK_HANDOVER, LOCK_QUIET, TRY_AGAIN_FIRST,
                                AtemProtocol)
 from atemwire.transport import BaseProtocol, Packet, UdpProtocol
 
@@ -330,6 +330,10 @@ def test_an_abort_holding_the_lock_leaves_the_store_its_turn(proto, clock):
     _download(proto, 1)
     grant(proto)
     proto.abort_transfers()
+    # Nothing came of the request: kept DRAIN_STALL for the switcher to
+    # start or refuse it, then released.
+    clock.t += DRAIN_STALL
+    proto._service_yields()
     assert names(proto.packets[-1]) == ['LockCommand']
     assert proto.packets[-1][0].state is False
     asked = len(proto.packets)

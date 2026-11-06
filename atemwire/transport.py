@@ -320,7 +320,18 @@ class UdpProtocol(BaseProtocol):
     # a packet may be parked while its gap fills. The ATEM's in-flight
     # window is a handful of packets; a jump beyond this means the session
     # is beyond recovery and we resync rather than deadlock.
-    DELIVERY_PARK_WINDOW = 512
+    #
+    # It was 512: about 14 s of the switcher's clock packets alone, less
+    # during a download, and a gap a lossy link took longer to fill than
+    # that (the packet lost again on each resend) dropped all 512 parked
+    # packets, real ones the switcher had sent once and would not send again
+    # (they were ACKed by then). Their FTDa never got an FTUA, the
+    # switcher's send window stayed shut, the download stalled, and the
+    # release after it left the switcher's transfer engine refusing every
+    # request (offline, a bursty-loss replay, 2026-11-06). The switcher
+    # keeps a packet until it is acknowledged, so a gap fills in the end;
+    # the window is now the retransmission window's 4096.
+    DELIVERY_PARK_WINDOW = 4096
 
     # Per-request resend volley cap. A real request is for the ATEM's
     # small in-flight window; if the gap is somehow larger, resending
@@ -339,8 +350,22 @@ class UdpProtocol(BaseProtocol):
     # grants only once it has that packet, so its loss stalled the upload
     # until the caller's timeout. The switcher resends its own the same
     # way, every ~80 ms; it acknowledges ours within milliseconds (every
-    # 16 packets of an upload), so 250 ms is a loss, not a slow ACK.
+    # 16 packets of an upload).
+    #
+    # How long "not acknowledged" is follows the link, as TCP's timer does
+    # (RFC 6298): the smoothed time from sending a packet to its ACK plus
+    # four times its variation, measured on packets sent once (Karn), never
+    # below RESEND_MIN nor above RESEND_MAX, doubled for each resend that
+    # gets no ACK either. RESEND_AFTER is the start, before anything is
+    # measured. The switcher takes our packets in order only and never asks
+    # for one it missed (no retransmission request in any capture), so the
+    # FTUA after a lost one, and the rest of a download with it, waited the
+    # whole timer: a fixed 250 ms per lost packet, where the ACK comes back
+    # in 2 ms (p50) to 28 ms (p99) on a LAN (2026-11-06).
     RESEND_AFTER = 0.25
+    RESEND_MIN = 0.05
+    RESEND_MAX = 1.0
+    DUP_ACKS = 2
 
     # A send the kernel refuses for a moment (a full buffer: ENOBUFS, which
     # macOS returns rather than blocking, or EAGAIN) is tried again, 1 ms
@@ -445,18 +470,36 @@ class UdpProtocol(BaseProtocol):
         # The switcher answered the hello 0x03, "no room" (NoFreeConnection).
         self.refused = False
 
-        self.received_packets = _SeenWindow(1024)
+        # Past the park window, so parked packets are still known when the
+        # ACK walk reaches them.
+        self.received_packets = _SeenWindow(2 * UdpProtocol.DELIVERY_PARK_WINDOW)
         # While the UDP thread drains a burst (_drain_socket), the ACK the
         # packets are owed is sent once, after them; outside a drain (a
         # direct _receive_packet_low call) it goes at once, as before.
         self._batching = False
         self._acks_owed = 0
+        # The last ACK number sent (None: none this session), and whether the
+        # next must go even if it is the same (_ack_owed).
+        self._last_ack_sent = None
+        self._ack_repeat = False
         self.retransmission_buffer = {}
         # The switcher's acknowledgement of our reliable packets (the
         # highest sequence it has, gap-free; None until its first ACK), and
         # when what it hasn't acknowledged is resent (RESEND_AFTER).
         self._acked_through = None
         self._resend_due = None
+        # The resend timer (RESEND_*): seq -> when it was sent, for packets
+        # sent once; the smoothed round trip and its variation (None until
+        # measured); the doubling for resends nobody acknowledged.
+        self._sent_at = {}
+        self._srtt = None
+        self._rttvar = None
+        self._backoff = 1
+        self.resends = 0
+        self.fast_resends = 0
+        self._dup_acks = 0
+        self._resends_logged = 0
+        self._resend_last_log = 0.0
         # When receive_packet next returns a Wakeup for the protocol's own
         # timed work (wake_at); set from the protocol's thread.
         self._wake_due = None
@@ -561,6 +604,12 @@ class UdpProtocol(BaseProtocol):
             remaining = self.timeout - (time.monotonic() - self._last_heard)
             if remaining <= 0:
                 self.log.error("Timeout reading from ATEM")
+                # Goodbye to the session being replaced first: if the link
+                # is back, the switcher ends it at once, its store lock and
+                # any transfer of it with it, instead of holding them until
+                # it reaps the session (~5 s), the new session's lock
+                # request queued behind them.
+                self.close_session()
                 self.state = UdpProtocol.STATE_CLOSED
                 self.connect()
                 self.thread_recv_queue.put(None)
@@ -619,10 +668,14 @@ class UdpProtocol(BaseProtocol):
             self._batching = False
             self._flush_ack()
 
-    def _ack_owed(self):
+    def _ack_owed(self, repeat=False):
         """A received packet wants acknowledging: now, or at the end of the
-        drain in progress."""
+        drain in progress. ``repeat``: a resend of a packet we have, so the
+        switcher missed our ACK and needs it again even if it says nothing
+        new."""
         self._acks_owed += 1
+        if repeat:
+            self._ack_repeat = True
         if not self._batching:
             self._flush_ack()
 
@@ -630,6 +683,14 @@ class UdpProtocol(BaseProtocol):
         if not self._acks_owed:
             return
         self._acks_owed = 0
+        if self.ack_number == self._last_ack_sent and not self._ack_repeat:
+            # Nothing new to say: packets parked behind a gap. Saying the
+            # same ACK again tells the switcher nothing, and a switcher
+            # that took it as a sign of life to hold off its resend would
+            # never send the packet the gap is waiting for.
+            return
+        self._ack_repeat = False
+        self._last_ack_sent = self.ack_number
         ack = Packet()
         ack.flags = UdpProtocol.FLAG_ACK
         ack.acknowledgement_number = self.ack_number
@@ -790,8 +851,10 @@ class UdpProtocol(BaseProtocol):
             self.retransmission_buffer.pop(
                 (self.local_sequence_number - UdpProtocol.RETRANSMIT_WINDOW)
                 % 0x8000, None)
+            now = time.monotonic()
+            self._sent_at[self.local_sequence_number] = now
             if self._resend_due is None:
-                self._resend_due = time.monotonic() + UdpProtocol.RESEND_AFTER
+                self._resend_due = now + self.resend_after()
 
         if packet.label == "_handshake":
             # Clear temporary session id, use the session id received in the first packet from the remote
@@ -886,7 +949,8 @@ class UdpProtocol(BaseProtocol):
         self.rx_packet_count += 1
 
         if packet.flags & UdpProtocol.FLAG_ACK:
-            self._on_ack(packet.acknowledgement_number)
+            self._on_ack(packet.acknowledgement_number,
+                         ack_only=not packet.flags & UdpProtocol.FLAG_RELIABLE)
 
         if TRACE_ENABLED:
             data_len = len(packet.data) if packet.data else 0
@@ -908,10 +972,20 @@ class UdpProtocol(BaseProtocol):
                 if (packet.flags & UdpProtocol.FLAG_RELIABLE
                         and (self.enable_ack
                              or self.state == UdpProtocol.STATE_ESTABLISHED)):
-                    self._ack_owed()
+                    self._ack_owed(repeat=True)
                 return True
 
-        self.received_packets.append(self.remote_sequence_number)
+        if packet.flags & UdpProtocol.FLAG_RELIABLE:
+            # Reliable packets only. The switcher's ACK-only packets carry
+            # sequence number 0 (all 5,658 of them in a 30 s capture), and
+            # recorded here they made 0 look received for good: when its
+            # real packet 0, once per 32,768 (every three or four 1080p
+            # stills), was lost, the ACK walked over it, so the switcher
+            # forgot it, and its resend was dropped as a duplicate. Delivery
+            # waited for it until the park window overflowed, the download
+            # in flight stalled, and the abort after it left the switcher's
+            # transfer engine refusing every later request (2026-11-06).
+            self.received_packets.append(self.remote_sequence_number)
         self._update_ack_number(packet)
 
         # ACK if: we're already in ack-mode and the packet is reliable, OR
@@ -1032,18 +1106,68 @@ class UdpProtocol(BaseProtocol):
             self._wake_due = None
         self.thread_recv_queue.put(Wakeup())
 
-    def _on_ack(self, number):
+    def _on_ack(self, number, ack_only=False):
         """The switcher has our reliable packets through ``number``: the
         resend timer starts again while some remain unacknowledged."""
         if self._acked_through == number:
+            if not ack_only:
+                return              # a data packet repeating it says nothing
+            # The same ACK again: the switcher, which takes our packets in
+            # order only, has had later ones since and dropped them. Two of
+            # them and the first one it lacks is resent now, as TCP's fast
+            # retransmit does, instead of waiting out the timer: once per
+            # ACK, and only while something is outstanding.
+            self._dup_acks += 1
+            outstanding = (self.local_sequence_number - number) & 0x7FFF
+            if (self._dup_acks == UdpProtocol.DUP_ACKS
+                    and 0 < outstanding < UdpProtocol.RETRANSMIT_WINDOW
+                    and self.state == UdpProtocol.STATE_ESTABLISHED):
+                self.fast_resends += 1
+                self._retransmit_from((number + 1) & 0x7FFF, quiet=True)
+                self._resend_due = time.monotonic() + self.resend_after()
             return
-        self._acked_through = number
+        self._dup_acks = 0
+        previous, self._acked_through = self._acked_through, number
         outstanding = (self.local_sequence_number - number) & 0x7FFF
-        if outstanding == 0 or outstanding >= UdpProtocol.RETRANSMIT_WINDOW:
-            # All acknowledged (or an ACK from before a wrap or a reconnect).
+        if outstanding >= UdpProtocol.RETRANSMIT_WINDOW:
+            # An ACK from before a wrap or a reconnect.
+            self._resend_due = None
+            return
+        now = time.monotonic()
+        sent = self._sent_at.get(number)
+        if sent is not None:
+            self._sample_rtt(now - sent)
+        if previous is None or ((number - previous) & 0x7FFF) >= UdpProtocol.RETRANSMIT_WINDOW:
+            self._sent_at = {q: t for q, t in self._sent_at.items()
+                             if 0 < ((q - number) & 0x7FFF) < UdpProtocol.RETRANSMIT_WINDOW}
+        else:
+            q = previous
+            while q != number:
+                q = (q + 1) & 0x7FFF
+                self._sent_at.pop(q, None)
+        self._backoff = 1
+        if outstanding == 0:
             self._resend_due = None
         else:
-            self._resend_due = time.monotonic() + UdpProtocol.RESEND_AFTER
+            self._resend_due = now + self.resend_after()
+
+    def _sample_rtt(self, r):
+        """One round trip measured: RFC 6298's smoothing (1/8, 1/4)."""
+        if self._srtt is None:
+            self._srtt, self._rttvar = r, r / 2
+        else:
+            self._rttvar += (abs(self._srtt - r) - self._rttvar) / 4
+            self._srtt += (r - self._srtt) / 8
+
+    def resend_after(self):
+        """How long a reliable packet of ours waits for its ACK before it is
+        sent again (RESEND_*)."""
+        if self._srtt is None:
+            base = UdpProtocol.RESEND_AFTER
+        else:
+            base = self._srtt + 4 * self._rttvar
+        base = min(UdpProtocol.RESEND_MAX, max(UdpProtocol.RESEND_MIN, base))
+        return min(UdpProtocol.RESEND_MAX, base * self._backoff)
 
     def _resend_unacked(self):
         """Resend what the switcher hasn't acknowledged in RESEND_AFTER,
@@ -1057,12 +1181,25 @@ class UdpProtocol(BaseProtocol):
         outstanding = (self.local_sequence_number - self._acked_through) & 0x7FFF
         if outstanding == 0 or outstanding >= UdpProtocol.RETRANSMIT_WINDOW:
             return
-        self.log.warning(f"no ACK for seq {first} through {self.local_sequence_number} "
-                         f"in {UdpProtocol.RESEND_AFTER} s: resending")
-        self._retransmit_from(first)
-        self._resend_due = time.monotonic() + UdpProtocol.RESEND_AFTER
+        waited = self.resend_after()
+        self.log.debug(f"no ACK for seq {first} through {self.local_sequence_number} "
+                       f"in {waited * 1000:.0f} ms: resending")
+        self.resends += 1
+        self._retransmit_from(first, quiet=True)
+        now = time.monotonic()
+        if now - self._resend_last_log >= 5.0:
+            # One line per ~5 s, as for the switcher's resends: on a lossy
+            # link this happens many times a second, and each is routine.
+            self.log.warning(
+                f"{self.resends - self._resends_logged} resend(s) of packets "
+                f"the switcher had not acknowledged since last summary "
+                f"(timer {waited * 1000:.0f} ms)")
+            self._resends_logged = self.resends
+            self._resend_last_log = now
+        self._backoff = min(self._backoff * 2, 64)
+        self._resend_due = time.monotonic() + self.resend_after()
 
-    def _retransmit_from(self, request_seq):
+    def _retransmit_from(self, request_seq, quiet=False):
         """Resend every buffered packet from ``request_seq`` through the
         latest sent sequence, in order, marked FLAG_RETRANSMISSION
         (the outbound twin of ``_update_ack_number``).
@@ -1095,6 +1232,7 @@ class UdpProtocol(BaseProtocol):
             if pkt is None:
                 continue
             pkt.flags |= UdpProtocol.FLAG_RETRANSMISSION
+            self._sent_at.pop(seq, None)
             try:
                 self._sendto(pkt.to_bytes())
             except OSError as exc:
@@ -1107,7 +1245,7 @@ class UdpProtocol(BaseProtocol):
                     f"TX-RETRANSMIT {self.ip}:{self.port} seq={seq} "
                     f"flags=0x{pkt.flags:02x} "
                     f"datalen={len(pkt.data) if pkt.data else 0}")
-        self.log.warning(
+        (self.log.debug if quiet else self.log.warning)(
             f"retransmission requested from seq {request_seq}: resent "
             f"{resent} packet(s) through seq {last}")
         return resent
@@ -1181,6 +1319,11 @@ class UdpProtocol(BaseProtocol):
         self.retransmission_buffer.clear()
         self._acked_through = None
         self._resend_due = None
+        self._sent_at.clear()
+        self._backoff = 1
+        self._dup_acks = 0
+        self._last_ack_sent = None
+        self._ack_repeat = False
         # received_packets drives BOTH the retransmission dup-drop and the
         # contiguous-ACK high-water walk. Stale sequence numbers from the OLD
         # session (an in-place reconnect reuses this object) would let the new

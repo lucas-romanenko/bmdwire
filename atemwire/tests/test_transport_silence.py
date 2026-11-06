@@ -94,7 +94,9 @@ def _syn_seen(transport, switcher, *, send_out=False, send_in=None, within=BUDGE
                 data, _ = switcher.recvfrom(2048)
             except socket.timeout:
                 break
-            if Packet.from_bytes(data).flags & UdpProtocol.FLAG_SYN:
+            # A hello (0x01); the goodbye to the old session (0x04) that
+            # goes before it is a SYN too.
+            if Packet.from_bytes(data).flags & UdpProtocol.FLAG_SYN and data[12] == 0x01:
                 return True
     return False
 
@@ -154,3 +156,24 @@ def test_a_syn_gets_a_full_window(transport, switcher):
     t0 = time.monotonic()
     assert _syn_seen(transport, switcher)
     assert time.monotonic() - t0 >= TIMEOUT / 2
+
+
+def test_the_replaced_session_is_said_goodbye_first(transport, switcher):
+    # A timeout says goodbye to the session it gives up on, in that
+    # session's id, before the new hello: a switcher that hears it ends the
+    # session at once, its store lock and any transfer of it with it,
+    # instead of keeping them until it reaps the session (~5 s).
+    seen = []
+    deadline = time.monotonic() + BUDGET
+    while time.monotonic() < deadline:
+        switcher.settimeout(max(0.01, deadline - time.monotonic()))
+        try:
+            data, _ = switcher.recvfrom(2048)
+        except socket.timeout:
+            break
+        pkt = Packet.from_bytes(data)
+        if pkt.flags & UdpProtocol.FLAG_SYN:
+            seen.append((data[12], pkt.session))
+            if data[12] == 0x01:
+                break
+    assert seen[:2] == [(0x04, 0x8001), (0x01, 0x1337)]
