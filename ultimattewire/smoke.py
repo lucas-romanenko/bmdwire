@@ -5,6 +5,7 @@
     python -m ultimattewire.smoke 192.0.2.21
     python -m ultimattewire.smoke 192.0.2.21 --watch 30     # then touch the panel
     python -m ultimattewire.smoke 192.0.2.21 --write        # one reversible write
+    python -m ultimattewire.smoke 192.0.2.21 --image        # upload, assign, undo
 
 Read only unless ``--write``. What it does, in order:
 
@@ -20,19 +21,32 @@ Read only unless ``--write``. What it does, in order:
    sets one control (``--control``, default Matte Density) one step away
    from its value, checks the unit's update, and sets it back, checking
    again. The original value is put back even if the check fails.
+6. ``--image [FILE.png]``: refuses if Tally Active is on (unless
+   ``--force``), uploads FILE (or a plain grey PNG of the running format's
+   size, made here) to the media pool over 9996, assigns it to
+   ``--buffer`` (BG 1), checks the unit's update, then puts back what that
+   buffer had and deletes the image again (``--keep-image`` leaves it).
+   Not in the document: from captures of Software Control.
+7. ``--flush``: sends FLUSH SETTINGS (what Software Control does before an
+   Archive: it saves the live settings on the unit) and prints whatever
+   the unit answers.
 
-Exit status 0 when everything it tried worked, 1 when a write or its
-restore did not verify, 2 when it could not connect.
+Exit status 0 when everything it tried worked, 1 when a write, an image
+step or its undo did not verify, 2 when it could not connect.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import struct
 import sys
 import time
+import zlib
 
 from ultimattewire import controls as C
+from ultimattewire import media
 from ultimattewire.client import (Ultimatte, UltimatteConnectionError,
                                   UltimatteError, UltimatteNak,
                                   UltimatteTimeout)
@@ -70,11 +84,14 @@ def report_state(u: Ultimatte, out) -> None:
     _p(out, f"file list     {s.file_list}")
     for gid, gl in sorted(s.gpi_lists.items()):
         _p(out, f"gpi {gid}         index {gl.index}  events {gl.events}")
-    _p(out, f"image list    {s.image_list}")
+    _p(out, f"image list    {s.image_list}  capacity {s.image_capacity}  "
+            f"available {s.image_available}")
     fb = s.frame_buffer
     _p(out, f"frame buffers count {fb.count}  mix {fb.mix}  duration(ms) {fb.duration}")
     for name, b in fb.buffers.items():
         _p(out, f"  buffer      {name:<6} enable {b.enable}  index {b.index}")
+    for name, img in fb.assigned.items():
+        _p(out, f"  assigned    {name:<6} {img!r}")
     for n, img in sorted(fb.images.items()):
         _p(out, f"  slot        {n:<3} {img!r}")
     if fb.other:
@@ -216,12 +233,108 @@ def write_test(u: Ultimatte, name: str, force: bool, out) -> bool:
     return ok and restored
 
 
+SMOKE_IMAGE = "ultimattewire-smoke.png"
+
+
+def grey_png(width: int, height: int) -> bytes:
+    """A plain mid-grey 8-bit RGB PNG, made with the standard library."""
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body
+                + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+    row = b"\0" + b"\x80" * (3 * width)
+    return (media.PNG_SIGNATURE
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(row * height, 6))
+            + chunk(b"IEND", b""))
+
+
+def image_test(u: Ultimatte, path, buffer: str, keep: bool, force: bool,
+               out) -> bool:
+    """Upload, assign, check, undo. True when every step and the undo were
+    confirmed by the unit."""
+    if u.state.tally and not force:
+        _p(out, "  refused: Tally Active is on (the unit is on air); --force to override")
+        return False
+    fg = u.state.device.locked("FG")
+    _p(out, f"  running format {u.state.device.video_format!r}, FG locked: {fg}")
+    if path:
+        name = os.path.basename(path)
+        with open(path, "rb") as f:
+            data = f.read()
+    else:
+        size = media.format_size(u.state.device.video_format)
+        if size is None:
+            _p(out, "  refused: can't tell the frame size from the running format; give a PNG")
+            return False
+        name, data = SMOKE_IMAGE, grey_png(*size)
+    if name in u.state.image_list:
+        _p(out, f"  refused: {name!r} is already in the media pool; won't touch it")
+        return False
+    before = u.assigned_image(buffer)
+    _p(out, f"  {buffer} has {before!r}; pool {u.state.image_list} "
+            f"(available {u.state.image_available} of {u.state.image_capacity} bytes)")
+    try:
+        w, h = media.png_size(data)
+    except media.UltimatteImageError as e:
+        _p(out, f"  refused: {e}")
+        return False
+    ok = uploaded = False
+    try:
+        t0 = time.monotonic()
+        u.upload_image(name, data)
+        uploaded = True
+        _p(out, f"  uploaded {name} ({w}x{h}, {len(data)} bytes) in "
+                f"{time.monotonic() - t0:.2f}s; pool now {u.state.image_list}")
+        u.assign_image(buffer, name)
+        got = u.assigned_image(buffer)
+        ok = got == name
+        _p(out, f"  assigned to {buffer}: unit shows {got!r} {'OK' if ok else 'MISMATCH'}")
+    except UltimatteError as e:
+        _p(out, f"  failed: {e}")
+    finally:
+        undone = True
+        if uploaded and before and u.assigned_image(buffer) != before:
+            try:
+                u.assign_image(buffer, before)
+                _p(out, f"  put {before!r} back on {buffer} OK")
+            except UltimatteError as e:
+                undone = False
+                _p(out, f"  PUT BACK FAILED ({e}): put {before!r} on {buffer} by hand")
+        if uploaded and not keep:
+            try:
+                u.delete_image(name)
+                _p(out, f"  deleted {name}; pool {u.state.image_list}, {buffer} has "
+                        f"{u.assigned_image(buffer)!r}")
+            except UltimatteError as e:
+                undone = False
+                _p(out, f"  DELETE FAILED ({e}): delete {name} in Software Control")
+    return ok and undone
+
+
+def flush_test(u: Ultimatte, out) -> bool:
+    seen = []
+    off = u.subscribe(lambda upd: seen.append(upd))
+    try:
+        u.flush_settings()
+        _p(out, "  ACK, no refusal")
+        return True
+    except UltimatteError as e:
+        _p(out, f"  refused: {e}")
+        return False
+    finally:
+        off()
+        for upd in seen:
+            _p(out, f"  unit sent {upd.header} {upd.changes}")
+
+
 def main(argv=None, out=None) -> int:
     out = out or sys.stdout
     ap = argparse.ArgumentParser(prog="python -m ultimattewire.smoke",
                                  description=__doc__.split("\n\n")[0])
     ap.add_argument("host")
     ap.add_argument("--port", type=int, default=9998)
+    ap.add_argument("--settings-port", type=int, default=9996,
+                    help=argparse.SUPPRESS)
     ap.add_argument("--idle-timeout", type=float, default=3.0,
                     help="seconds of silence from the unit before giving up")
     ap.add_argument("--watch", type=float, default=0.0, metavar="SECONDS",
@@ -231,12 +344,21 @@ def main(argv=None, out=None) -> int:
     ap.add_argument("--control", default="Matte Density",
                     help="the control --write nudges by one step")
     ap.add_argument("--force", action="store_true",
-                    help="--write even while Tally Active is on")
+                    help="--write / --image even while Tally Active is on")
+    ap.add_argument("--image", nargs="?", const="", default=None, metavar="FILE.png",
+                    help="upload a PNG (default: a grey one made here), assign it, undo")
+    ap.add_argument("--buffer", default="BG 1",
+                    help="the frame buffer --image assigns to")
+    ap.add_argument("--keep-image", action="store_true",
+                    help="leave the --image upload in the media pool")
+    ap.add_argument("--flush", action="store_true",
+                    help="send FLUSH SETTINGS and print what the unit says")
     ap.add_argument("--json", metavar="FILE",
                     help="also save the state as JSON")
     args = ap.parse_args(argv)
 
-    u = Ultimatte(args.host, args.port, idle_timeout=args.idle_timeout)
+    u = Ultimatte(args.host, args.port, idle_timeout=args.idle_timeout,
+                  settings_port=args.settings_port)
     t0 = time.monotonic()
     try:
         u.connect()
@@ -262,6 +384,15 @@ def main(argv=None, out=None) -> int:
         if args.write:
             _p(out, "== write test")
             if not write_test(u, args.control, args.force, out):
+                status = 1
+        if args.image is not None:
+            _p(out, "== image test (upload over 9996, assign, undo)")
+            if not image_test(u, args.image, args.buffer, args.keep_image,
+                              args.force, out):
+                status = 1
+        if args.flush:
+            _p(out, "== flush settings")
+            if not flush_test(u, out):
                 status = 1
         if args.json:
             with open(args.json, "w") as f:

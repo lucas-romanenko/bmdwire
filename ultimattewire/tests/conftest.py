@@ -113,19 +113,32 @@ def fake_binary_socket(monkeypatch):
     return _install
 
 
-def _load_fake_module():
+def _load_fake_module(file="fake_ultimatte.py"):
     # By file path, not by import name: the tests also run against an
     # installed wheel, which ships without ultimattewire.tests.
     import importlib.util
     from pathlib import Path
-    path = Path(__file__).with_name("fake_ultimatte.py")
-    spec = importlib.util.spec_from_file_location("_ultimatte_fake_unit", path)
+    path = Path(__file__).with_name(file)
+    spec = importlib.util.spec_from_file_location(
+        "_ultimatte_" + file[:-3], path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
 _FAKE = _load_fake_module()
+_FAKE_4K = _load_fake_module("fake_captured_4k.py")
+
+
+@pytest.fixture
+def fake_4k():
+    """A fake Ultimatte 12 4K doing what the real one did in the 2026-11-11
+    captures (named frame buffers, image upload on 9996, delete, flush);
+    ``.png(w, h)`` makes a PNG header to upload. Stopped after the test."""
+    unit = _FAKE_4K.FakeCaptured4K().start()
+    unit.png = _FAKE_4K.png
+    yield unit
+    unit.stop()
 
 
 @pytest.fixture

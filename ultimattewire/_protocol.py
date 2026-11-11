@@ -102,7 +102,7 @@ def binary_request(host, opcode, payload, timeout=CONNECT_TIMEOUT):
 
 
 def upload_one(host, opcode, name, payload, connect_timeout=CONNECT_TIMEOUT,
-               read_timeout=READ_TIMEOUT):
+               read_timeout=READ_TIMEOUT, port=SETTINGS_PORT):
     """Issue a binary write on 9996. Raises IOError if the unit rejects.
 
     Frame: send [opcode:2BE][name_len:4BE][name:N][data_len:4BE][data:M][0x00]
@@ -119,7 +119,7 @@ def upload_one(host, opcode, name, payload, connect_timeout=CONNECT_TIMEOUT,
         + payload
         + b"\x00"
     )
-    s = _connect_with_retry(host, SETTINGS_PORT, timeout=connect_timeout)
+    s = _connect_with_retry(host, port, timeout=connect_timeout)
     try:
         s.settimeout(read_timeout)
         s.sendall(frame)

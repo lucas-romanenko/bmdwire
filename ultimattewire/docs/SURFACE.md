@@ -130,7 +130,8 @@ returns the interface read back once it has settled.
 ### 1.3 `Ultimatte` (`client.py`): every documented 9998 command
 
 One session: `Ultimatte(host, port=9998, *, connect_timeout=5.0,
-idle_timeout=3.0, function_idle_timeout=10.0, socket_factory=None)`,
+idle_timeout=3.0, function_idle_timeout=10.0, socket_factory=None,
+settings_port=9996)`,
 `connect()` / `close()` or a `with` block (§3.3). Every command below
 sends one block, waits for `ACK` (a `NAK` raises `UltimatteNak`), then
 for the unit's update, applying every other block on the way, and
@@ -151,7 +152,11 @@ it has run against a unit yet.
 | `gpi_remove(gpi, index)` | `GPI:` `ID:`, `Remove:` (0 all) | as above | as above |
 | `gpi_set_index(gpi, index)` | `GPI:` `ID:`, `Index:` | as above | as above |
 | `set_frame_buffer(buffer, *, index=None, enable=None)` | `FRAME BUFFER:` `<buffer> Frame Buffer Index:` then `... Enable: on/off` | both keys in FRAME BUFFER updates | the `FrameBuffer` |
-| `assign_image(buffer, image, enable=True)` | as above, the index of the `Frame Buffer n:` line naming the image | as above | as above |
+| `assign_image(buffer, image, enable=True)` | a unit that names images per buffer (12 4K, `state.frame_buffer.assigned` filled, or the image only in IMAGE LIST): `Frame Buffer:` `Background 1: <image>` (the long names `Background 1/2`, `Layer 1/2`, `Garbage Matte`, `Holdout Matte`; header spelled as Software Control sends it; `enable` unused). Otherwise as above, the index of the `Frame Buffer n:` line naming the image | named: FRAME BUFFER holding that key, or a MESSAGE (raises; the unit ACKs and then refuses: `Mismatched formats: ...`, `Invalid operation - No Foreground source present`); the key showing another image raises `UltimatteError` | named: `FrameBuffer(short name)`; otherwise as above |
+| `assigned_image(buffer)` | nothing (state) | | the image name on the buffer, `""` none, `None` not reported |
+| `upload_image(name, data, *, check_format=True, idle_timeout=None)` | not 9998: `media.upload_image` on 9996 (§3.1, opcode `0x0101`) | IMAGE LIST holding the name, `function_idle_timeout` of silence at most | `state.image_list` |
+| `delete_image(name)` | `Image:` `Delete: <name>` (not in the document; Software Control's spelling) | IMAGE LIST without the name, or a MESSAGE (raises); the unit also pushes FRAME BUFFER with the image cleared | `state.image_list` |
+| `flush_settings(quiet=0.5)` | `CONTROL:` `FLUSH SETTINGS: YES` (not in the document; Software Control sends it before an Archive: live state into SavedSettings) | ACK, then reads until `quiet` seconds of silence; a MESSAGE raises (no FG locked: `Invalid operation - No Foreground source present`) | `None` |
 | `set_frame_buffer_mix(layer, value)` | `FRAME BUFFER:` `BG`/`LY Frame Buffer Mix:` | the key | the mix |
 | `set_transition_duration(layer, ms)` | `FRAME BUFFER:` `BG`/`LY Transition Duration:` (ms) | the key | the duration |
 | `set_camera_id(n)` | `CAMERACONTROL:` `Camera Id:` (HD Mini only) | the key | `state.camera_id` |
@@ -409,7 +414,17 @@ One request per connection; the unit closes it after replying.
 | `0x0000` | read | a preset slot |
 | `0x0003` | read | a named resource |
 | `0x0100` | write | a preset slot (`.../presets/<slot>`) |
+| `0x0101` | write | a media pool image: name = the file name, data = the PNG file as is (captured 2026-11-11; the unit answered one zero byte) |
 | `0x0103` | write | a named resource (`.../GPISettings`, `.../SavedSettings`) |
+
+`upload_one` takes `port=9996` too. **`media.upload_image(host, name,
+data, *, video_format=None, connect_timeout=5.0, read_timeout=30.0,
+port=9996)`** (`media.py`) checks the name (no `/`, `\`, line break), that
+the data is a PNG (`media.png_size`, IHDR), and with `video_format` that
+its size is the format's (`media.format_size`: 720/1080/2160/4320 lines),
+raising `media.UltimatteImageError` before sending; an `IOError` from
+`upload_one` is raised as `UltimatteImageError` too. Returns (width,
+height).
 
 ### 3.2 TCP 9998, text (`_preamble.py`, `network.py`)
 
@@ -485,11 +500,10 @@ One request per connection; the unit closes it after replying.
 
 ### 5.1 In the protocol, not in ultimattewire
 
-- **Loading and removing media pool images.** The document: "The Telnet
-  interface does not currently provide loading or removing images in the
-  Media Pool. This has to be done from either a Smart Remote 4, or using
-  the Software Control application." Not implemented and not guessed: it
-  waits for a capture of Software Control doing it (likely 9996).
+- **Media pool images**: loading (9996 `0x0101`) and removing (`Image:`
+  `Delete:`) are implemented from 2026-11-11 captures of Software Control,
+  not yet run from ultimattewire against a unit. Reading an image back
+  (for `images/` in an archive) is still not captured.
 - On 9996: every opcode but the four (the README notes the gaps between
   `0x0000` and `0x0003`, and between `0x0100` and `0x0103`); `images/`
   and `quickfiles/` (always written empty: a unit holding images or quick
@@ -554,11 +568,11 @@ the package.
 
 | | |
 |---|---|
-| Public names | 23 in the package: 6 before (`archive_unit_to_bytes`, `restore_unit_from_bytes`, `read_network`, `set_network`, `NetworkInterface`, `UltimatteNetworkError`) and 17 for the text protocol |
-| Opcodes (9996) | 4: read slot, read resource, write slot, write resource |
+| Public names | 24 in the package: 6 before (`archive_unit_to_bytes`, `restore_unit_from_bytes`, `read_network`, `set_network`, `NetworkInterface`, `UltimatteNetworkError`) , 17 for the text protocol and `UltimatteImageError` (media pool) |
+| Opcodes (9996) | 5: read slot, read resource, write slot, write image, write resource |
 | Blocks (9998) | 19 read (the 16 of the dump, END PRELUDE among them; MESSAGE, `ACK`, `NAK`), 6 sent (CONTROL, FILE, GPI, FRAME BUFFER, CAMERACONTROL, `NETWORK INTERFACE n`) and the status dump request of any |
 | Controls (the document's table) | 289: 176 range, 79 On/Off, 1 read only, 13 choices, 20 functions |
-| `Ultimatte` commands | 18 methods that send (§1.3) |
+| `Ultimatte` commands | 21 methods that send (§1.3) |
 | `NetworkInterface` fields | 14 |
 | Display ranges | 176 |
 | Archive members | 5 fixed (3 directories, 2 resources), one per preset, the readable dump |

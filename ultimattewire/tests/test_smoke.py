@@ -5,6 +5,7 @@
 import io
 import json
 import socket
+import struct
 import threading
 
 from ultimattewire import smoke
@@ -123,3 +124,47 @@ def test_no_unit_exits_2():
     s.close()
     rc, text = run("127.0.0.1", "--port", port)
     assert rc == 2 and "could not connect" in text
+
+
+# ---- --image / --flush (the 12 4K as captured) ------------------------------
+
+def run_4k(unit, *extra):
+    return run("127.0.0.1", "--port", unit.port, "--settings-port",
+               unit.media_port, "--idle-timeout", 1, *extra)
+
+
+def test_image_uploads_assigns_and_undoes(fake_4k):
+    fake_4k.pool["Studio.png"] = (1920, 1080, b"")
+    fake_4k.named["Background 1"] = "Studio.png"
+    rc, text = run_4k(fake_4k, "--image")
+    assert rc == 0, text
+    assert "uploaded ultimattewire-smoke.png (1920x1080" in text
+    assert "unit shows 'ultimattewire-smoke.png' OK" in text
+    assert "put 'Studio.png' back on BG 1 OK" in text
+    assert list(fake_4k.pool) == ["Studio.png"]          # the test image is gone
+    assert fake_4k.named["Background 1"] == "Studio.png"
+    w, h = struct.unpack(">II", fake_4k.uploads[0][2 + 23 + 16:2 + 23 + 24])
+    assert (w, h) == (1920, 1080)
+
+
+def test_image_refusal_is_reported_and_cleaned_up(fake_4k):
+    fake_4k.fg_locked = False
+    rc, text = run_4k(fake_4k, "--image")
+    assert rc == 1
+    assert "No Foreground source present" in text
+    assert fake_4k.pool == {}
+
+
+def test_image_refused_on_air(fake_4k):
+    fake_4k.controls["Tally Active"] = "on"
+    rc, text = run_4k(fake_4k, "--image")
+    assert rc == 1 and "Tally Active is on" in text
+    assert fake_4k.uploads == []
+
+
+def test_flush(fake_4k):
+    rc, text = run_4k(fake_4k, "--flush")
+    assert rc == 0 and "ACK, no refusal" in text and fake_4k.flushes == 1
+    fake_4k.fg_locked = False
+    rc, text = run_4k(fake_4k, "--flush")
+    assert rc == 1 and "No Foreground source present" in text

@@ -56,7 +56,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from ultimattewire import controls as C
 from ultimattewire._errors import UltimatteError
-from ultimattewire._protocol import CONTROL_PORT
+from ultimattewire._protocol import CONTROL_PORT, SETTINGS_PORT
 from ultimattewire.network import NetworkInterface, parse_interface
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,12 @@ _END_PRELUDE_LINE = PRELUDE_END.encode()
 # Frame buffers named by the document's FRAME BUFFER example.
 FRAME_BUFFERS = ("BG 1", "LY 1", "BG 2", "LY 2", "GM", "HM")
 FRAME_BUFFER_LAYERS = ("BG", "LY")
+# An Ultimatte 12 4K on 2.3 sends FRAME BUFFER by image name instead
+# (``Background 1: <image>``), and Software Control assigns that way.
+NAMED_BUFFERS = {"Background 1": "BG 1", "Layer 1": "LY 1",
+                 "Background 2": "BG 2", "Layer 2": "LY 2",
+                 "Garbage Matte": "GM", "Holdout Matte": "HM"}
+_NAMED_LAYERS = {"Background": "BG", "Layer": "LY"}
 
 
 # --------------------------------------------------------------------------
@@ -194,12 +200,15 @@ class FrameBufferState:
     """FRAME BUFFER. ``buffers`` by name (``BG 1``, ``LY 1``, ``BG 2``,
     ``LY 2``, ``GM``, ``HM``); ``mix`` and ``duration`` (milliseconds) by
     layer (``BG``, ``LY``); ``images`` maps a frame buffer number to the
-    image loaded in it (``Frame Buffer 1: Image 1``)."""
+    image loaded in it (``Frame Buffer 1: Image 1``). A unit that names
+    images per buffer (``Background 1: Newsroom.png``, the 12 4K) fills
+    ``assigned`` by the short name (``BG 1``); ``""`` is no image."""
     count: Optional[int] = None
     buffers: Dict[str, FrameBuffer] = field(default_factory=dict)
     mix: Dict[str, int] = field(default_factory=dict)
     duration: Dict[str, int] = field(default_factory=dict)
     images: Dict[int, str] = field(default_factory=dict)
+    assigned: Dict[str, str] = field(default_factory=dict)
     other: Dict[str, str] = field(default_factory=dict)
 
     def image_number(self, image: str) -> Optional[int]:
@@ -232,6 +241,9 @@ class UltimatteState:
     file_list: List[str] = field(default_factory=list)
     gpi_lists: Dict[int, GpiList] = field(default_factory=dict)
     image_list: List[str] = field(default_factory=list)
+    # IMAGE LIST's Capacity: / Available: in bytes (sent by the 12 4K)
+    image_capacity: Optional[int] = None
+    image_available: Optional[int] = None
     frame_buffer: FrameBufferState = field(default_factory=FrameBufferState)
     camera_id: Optional[int] = None
     messages: List[Dict[str, str]] = field(default_factory=list)
@@ -301,9 +313,11 @@ class Ultimatte:
                  connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
                  idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
                  function_idle_timeout: float = DEFAULT_FUNCTION_IDLE_TIMEOUT,
-                 socket_factory: Optional[Callable] = None):
+                 socket_factory: Optional[Callable] = None,
+                 settings_port: int = SETTINGS_PORT):
         self.host = host
         self.port = port
+        self.settings_port = settings_port      # 9996: image upload
         self.connect_timeout = connect_timeout
         self.idle_timeout = idle_timeout
         self.function_idle_timeout = function_idle_timeout
@@ -686,14 +700,113 @@ class Ultimatte:
 
     def assign_image(self, buffer: str, image: str,
                      enable: bool = True) -> FrameBuffer:
-        """Put the image called ``image`` (as listed in FRAME BUFFER's
-        ``Frame Buffer n:`` lines) on ``buffer`` and enable it."""
-        n = self.state.frame_buffer.image_number(image)
+        """Put the image called ``image`` on ``buffer``.
+
+        On a unit that names images per buffer (the 12 4K) this sends
+        ``Background 1: <image>`` as Software Control does and returns
+        once the unit's FRAME BUFFER update shows it there. The unit ACKs
+        and then refuses with a MESSAGE when the image isn't the running
+        format's size or no FG input is locked: UltimatteMessageError.
+        ``enable`` doesn't apply there.
+
+        Otherwise it is the document's form: the image's ``Frame Buffer n``
+        number on ``buffer``, enabled."""
+        fb = self.state.frame_buffer
+        if fb.assigned or (fb.image_number(image) is None
+                           and image in self.state.image_list):
+            return self._assign_named(buffer, image)
+        n = fb.image_number(image)
         if n is None:
             raise C.ControlValueError(
-                f"no frame buffer holds an image called {image!r}; loading "
-                f"images onto the unit isn't in the text protocol")
+                f"no frame buffer holds an image called {image!r}")
         return self.set_frame_buffer(buffer, index=n, enable=enable)
+
+    def _assign_named(self, buffer: str, image: str) -> FrameBuffer:
+        short = self._buffer_name(buffer)
+        wire = next(k for k, v in NAMED_BUFFERS.items() if v == short)
+        image = _one_line(image).strip()
+        if image and image not in self.state.image_list:
+            raise C.ControlValueError(
+                f"no image {image!r} in the media pool "
+                f"({', '.join(self.state.image_list) or 'empty'})")
+        # header spelled as Software Control sends it
+        self._command("Frame Buffer", [f"{wire}: {image}"],
+                      expect=_has_key("FRAME BUFFER:", wire), messages=True)
+        got = self.state.frame_buffer.assigned.get(short, "")
+        if got != image:
+            raise UltimatteError(
+                f"{self.host}: {wire} shows {got!r} after assigning {image!r}")
+        return FrameBuffer(short)
+
+    def assigned_image(self, buffer: str) -> Optional[str]:
+        """The image on ``buffer`` by name (``""``: none), or None when the
+        unit hasn't said."""
+        short = self._buffer_name(buffer)
+        fb = self.state.frame_buffer
+        if short in fb.assigned:
+            return fb.assigned[short]
+        b = fb.buffers.get(short)
+        if b is not None and b.index is not None:
+            return fb.images.get(b.index, "") if b.enable else ""
+        return None
+
+    # ------------------------------------------------------------------
+    # Media pool (not in the document; from captures of Software Control)
+    # ------------------------------------------------------------------
+
+    def upload_image(self, name: str, data: bytes, *,
+                     check_format: bool = True,
+                     idle_timeout: Optional[float] = None) -> List[str]:
+        """Load the PNG ``data`` into the media pool as ``name`` (over 9996,
+        see :mod:`ultimattewire.media`) and return the IMAGE LIST once this
+        session has seen the name in it. With ``check_format`` an image
+        that isn't the running format's size is refused before sending,
+        since the unit couldn't put it on a frame buffer."""
+        from ultimattewire import media
+        self._require()
+        name = media.check_name(name)
+        media.upload_image(self.host, name, data,
+                           video_format=(self.state.device.video_format
+                                         if check_format else None),
+                           port=self.settings_port)
+        self.wait_for(lambda s: name in s.image_list,
+                      idle_timeout=(self.function_idle_timeout
+                                    if idle_timeout is None else idle_timeout))
+        return self.state.image_list
+
+    def delete_image(self, name: str) -> List[str]:
+        """Remove ``name`` from the media pool with ``Image:`` / ``Delete:``,
+        as Software Control sends it. The unit clears it from any buffer
+        holding it (a FRAME BUFFER push), then sends IMAGE LIST; returns
+        that list once the name is gone from it."""
+        name = _one_line(name).strip()
+        if name not in self.state.image_list:
+            raise C.ControlValueError(f"no image {name!r} in the media pool")
+        self._command("Image", [f"Delete: {name}"],
+                      expect=lambda h, b: (h == "IMAGE LIST:"
+                                           and name not in self.state.image_list),
+                      messages=True)
+        return self.state.image_list
+
+    def flush_settings(self, quiet: float = 0.5) -> None:
+        """``CONTROL:`` / ``FLUSH SETTINGS: YES``, which Software Control
+        sends before an Archive: it writes the live state into the unit's
+        saved settings, so an archive read after it holds what is on the
+        unit even when CURRENT FILE says Modified. Not in the document.
+
+        The unit ACKs and, when it won't (no FG input locked), sends a
+        MESSAGE right after: UltimatteMessageError. What it sends when the
+        flush works isn't known yet, so after the ACK this reads until the
+        unit has been quiet for ``quiet`` seconds."""
+        text = "CONTROL:\nFLUSH SETTINGS: YES\n"
+        self._command("CONTROL", ["FLUSH SETTINGS: YES"])
+        while True:
+            block = self._recv_block(quiet)
+            if block is None:
+                return
+            self._apply(block)
+            if block[0].strip() == "MESSAGE:":
+                raise UltimatteMessageError(_kv_dict(block[1:], keep_bare=True), text)
 
     def set_frame_buffer_mix(self, layer: str, value: int) -> Optional[int]:
         """``BG Frame Buffer Mix`` / ``LY Frame Buffer Mix``. The document
@@ -719,6 +832,9 @@ class Ultimatte:
 
     def _buffer_name(self, buffer: str) -> str:
         b = " ".join((buffer or "").split()).upper()
+        for long, short in NAMED_BUFFERS.items():
+            if long.upper() == b:
+                return short
         known = set(FRAME_BUFFERS) | set(self.state.frame_buffer.buffers)
         for k in known:
             if k.upper() == b:
@@ -801,7 +917,7 @@ class Ultimatte:
             else:
                 self._apply(block)
                 if h == "MESSAGE:" and messages and acked:
-                    raise UltimatteMessageError(_kv_dict(block[1:]), text)
+                    raise UltimatteMessageError(_kv_dict(block[1:], keep_bare=True), text)
                 if expect is not None and matched is None and expect(h, block):
                     matched = block
             if acked and (expect is None or matched is not None):
@@ -940,7 +1056,17 @@ class Ultimatte:
             s.file_list = [ln.strip() for ln in body]
             return list(s.file_list)
         if name == "IMAGE LIST":
-            s.image_list = [ln.strip() for ln in body]
+            images = []
+            for ln in body:
+                k, sep, v = ln.partition(":")
+                key = k.strip().lower()
+                if sep and key == "capacity" and C.parse_int(v) is not None:
+                    s.image_capacity = C.parse_int(v)
+                elif sep and key == "available" and C.parse_int(v) is not None:
+                    s.image_available = C.parse_int(v)
+                else:
+                    images.append(ln.strip())
+            s.image_list = images
             return list(s.image_list)
         if name == "GPI LIST":
             return self._apply_gpi(body)
@@ -995,6 +1121,12 @@ class Ultimatte:
                 changes[k] = fb.mix[k[:2].upper()] = _int_or(v)
             elif re.match(r"(?i)^(BG|LY) Transition Duration$", k):
                 changes[k] = fb.duration[k[:2].upper()] = _int_or(v)
+            elif k in NAMED_BUFFERS:
+                changes[k] = fb.assigned[NAMED_BUFFERS[k]] = v
+            elif re.match(r"^(Background|Layer) Mix$", k):
+                changes[k] = fb.mix[_NAMED_LAYERS[k.split()[0]]] = _int_or(v)
+            elif re.match(r"^(Background|Layer) Transition Duration$", k):
+                changes[k] = fb.duration[_NAMED_LAYERS[k.split()[0]]] = _int_or(v)
             elif re.match(r"(?i)^Frame Buffer (\d+)$", k):
                 n = int(k.split()[-1])
                 fb.images[n] = v

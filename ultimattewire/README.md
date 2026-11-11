@@ -57,7 +57,7 @@ Python 3.10 or newer. No other dependencies.
 ## Features
 
 - `Ultimatte(host)`: one session on the documented text protocol. The unit's whole state as typed fields (identity, versions, network, video format and input locks, every control and its default, current file, file list, GPI event lists, image list, frame buffers, camera id), kept current by the unit's pushes; `subscribe(callback)` for live updates; every documented command (any control with its documented range checked first, relative offsets, functions such as Factory Defaults and Auto Screen Sample, file load/save/delete/rename, GPI event insert/remove/index, frame buffer assign/enable/mix/transition duration, camera id on the HD Mini, status dump requests). Model and protocol-version differences from the document's footnotes are enforced before anything is sent.
-- `python -m ultimattewire.smoke <host>`: read-only report of everything a unit says and where it differs from the document; `--write` does one reversible change.
+- `python -m ultimattewire.smoke <host>`: read-only report of everything a unit says and where it differs from the document; `--write` does one reversible change; `--image` uploads a still, assigns it and undoes both; `--flush` sends FLUSH SETTINGS.
 - `read_network(host)` / `set_network(host, address=…, netmask=…, gateway=…, dns=…, dynamic=…)`. The unit's network interface, the one Ultimatte Setup configures. `set_network` verifies by reading back the *settled* interface, not by trusting the unit's acknowledgement.
 - `archive_unit_to_bytes(host)`: pull every saved preset slot plus the `GPISettings` and `SavedSettings` resources into an in-memory zip in Smart Remote's exact layout, with a human-readable annotated state dump riding along.
 - `restore_unit_from_bytes(host, zip_bytes)`: push such a zip back, in the order the vendor app uses, aborting at the first rejected write. Its `SavedSettings` become the unit's live state at once, so settings changed on the unit and not saved are lost; the prelude's CURRENT FILE says whether there are any (`Modified`).
@@ -103,7 +103,9 @@ with Ultimatte("192.0.2.21") as u:               # reads the status dump
     u.set_control("Backing Color", "blue")       # returns the unit's echo
     u.offset_control("Matte Density", 10)
     u.load_file("Studio B")                      # raises UltimatteMessageError on a MESSAGE
-    u.assign_image("BG 1", "Newsroom")           # a still already on the unit
+    u.upload_image("Newsroom.png", open("Newsroom.png", "rb").read())  # 9996
+    u.assign_image("BG 1", "Newsroom.png")       # MESSAGE refusals raise
+    u.delete_image("Newsroom.png")
     u.poll(2.0)                                  # pushes from the panel or other clients
 ```
 
@@ -136,7 +138,7 @@ assert iface.netmask == "255.255.248.0"
 | What a 12 4K sends that the document doesn't say (below) | the existing code and bmdctl's hardware runs on a 12 4K, software 2.3 | Read in both forms |
 | `NETWORK INTERFACE n` sets and their settling | reverse-engineered on a 12 4K (2026-09) | `set_network`, verified |
 | Archive/restore on 9996 | reverse-engineered from Smart Remote 4 captures | verified (see Protocol notes) |
-| **Loading or removing media pool images** | not in the text protocol: "This has to be done from either a Smart Remote 4, or using the Software Control application" | **Unknown. Not implemented and not guessed**; it needs a Wireshark capture of Software Control doing it. Until then frame buffers can only use stills already on the unit. |
+| **Media pool images** | not in the text protocol ("This has to be done from either a Smart Remote 4, or using the Software Control application"); captured from Software Control on a 12 4K, 2026-11-11 | Upload: the 9996 write frame with opcode `0x0101`, the PNG as is (`upload_image`). Delete: `Image:` / `Delete: <name>` on 9998. Assign on the 12 4K: `Background 1: <name>`; the unit ACKs, then refuses with a MESSAGE when the image isn't the running format's size or no FG is locked. Also `FLUSH SETTINGS: YES` (`flush_settings`), sent before an Archive. **Not yet run from ultimattewire on a unit**; `python -m ultimattewire.smoke <ip> --image` does. Reading an image back for an archive isn't captured yet. |
 
 ### Where a unit differs from the document
 
@@ -187,6 +189,8 @@ git clone https://github.com/lucas-romanenko/bmdwire.git && cd bmdwire
 python -m ultimattewire.smoke 192.0.2.21                 # read only
 python -m ultimattewire.smoke 192.0.2.21 --watch 30      # then change something on the unit
 python -m ultimattewire.smoke 192.0.2.21 --write         # one reversible write
+python -m ultimattewire.smoke 192.0.2.21 --image         # upload a grey still, assign to BG 1, undo
+python -m ultimattewire.smoke 192.0.2.21 --flush         # FLUSH SETTINGS, print the answer
 ```
 
 Read only by default: it prints every block, lists where the unit differs

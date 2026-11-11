@@ -22,6 +22,7 @@ from ultimattewire.client import (CurrentFile, DeviceInfo, FrameBuffer,
                                   UltimatteState, UltimatteTimeout, Update,
                                   VersionInfo)
 from ultimattewire.controls import ControlValueError, UnsupportedError
+from ultimattewire.media import UltimatteImageError
 from ultimattewire.network import (NetworkInterface, UltimatteNetworkError,
                                    read_network, set_network)
 from ultimattewire.profile import archive_unit_to_bytes, restore_unit_from_bytes
@@ -48,6 +49,7 @@ __all__ = [
     "UltimatteTimeout",
     "UltimatteNak",
     "UltimatteMessageError",
+    "UltimatteImageError",
     "ControlValueError",
     "UnsupportedError",
 ]
