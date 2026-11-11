@@ -576,7 +576,11 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   Since `588a389` a still download that had a chunk within `DRAIN_STALL` (5 s) is not cut off: its
   chunks are FTUA'd and dropped, the lock is released at its `FTDC` (or `FTDE`, or after
   `DRAIN_STALL` with nothing, or `DRAIN_MAX`, 120 s, in all), and the next transfer waits for
-  that (§5.4 item 44).
+  that (§5.4 item 44). Since 1.13.0 that holds for a request with no chunk yet as well, and a
+  chunk of any of the session's last `ORPHAN_IDS` (64) transfers that it no longer follows is
+  FTUA'd and dropped; another session's ids are left alone (§5.4 item 52). The first `FTDE 1` of
+  a transfer is logged at info, and a `download_still` that stalls while the switcher answers
+  busy says so in its `TimeoutError`.
 
 ### 3.1 Stills
 
@@ -797,7 +801,14 @@ Readiness and identity:
   **only on the switcher's request** (go-back-N, max 128). There is no client-side retransmit
   timer, and the switcher's ACK number is never read. Since `d050c10` it is read, and what it
   hasn't acknowledged in 250 ms is resent; a reliable packet the kernel refuses keeps its
-  sequence number (§5.4 items 24 and 25).
+  sequence number (§5.4 items 24 and 25). Since 1.13.0 the wait is the smoothed round trip to
+  the switcher's ACK plus four times its variation (`resend_after()`, RFC 6298, packets sent
+  once only), between `RESEND_MIN` (50 ms) and `RESEND_MAX` (1 s), `RESEND_AFTER` (250 ms)
+  before the first measurement, doubled per resend nobody acknowledged; the same ACK-only
+  packet twice more (`DUP_ACKS`) resends at once; an ACK goes only when its number moves on
+  or the switcher resends a packet we have; packets park up to 4096 ahead, the duplicate
+  window is 8192; and a silence timeout says goodbye to the old session before the new hello
+  (§5.4 items 48 to 51). `transport.resends` and `transport.fast_resends` count them.
 - Goodbye: `close_session()` sends a SYN with `0x04`, fire-and-forget.
 - **There is no client keepalive.** `TiRq` is sent once, on ready. Silence is fine because ACKs
   flow from the UDP thread.
@@ -993,7 +1004,7 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
 it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and still apply to it.
 Items 34 to 37 were fixed after 1.8.0 and still apply to it. Item 3 and items 38 to 41 were
-fixed after 1.9.0 and still apply to it.
+fixed after 1.9.0 and still apply to it. Items 48 to 52 were fixed in 1.13.0 and still apply to 1.12.1 and earlier.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1367,6 +1378,33 @@ fixed after 1.9.0 and still apply to it.
     switcher has answered at all the limit is `CONNECT_HELLO_TIMEOUT` (10 s, two of the
     transport's 5 s hellos; `wait_ready(hello_timeout=...)`): with 5 s alone, one lost hello
     or answer failed the connect, ~2 % of connects at 1 % loss in a replay.
+48. **Every lost packet of ours costs 250 ms** (1.12.1). The switcher takes our packets in order
+    only and never asks for one it missed (no retransmission request in any capture, 330,000
+    packets). A lost `FTUA` held its send window shut until `RESEND_AFTER` resent it, where the
+    switcher's ACK comes back in 2 ms (p50) to 28 ms (p99) on a LAN. Offline, against a fake
+    switcher modelled on the captures: at 5 % loss a 1080p still took 96 s instead of 0.8 s, and
+    50 ms of jitter, reordering only, loaded none of 24 stills in 300 s. *Fixed in 1.13.0:* the
+    timer of §4.2, and the fast resend on a repeated ACK.
+49. **Repeated ACKs for packets parked behind a gap** (1.11.0). Each packet arriving after a
+    lost one was ACKed again with the same number. That says nothing new, and a switcher that
+    restarted its resend timer on any ACK would never resend the missing packet; whether the
+    hardware does is not known (the captures fit either). *Fixed in 1.13.0:* an ACK goes when its
+    number moves on, or when the switcher resends a packet we have (our ACK was lost).
+50. **A gap that takes long to fill drops the packets behind it** (1.0). After 512 packets parked
+    behind one missing packet, the delivery gate resynced and dropped them all, though the
+    switcher, having had them ACKed, would never send them again. In a download their `FTDa` got
+    no `FTUA`, the switcher's window stayed shut, and the abort that followed left its transfer
+    engine refusing every request (item 44). *Fixed in 1.13.0:* the park window is 4096.
+51. **A silence timeout leaves the old session to be reaped** (1.0). The re-handshake sent no
+    goodbye, so the switcher kept the old session's store lock (and any transfer of it) ~5 s,
+    the new session's lock request queued behind it. *Fixed in 1.13.0:* goodbye first.
+52. **A request the caller stops waiting for, before its first chunk, has its lock released**
+    (1.11.0), and chunks of a transfer the session no longer follows (another id than the one in
+    flight, or none in flight) are dropped without an `FTUA`. The switcher takes up to 2.5 s to a
+    1080p still's first chunk on a LAN (a capture, 2026-11-06), more on a busy link; a release
+    then, or a chunk left unanswered, holds its transfer engine, and every later request from
+    every session is refused with `FTDE 1`, which read at the caller as "stalled (no data for
+    15 s)" with the lock granted, slot after slot. *Fixed in 1.13.0:* §3.0.
 
 ## Counts
 

@@ -1,6 +1,7 @@
 # Copyright 2021 - 2022, Martijn Braam and the OpenAtem contributors
 # SPDX-License-Identifier: LGPL-3.0-only
 import logging
+import collections
 import random
 import struct
 import time
@@ -111,6 +112,16 @@ TRY_AGAIN_ATTEMPTS = 20
 # the lock is given back anyway, as before.
 DRAIN_STALL = 5.0
 DRAIN_MAX = 120.0
+
+# Chunks of a download this session asked for but no longer follows (its
+# caller gave up, it was retried under a new id, a drain ended before the
+# switcher started it) are acknowledged all the same, to their end: a chunk
+# left unacknowledged holds the switcher's transfer engine, and every later
+# request, ours and every other client's, is refused with FTDE 1 (try
+# again) for as long as it lasts (a 4K Plus, 2026-11-04). The ids of the
+# last ORPHAN_IDS transfers asked for are kept; another session's chunks
+# never come here.
+ORPHAN_IDS = 64
 
 
 def _first_transfer_id():
@@ -305,6 +316,10 @@ class AtemProtocol:
         self._draining = None
         # When the transfer in flight last had a chunk (None before its first).
         self._transfer_last_data = None
+        # Transfer ids this session asked for, newest last (ORPHAN_IDS), and
+        # those whose chunks came after we stopped following them.
+        self._asked_tids = collections.deque(maxlen=ORPHAN_IDS)
+        self._orphans = set()
         self.transfer_packets = 0
         self.transfer_budget = []
 
@@ -577,11 +592,11 @@ class AtemProtocol:
                 d['last'] = time.monotonic()
                 self.send_commands([TransferAckCommand(d['tid'], 0)])
                 return
-            if self.transfer is None:
-                # Straggler chunk after abort_transfers / lane reset — the
-                # packet is already ACKed, so raising here would also drop
-                # any state fields bundled in it (2026-07-06).
-                self.log.debug('FTDa with no transfer in flight — ignoring')
+            if self.transfer is None or contents.transfer != self.transfer.tid:
+                # A chunk of a transfer we no longer follow (ORPHAN_IDS):
+                # acknowledged, its data dropped. Raising here would also
+                # drop any state fields bundled in the packet (2026-07-06).
+                self._ack_orphan(contents.transfer)
                 return
             if contents.transfer == self.transfer.tid:
                 self._transfer_last_data = time.monotonic()
@@ -622,6 +637,11 @@ class AtemProtocol:
                               f'(FTDE {contents.status})')
                 self._end_drain()
                 return
+            if contents.transfer in self._orphans:
+                self._orphans.discard(contents.transfer)
+                self.log.info(f'download {contents.transfer} we no longer '
+                              f'followed ended (FTDE {contents.status})')
+                return
             if self.transfer is None:
                 # Straggler FTDE after abort_transfers / lane reset.
                 self.log.debug('FTDE with no transfer in flight — ignoring')
@@ -639,6 +659,12 @@ class AtemProtocol:
                 # each time, and give up after TRY_AGAIN_ATTEMPTS.
                 task = self.transfer
                 task.try_again = getattr(task, 'try_again', 0) + 1
+                if task.try_again == 1:
+                    # Once per transfer: a busy switcher was invisible in
+                    # the logs, and read as "no data" at the caller.
+                    self.log.info(f'transfer of {task.store}:{task.slot}: the '
+                                  f'switcher is busy (FTDE 1, try again); '
+                                  f'asking again')
                 if task.try_again > TRY_AGAIN_ATTEMPTS:
                     self.log.error(
                         f'transfer of {task.store}:{task.slot} refused '
@@ -686,6 +712,11 @@ class AtemProtocol:
                 self.log.info(f'abandoned download {d["tid"]} finished; '
                               f'its data dropped')
                 self._end_drain()
+                return
+            if contents.transfer in self._orphans:
+                self._orphans.discard(contents.transfer)
+                self.log.info(f'download {contents.transfer} we no longer '
+                              f'followed finished; its data dropped')
                 return
             if self.transfer is None:
                 # The ATEM announces transfer completions to ALL sessions —
@@ -902,6 +933,19 @@ class AtemProtocol:
         # 1/5/6 lock-dance recoveries stay internal.
         self._raise('file-transfer-error', contents)
 
+    def _ack_orphan(self, tid):
+        """Acknowledge a chunk of a transfer we asked for and no longer
+        follow (ORPHAN_IDS); anything else is not ours to answer."""
+        if tid not in self._asked_tids:
+            self.log.debug(f'FTDa for transfer {tid}, not one of ours — ignoring')
+            return
+        if tid not in self._orphans:
+            self._orphans.add(tid)
+            self.log.warning(f'chunks of download {tid}, which we no longer '
+                             f'follow: acknowledging it to its end so the '
+                             f'switcher can take the next request')
+        self.send_commands([TransferAckCommand(tid, 0)])
+
     def _end_drain(self):
         """The abandoned download is over (its FTDC or FTDE, or DRAIN_STALL /
         DRAIN_MAX): give its store lock back and carry on with the queue."""
@@ -935,6 +979,8 @@ class AtemProtocol:
         self.transfer_requested = False
         self._try_again_due = None
         self._draining = None
+        self._asked_tids.clear()
+        self._orphans.clear()
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
         self.locks = {}
@@ -996,11 +1042,16 @@ class AtemProtocol:
         drained to its end and its lock given back then (DRAIN_STALL)."""
         t = self.transfer
         last = self._transfer_last_data
+        # Drained too while the request is out and nothing has come yet:
+        # the switcher may be about to start it (it takes up to 2.5 s to
+        # send a still's first chunk, measured on a LAN, 2026-11-06), and a
+        # release then would leave its engine holding a transfer nobody
+        # takes. Only a download that has gone quiet for DRAIN_STALL after
+        # sending is given up on with its lock, as before.
         drain = (isinstance(t, TransferTask) and not t.upload and not t.clear
                  and t.store != 0xffff and self.transfer_requested
                  and t.tid is not None and self.locks.get(t.store)
-                 and last is not None
-                 and time.monotonic() - last < DRAIN_STALL
+                 and (last is None or time.monotonic() - last < DRAIN_STALL)
                  and self._can_wake() and self._draining is None)
         self.transfer_queue = {}
         self.transfer = None
@@ -1421,6 +1472,9 @@ class AtemProtocol:
             self.log.info('Requesting download of {}:{}'.format(next.store, next.slot))
         self.transfer_requested = True
         self._transfer_last_data = None
+        if not self._asked_tids or self._asked_tids[-1] != self.transfer.tid:
+            self._asked_tids.append(self.transfer.tid)
+        self._orphans.discard(self.transfer.tid)
         if self.transfer.upload:
             # Each attempt sends its metadata and its data from the start.
             self.transfer.metadata_sent = False

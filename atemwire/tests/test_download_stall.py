@@ -54,3 +54,14 @@ def test_the_whole_download_is_still_capped():
     with pytest.raises(TimeoutError, match=r'timed out \(0.5s\)'):
         ATEMConnection.download_still(_conn(p), 1, timeout=0.5, stall_timeout=0.2)
     assert time.monotonic() - started < 1.5
+
+
+def test_a_switcher_answering_busy_is_named():
+    # Refused with FTDE 1 all along, the lock ours: not silence, a busy
+    # transfer engine (2026-11-06: read as "no data" slot after slot).
+    import types
+    p = _FakeProto()
+    p.locks = {0: True}
+    p.transfer = types.SimpleNamespace(store=0, slot=1, try_again=7)
+    with pytest.raises(TimeoutError, match='answered busy .try again. 7 times'):
+        ATEMConnection.download_still(_conn(p), 1, timeout=5.0, stall_timeout=0.2)
