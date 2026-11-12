@@ -156,6 +156,11 @@ def compare_with_document(u: Ultimatte) -> list:
             except C.ControlValueError:
                 found.append(f"{name!r} = {val!r} isn't one of the document's choices")
     for c in C.CONTROLS:
+        # Functions are write-only: a 12 4K (2.3) never lists them in a
+        # status dump (smoke run on .81.42, 2026-11-12), so their absence
+        # says nothing.
+        if c.kind == C.FUNCTION:
+            continue
         if c.available_on(family) and c.name not in s.controls and \
                 not any(k.lower() == c.name.lower() for k in s.controls):
             if c.min_protocol and s.protocol and s.protocol < c.min_protocol:
@@ -378,14 +383,34 @@ def sample_test(u: Ultimatte, which: str, force: bool, out) -> bool:
         _p(out, f"  changed {k}: {v!r} -> {u.state.controls.get(k)!r}")
     if not changed:
         return ok
-    try:
-        got = u.set_controls(changed)
-        restored = got == changed
-        _p(out, f"  put {len(changed)} controls back "
-                f"{'OK' if restored else 'MISMATCH: CHECK THE UNIT'}")
-    except UltimatteError as e:
-        restored = False
-        _p(out, f"  PUT BACK FAILED ({e}): set these by hand: {changed}")
+    # Wall/Floor Color writes are refused with "Control Locked - Enable
+    # 'Manual Color' function" while Manual Color Enable is off (smoke run
+    # on .81.42, 2026-11-12), so they go back under Manual Color, which is
+    # then set back to what it was.
+    colours = {k: v for k, v in changed.items()
+               if k.lower().startswith(("wall color", "floor color"))}
+    rest = {k: v for k, v in changed.items() if k not in colours}
+    restored = True
+    for group in (rest, colours):
+        if not group:
+            continue
+        manual = group is colours and not u.get_control("Manual Color Enable")
+        try:
+            if manual:
+                u.set_control("Manual Color Enable", True)
+            try:
+                got = u.set_controls(group)
+            finally:
+                if manual:
+                    u.set_control("Manual Color Enable", False)
+            good = got == group
+            _p(out, f"  put {len(group)} controls back"
+                    f"{' (under Manual Color)' if manual else ''} "
+                    f"{'OK' if good else 'MISMATCH: CHECK THE UNIT'}")
+        except UltimatteError as e:
+            good = False
+            _p(out, f"  PUT BACK FAILED ({e}): set these by hand: {group}")
+        restored = restored and good
     return ok and restored
 
 
