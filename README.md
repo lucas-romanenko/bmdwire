@@ -15,7 +15,7 @@ pip install bmdwire
 | **`ultimattewire`** | Ultimatte 12 keyers: the whole documented text protocol (state, live updates, controls, presets, GPI, frame buffers), archive and restore with Smart Remote 4 compatible zips, network setup | MIT | [ultimattewire/README.md](ultimattewire/README.md) |
 | **`videohubwire`** | Videohub routers: state snapshot, crosspoint routing, labels over TCP 9990 | MIT | [videohubwire/README.md](videohubwire/README.md) |
 
-All four are pure standard library except atemwire, whose small C extension ships prebuilt for Linux, macOS and Windows on CPython 3.10 to 3.14, so installing needs no compiler. Pin the version in a requirements file (`bmdwire==1.13.0`) so a later release cannot change your install under you.
+All four are pure standard library except atemwire, whose small C extension ships prebuilt for Linux, macOS and Windows on CPython 3.10 to 3.14, so installing needs no compiler. Pin the version in a requirements file (`bmdwire==1.14.0`) so a later release cannot change your install under you.
 
 ## atemwire stands on pyatem
 
