@@ -138,7 +138,7 @@ def test_image_uploads_assigns_and_undoes(fake_4k):
     fake_4k.named["Background 1"] = "Studio.png"
     rc, text = run_4k(fake_4k, "--image")
     assert rc == 0, text
-    assert "uploaded ultimattewire-smoke.png (1920x1080" in text
+    assert "uploaded ultimattewire-smoke.png (png 1920x1080" in text
     assert "unit shows 'ultimattewire-smoke.png' OK" in text
     assert "put 'Studio.png' back on BG 1 OK" in text
     assert list(fake_4k.pool) == ["Studio.png"]          # the test image is gone
@@ -168,3 +168,35 @@ def test_flush(fake_4k):
     fake_4k.fg_locked = False
     rc, text = run_4k(fake_4k, "--flush")
     assert rc == 1 and "No Foreground source present" in text
+
+
+# ---- --image with a JPG, --sample (2026-11-12 captures) ---------------------
+
+def test_image_takes_a_jpg_file(fake_4k, tmp_path):
+    path = tmp_path / "jpg-test-1080.jpg"
+    path.write_bytes(fake_4k.jpg(1920, 1080, app_bytes=30000))
+    rc, text = run_4k(fake_4k, "--image", path, "--buffer", "Background 2")
+    assert rc == 0, text
+    assert "uploaded jpg-test-1080.jpg (jpeg 1920x1080" in text
+    assert f"sent {path.stat().st_size} of {path.stat().st_size} bytes" in text
+    assert fake_4k.pool == {}
+
+
+def test_sample_reports_how_it_ended_and_puts_controls_back(fake_4k):
+    fake_4k.sample_silence = 0.3
+    before = dict(fake_4k.controls)
+    rc, text = run_4k(fake_4k, "--sample", "wall")
+    assert rc == 0, text
+    assert "Wall Cursor Position Enable: unit reports True" in text
+    assert "Sample Wall: ended after" in text
+    assert "by CONTROL DEFAULT (no yes)" in text
+    assert "changed Floor Color Red: 0 -> 8333" in text
+    assert "controls back OK" in text
+    assert {k: v for k, v in fake_4k.controls.items() if before.get(k) != v} == {}
+
+
+def test_sample_refused_on_air(fake_4k):
+    fake_4k.controls["Tally Active"] = "on"
+    rc, text = run_4k(fake_4k, "--sample", "floor")
+    assert rc == 1 and "Tally Active is on" in text
+    assert not any("Sample" in r for r in fake_4k.received)

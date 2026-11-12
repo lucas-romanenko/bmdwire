@@ -57,7 +57,7 @@ Python 3.10 or newer. No other dependencies.
 ## Features
 
 - `Ultimatte(host)`: one session on the documented text protocol. The unit's whole state as typed fields (identity, versions, network, video format and input locks, every control and its default, current file, file list, GPI event lists, image list, frame buffers, camera id), kept current by the unit's pushes; `subscribe(callback)` for live updates; every documented command (any control with its documented range checked first, relative offsets, functions such as Factory Defaults and Auto Screen Sample, file load/save/delete/rename, GPI event insert/remove/index, frame buffer assign/enable/mix/transition duration, camera id on the HD Mini, status dump requests). Model and protocol-version differences from the document's footnotes are enforced before anything is sent.
-- `python -m ultimattewire.smoke <host>`: read-only report of everything a unit says and where it differs from the document; `--write` does one reversible change; `--image` uploads a still, assigns it and undoes both; `--flush` sends FLUSH SETTINGS.
+- `python -m ultimattewire.smoke <host>`: read-only report of everything a unit says and where it differs from the document; `--write` does one reversible change; `--image` uploads a PNG or JPG still, assigns it and undoes both; `--sample wall|floor` runs a sample and puts the controls back; `--flush` sends FLUSH SETTINGS.
 - `read_network(host)` / `set_network(host, address=…, netmask=…, gateway=…, dns=…, dynamic=…)`. The unit's network interface, the one Ultimatte Setup configures. `set_network` verifies by reading back the *settled* interface, not by trusting the unit's acknowledgement.
 - `archive_unit_to_bytes(host)`: pull every saved preset slot plus the `GPISettings` and `SavedSettings` resources into an in-memory zip in Smart Remote's exact layout, with a human-readable annotated state dump riding along.
 - `restore_unit_from_bytes(host, zip_bytes)`: push such a zip back, in the order the vendor app uses, aborting at the first rejected write. Its `SavedSettings` become the unit's live state at once, so settings changed on the unit and not saved are lost; the prelude's CURRENT FILE says whether there are any (`Modified`).
@@ -103,9 +103,13 @@ with Ultimatte("192.0.2.21") as u:               # reads the status dump
     u.set_control("Backing Color", "blue")       # returns the unit's echo
     u.offset_control("Matte Density", 10)
     u.load_file("Studio B")                      # raises UltimatteMessageError on a MESSAGE
-    u.upload_image("Newsroom.png", open("Newsroom.png", "rb").read())  # 9996
-    u.assign_image("BG 1", "Newsroom.png")       # MESSAGE refusals raise
-    u.delete_image("Newsroom.png")
+    u.upload_image("Newsroom.jpg", "/path/Newsroom.jpg",  # 9996, PNG or JPG,
+                   progress=lambda sent, total: print(sent, total))  # streamed
+    u.assign_image("BG 1", "Newsroom.jpg")       # MESSAGE refusals raise
+    u.assign_image("Garbage Matte", "mask.png")
+    u.delete_image("Newsroom.jpg")
+    u.set_control("Wall Cursor Position Enable", True)
+    u.run_function("Sample Wall")                # ends on yes or CONTROL DEFAULT
     u.poll(2.0)                                  # pushes from the panel or other clients
 ```
 
@@ -138,7 +142,7 @@ assert iface.netmask == "255.255.248.0"
 | What a 12 4K sends that the document doesn't say (below) | the existing code and bmdctl's hardware runs on a 12 4K, software 2.3 | Read in both forms |
 | `NETWORK INTERFACE n` sets and their settling | reverse-engineered on a 12 4K (2026-09) | `set_network`, verified |
 | Archive/restore on 9996 | reverse-engineered from Smart Remote 4 captures | verified (see Protocol notes) |
-| **Media pool images** | not in the text protocol ("This has to be done from either a Smart Remote 4, or using the Software Control application"); captured from Software Control on a 12 4K, 2026-11-11 | Upload: the 9996 write frame with opcode `0x0101`, the PNG as is (`upload_image`). Delete: `Image:` / `Delete: <name>` on 9998. Assign on the 12 4K: `Background 1: <name>`; the unit ACKs, then refuses with a MESSAGE when the image isn't the running format's size or no FG is locked. Also `FLUSH SETTINGS: YES` (`flush_settings`), sent before an Archive. **Not yet run from ultimattewire on a unit**; `python -m ultimattewire.smoke <ip> --image` does. Reading an image back for an archive isn't captured yet. |
+| **Media pool images** | not in the text protocol ("This has to be done from either a Smart Remote 4, or using the Software Control application"); captured from Software Control on a 12 4K, 2026-11-11 and -12 | Upload: the 9996 write frame with opcode `0x0101`, the PNG or JPG as is (the frame doesn't say which), sent in chunks from bytes, a path, a file or an iterable with a progress callback (`upload_image`); the size check reads a PNG's IHDR or a JPEG's SOF. Other formats weren't tried and are refused. Delete: `Image:` / `Delete: <name>` on 9998. Assign on the 12 4K: `Background 1: <name>`; the unit ACKs, then refuses with a MESSAGE when the image isn't the running format's size or no FG is locked. Also `FLUSH SETTINGS: YES` (`flush_settings`), sent before an Archive. **Not yet run from ultimattewire on a unit**; `python -m ultimattewire.smoke <ip> --image` does. Reading an image back for an archive isn't captured yet. |
 
 ### Where a unit differs from the document
 
@@ -158,6 +162,41 @@ bmdctl were run against; the client reads both forms:
   (the unit's own name is accepted; an unknown name needs `validate=False`).
 - DEVICE's `Video Format` is the format the unit is running; CONTROL's is
   the setting (`auto detect`).
+
+From three Wireshark captures of Software Control on that 12 4K
+(2026-11-12; Protocol.md in the library notes has the timings):
+
+- **Sample Wall / Sample Floor never answer `yes`.** The unit ACKs, says
+  nothing at all for about 4 s, then switches the cursor off itself,
+  pushes the new colours and a whole `CONTROL DEFAULT:` block.
+  `run_function` ends on `yes` (the document) or on CONTROL DEFAULT;
+  `function_idle_timeout` (10 s) covers the silence. Whether other
+  functions answer `yes` on a 12 4K isn't captured.
+- **A cursor move with its cursor off** is ACKed, then refused with
+  `MESSAGE: Control Locked - Enable 'Cursor' function`. CONTROL writes
+  raise `UltimatteMessageError` on a MESSAGE instead of waiting for an
+  echo.
+- **While a cursor is on** the unit pushes the colour under it (`Wall
+  Color Red/Green/Blue`, or `Floor Color ...`, one block each) about every
+  40 ms; turning the cursor on is echoed about 550 ms after the ACK, after
+  the first of those. Waits read through the stream, and it doesn't count
+  as the unit making progress, so a missing answer still times out.
+- **Writing the value a control already has is echoed**, and makes CURRENT
+  FILE `Modified`.
+- **Monitor Out** is reported by full name in lower case (`combined
+  matte`, `internal matte`); there is no `matte` alias. Software Control
+  offers only 6 of the document's 16 choices (Program, Foreground Input,
+  Background Input, Combined Matte, Internal Matte, Fill Out), even with
+  GM on and a mask assigned; the other 10 are unverified on a unit.
+- **Assigning an image** to Background 1/2, Garbage Matte or Holdout
+  Matte (`Frame Buffer:` / `Garbage Matte: <name>`) makes the unit set
+  that input's `Input Offset: 10000` and `Input Level: 6878` itself; it
+  doesn't turn `GM Enable` on. A JPG assigns like a PNG.
+- Software Control asks for single blocks with a bare header spelled
+  `Frame Buffer:`, `Image List:`, `File List:`, `Current File:`;
+  `refresh()` sends those four the same way.
+- Matte Density raw 2500 (its default) shows as 0 in Software Control,
+  which `profile._ranges` agrees with (0..10000 → -100..300%).
 
 ### Guesses the document forces, all unverified
 
@@ -190,6 +229,8 @@ python -m ultimattewire.smoke 192.0.2.21                 # read only
 python -m ultimattewire.smoke 192.0.2.21 --watch 30      # then change something on the unit
 python -m ultimattewire.smoke 192.0.2.21 --write         # one reversible write
 python -m ultimattewire.smoke 192.0.2.21 --image         # upload a grey still, assign to BG 1, undo
+python -m ultimattewire.smoke 192.0.2.21 --image bg.jpg  # the same with a PNG or JPG of your own
+python -m ultimattewire.smoke 192.0.2.21 --sample wall   # cursor on, Sample Wall, controls put back
 python -m ultimattewire.smoke 192.0.2.21 --flush         # FLUSH SETTINGS, print the answer
 ```
 
@@ -200,7 +241,11 @@ each documented block (these change nothing; the unit answers ACK or NAK).
 `--write` refuses while Tally Active is on unless `--force`, nudges one
 control (`--control`, default Matte Density) by one raw step, checks the
 unit's update, and puts the original value back even if the first write
-failed. `--json FILE` saves the state.
+failed. `--sample wall|floor` writes to the keyer: it turns that cursor
+on, runs the sample, prints how the unit ended it and how long it took,
+and sets every control the sample changed back in one block (CONTROL
+DEFAULT, which the unit rewrites, is not put back). `--json FILE` saves
+the state.
 
 ## Protocol notes
 

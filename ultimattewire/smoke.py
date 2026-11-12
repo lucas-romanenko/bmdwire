@@ -6,6 +6,7 @@
     python -m ultimattewire.smoke 192.0.2.21 --watch 30     # then touch the panel
     python -m ultimattewire.smoke 192.0.2.21 --write        # one reversible write
     python -m ultimattewire.smoke 192.0.2.21 --image        # upload, assign, undo
+    python -m ultimattewire.smoke 192.0.2.21 --sample wall  # cursor, Sample Wall, undo
 
 Read only unless ``--write``. What it does, in order:
 
@@ -21,18 +22,26 @@ Read only unless ``--write``. What it does, in order:
    sets one control (``--control``, default Matte Density) one step away
    from its value, checks the unit's update, and sets it back, checking
    again. The original value is put back even if the check fails.
-6. ``--image [FILE.png]``: refuses if Tally Active is on (unless
-   ``--force``), uploads FILE (or a plain grey PNG of the running format's
-   size, made here) to the media pool over 9996, assigns it to
-   ``--buffer`` (BG 1), checks the unit's update, then puts back what that
-   buffer had and deletes the image again (``--keep-image`` leaves it).
-   Not in the document: from captures of Software Control.
+6. ``--image [FILE]``: refuses if Tally Active is on (unless
+   ``--force``), uploads FILE (a PNG or JPG; or a plain grey PNG of the
+   running format's size, made here) to the media pool over 9996, in
+   chunks with its progress, assigns it to ``--buffer`` (BG 1), checks the
+   unit's update, then puts back what that buffer had and deletes the
+   image again (``--keep-image`` leaves it). Not in the document: from
+   captures of Software Control.
+   ``--sample wall|floor``: refuses if Tally Active is on (unless
+   ``--force``), turns that cursor on, runs Sample Wall / Sample Floor and
+   prints how the unit ended it (``yes`` as the document says, or the
+   cursor off and CONTROL DEFAULT as a 12 4K did in a capture) and how
+   long it took, then sets every control the sample changed back (one
+   CONTROL block). It writes to the keyer: CONTROL DEFAULT, which the unit
+   rewrites after a sample, is not put back.
 7. ``--flush``: sends FLUSH SETTINGS (what Software Control does before an
    Archive: it saves the live settings on the unit) and prints whatever
    the unit answers.
 
 Exit status 0 when everything it tried worked, 1 when a write, an image
-step or its undo did not verify, 2 when it could not connect.
+step, the sample or an undo did not verify, 2 when it could not connect.
 """
 
 from __future__ import annotations
@@ -47,7 +56,8 @@ import zlib
 
 from ultimattewire import controls as C
 from ultimattewire import media
-from ultimattewire.client import (Ultimatte, UltimatteConnectionError,
+from ultimattewire.client import (CURSOR_COLOR_KEYS, Ultimatte,
+                                  UltimatteConnectionError,
                                   UltimatteError, UltimatteNak,
                                   UltimatteTimeout)
 
@@ -259,14 +269,20 @@ def image_test(u: Ultimatte, path, buffer: str, keep: bool, force: bool,
     _p(out, f"  running format {u.state.device.video_format!r}, FG locked: {fg}")
     if path:
         name = os.path.basename(path)
-        with open(path, "rb") as f:
-            data = f.read()
+        try:
+            with open(path, "rb") as f:
+                data = f.read(media.HEADER_LIMIT)
+            length = os.path.getsize(path)
+        except OSError as e:
+            _p(out, f"  refused: {e}")
+            return False
     else:
         size = media.format_size(u.state.device.video_format)
         if size is None:
             _p(out, "  refused: can't tell the frame size from the running format; give a PNG")
             return False
         name, data = SMOKE_IMAGE, grey_png(*size)
+        length = len(data)
     if name in u.state.image_list:
         _p(out, f"  refused: {name!r} is already in the media pool; won't touch it")
         return False
@@ -274,16 +290,23 @@ def image_test(u: Ultimatte, path, buffer: str, keep: bool, force: bool,
     _p(out, f"  {buffer} has {before!r}; pool {u.state.image_list} "
             f"(available {u.state.image_available} of {u.state.image_capacity} bytes)")
     try:
-        w, h = media.png_size(data)
+        kind, (w, h) = media.image_size(data)
     except media.UltimatteImageError as e:
         _p(out, f"  refused: {e}")
         return False
     ok = uploaded = False
+    steps = []
+
+    def progress(sent, total):
+        # a line per quarter, so a big file shows it is moving
+        if not steps or sent * 4 // total > steps[-1] or sent == total:
+            steps.append(sent * 4 // total)
+            _p(out, f"  sent {sent} of {total} bytes")
     try:
         t0 = time.monotonic()
-        u.upload_image(name, data)
+        u.upload_image(name, path or data, progress=progress)
         uploaded = True
-        _p(out, f"  uploaded {name} ({w}x{h}, {len(data)} bytes) in "
+        _p(out, f"  uploaded {name} ({kind} {w}x{h}, {length} bytes) in "
                 f"{time.monotonic() - t0:.2f}s; pool now {u.state.image_list}")
         u.assign_image(buffer, name)
         got = u.assigned_image(buffer)
@@ -309,6 +332,61 @@ def image_test(u: Ultimatte, path, buffer: str, keep: bool, force: bool,
                 undone = False
                 _p(out, f"  DELETE FAILED ({e}): delete {name} in Software Control")
     return ok and undone
+
+
+def sample_test(u: Ultimatte, which: str, force: bool, out) -> bool:
+    """Cursor on, Sample Wall / Sample Floor, report, put back every
+    control it changed. True when the sample ended and the restore was
+    confirmed by the unit."""
+    if u.state.tally and not force:
+        _p(out, "  refused: Tally Active is on (the unit is on air); --force to override")
+        return False
+    where = which.strip().title()
+    function, cursor = f"Sample {where}", f"{where} Cursor Position Enable"
+    before = dict(u.state.controls)
+    seen = []
+    off = u.subscribe(seen.append)
+    ok = False
+    try:
+        t0 = time.monotonic()
+        on = u.set_control(cursor, True)
+        streamed = sum(1 for upd in seen if isinstance(upd.changes, dict)
+                       and any(k.lower() in CURSOR_COLOR_KEYS for k in upd.changes))
+        _p(out, f"  {cursor}: unit reports {on!r} after {time.monotonic() - t0:.2f}s "
+                f"({streamed} cursor colour pushes so far)")
+        mark, t0 = len(seen), time.monotonic()
+        u.run_function(function)
+        after = seen[mark:]
+        said_yes = any(upd.header == "CONTROL:" and isinstance(upd.changes, dict)
+                       and upd.changes.get(function) is True for upd in after)
+        default = any(upd.header == "CONTROL DEFAULT:" for upd in after)
+        _p(out, f"  {function}: ended after {time.monotonic() - t0:.2f}s by "
+                f"{'yes' if said_yes else 'CONTROL DEFAULT' if default else '?'}"
+                f"{'' if said_yes else ' (no yes)'}; {cursor} now {u.get_control(cursor)!r}")
+        ok = True
+    except UltimatteError as e:
+        _p(out, f"  failed: {e}")
+    finally:
+        off()
+    changed = {}
+    for k, v in before.items():
+        c = C.lookup(k)
+        if (c is not None and c.kind in (C.RANGE, C.BOOL)
+                and u.state.controls.get(k) != v):
+            changed[k] = v
+    for k, v in changed.items():
+        _p(out, f"  changed {k}: {v!r} -> {u.state.controls.get(k)!r}")
+    if not changed:
+        return ok
+    try:
+        got = u.set_controls(changed)
+        restored = got == changed
+        _p(out, f"  put {len(changed)} controls back "
+                f"{'OK' if restored else 'MISMATCH: CHECK THE UNIT'}")
+    except UltimatteError as e:
+        restored = False
+        _p(out, f"  PUT BACK FAILED ({e}): set these by hand: {changed}")
+    return ok and restored
 
 
 def flush_test(u: Ultimatte, out) -> bool:
@@ -344,13 +422,17 @@ def main(argv=None, out=None) -> int:
     ap.add_argument("--control", default="Matte Density",
                     help="the control --write nudges by one step")
     ap.add_argument("--force", action="store_true",
-                    help="--write / --image even while Tally Active is on")
-    ap.add_argument("--image", nargs="?", const="", default=None, metavar="FILE.png",
-                    help="upload a PNG (default: a grey one made here), assign it, undo")
+                    help="--write / --image / --sample even while Tally Active is on")
+    ap.add_argument("--image", nargs="?", const="", default=None, metavar="FILE",
+                    help="upload a PNG or JPG (default: a grey PNG made here), "
+                         "assign it, undo")
     ap.add_argument("--buffer", default="BG 1",
                     help="the frame buffer --image assigns to")
     ap.add_argument("--keep-image", action="store_true",
                     help="leave the --image upload in the media pool")
+    ap.add_argument("--sample", choices=("wall", "floor"),
+                    help="cursor on, Sample Wall / Floor, put the controls back "
+                         "(writes to the keyer)")
     ap.add_argument("--flush", action="store_true",
                     help="send FLUSH SETTINGS and print what the unit says")
     ap.add_argument("--json", metavar="FILE",
@@ -389,6 +471,10 @@ def main(argv=None, out=None) -> int:
             _p(out, "== image test (upload over 9996, assign, undo)")
             if not image_test(u, args.image, args.buffer, args.keep_image,
                               args.force, out):
+                status = 1
+        if args.sample:
+            _p(out, f"== sample test (Sample {args.sample.title()}, then put back)")
+            if not sample_test(u, args.sample, args.force, out):
                 status = 1
         if args.flush:
             _p(out, "== flush settings")

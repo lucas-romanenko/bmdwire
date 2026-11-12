@@ -517,7 +517,10 @@ def test_refresh_every_block(fake_unit, header, n):
         lines = u.refresh(header.lower())
         assert lines[0] == header + ":"
         assert len([ln for ln in lines[1:] if ln]) == n
-    assert unit.received == [header + ":"]
+    # the four Software Control asks for go as it spells them (captured)
+    sent = {"FRAME BUFFER": "Frame Buffer", "IMAGE LIST": "Image List",
+            "FILE LIST": "File List", "CURRENT FILE": "Current File"}
+    assert unit.received == [sent.get(header, header) + ":"]
 
 
 def test_refresh_replaces_state(fake_unit):
@@ -682,3 +685,187 @@ def test_camera_control_elsewhere_is_refused(fake_unit):
         with pytest.raises(UnsupportedError):
             u.set_camera_id(4)
     assert sent(unit) == []
+
+
+# ---- what a 12 4K did on 2026-11-12 (Software Control captures) -------------
+#
+# Replayed byte for byte from "2026-11-12 Ultimatte same-value write, sample,
+# cursor, monitor out (81.42) - 9998 only.pcapng", then the same behaviour
+# against the fake 12 4K with its timing scaled down.
+
+PRELUDE_81_42 = (
+    "PROTOCOL PREAMBLE:\nVersion: 2.3\n\n"
+    "IDENTITY:\nModel: Ultimatte 12 4K\nLabel: Ultimatte Editor\n"
+    "Unique ID: DF92D2DAAA8244C4ADA6D318E183B58D\n\n"
+    "DEVICE:\nVideo Format: 1080p25\nReference Source: foreground\n"
+    "FG In: Locked\nBG In: Not Locked\n\n"
+    "CONTROL:\nMatte Density: 2500\nCursor X: 192\nCursor Y: 108\n"
+    "Cursor 2 X: 1728\nCursor 2 Y: 972\nWall Cursor Position Enable: off\n"
+    "Floor Cursor Position Enable: off\nMonitor Out: program\n\n"
+    "CURRENT FILE:\nName: Ultimatte Defaults\nStatus: Clean\n\n"
+    "END PRELUDE:\n\n"
+)
+
+
+def test_capture_same_value_write_is_echoed():
+    # 9.904: Matte Density: 2500 while at 2500
+    u, sock = scripted([PRELUDE_81_42.encode(), b"ACK\n\n",
+                        b"CONTROL:\nMatte Density: 2500\n\n",
+                        b"CURRENT FILE:\nName: Ultimatte Defaults\nStatus: Modified\n\n"])
+    u.connect()
+    assert u.set_control("Matte Density", 2500) == 2500
+    assert sock.sent.endswith(b"CONTROL:\nMatte Density: 2500\n\n")
+    u.poll(0)
+    assert u.state.current_file.modified is True
+
+
+def test_capture_cursor_enable_echo_after_colour_pushes():
+    # 50.935: the echo came 550 ms after the ACK, after a colour push
+    u, sock = scripted([PRELUDE_81_42.encode(), b"ACK\n\n",
+                        b"CONTROL:\nWall Color Blue: 2956\n\n",
+                        b"CONTROL:\nWall Color Green: 3744\n\n",
+                        b"CONTROL:\nWall Color Red: 5490\n\n",
+                        b"CONTROL:\nWall Cursor Position Enable: on\n\n",
+                        b"CONTROL:\nWall Color Blue: 2956\n\n"])
+    u.connect()
+    assert u.set_control("Wall Cursor Position Enable", True) is True
+    assert u.state.controls["Wall Color Red"] == 5490
+
+
+def test_capture_cursor_move_with_the_cursor_off_raises():
+    # 66.326: Offset Cursor X after Sample Wall had turned the cursor off
+    u, sock = scripted([PRELUDE_81_42.encode(), b"ACK\n\n",
+                        b"MESSAGE:\nControl Locked - Enable 'Cursor' function\n\n"])
+    u.connect()
+    with pytest.raises(UltimatteMessageError, match="Control Locked"):
+        u.offset_control("Cursor X", -15)
+    assert u.state.messages[-1] == {"": "Control Locked - Enable 'Cursor' function"}
+
+
+def test_capture_sample_wall_completes_on_control_default():
+    # 62.382: ACK, 4 s of nothing, cursor off, colours, CONTROL DEFAULT; no yes
+    u, sock = scripted([PRELUDE_81_42.encode(), b"ACK\n\n",
+                        b"CONTROL:\nWall Cursor Position Enable: off\n\n",
+                        b"CONTROL:\nFloor Color Blue: 5958\n\n",
+                        b"CONTROL:\nFloor Color Green: 6757\n\n",
+                        b"CONTROL:\nFloor Color Red: 8333\n\n",
+                        b"CONTROL:\nDirect Light Blue: 10000\n\n",
+                        b"CONTROL:\nDirect Light Green: 3253\n\n",
+                        b"CONTROL:\nDirect Light Red: 10000\n\n",
+                        b"CONTROL DEFAULT:\nMatte Density: 2500\n"
+                        b"Direct Light Green: 3253\n\n"])
+    u.connect()
+    u.run_function("Sample Wall")
+    assert sock.sent.endswith(b"CONTROL:\nSample Wall: yes\n\n")
+    c = u.state.controls
+    assert c["Wall Cursor Position Enable"] is False
+    assert (c["Floor Color Red"], c["Floor Color Green"], c["Floor Color Blue"]) \
+        == (8333, 6757, 5958)
+    assert c["Direct Light Green"] == 3253
+
+
+def test_capture_monitor_out_full_lower_case_names():
+    # 80.623: Software Control sends and the unit echoes "combined matte"
+    u, sock = scripted([PRELUDE_81_42.encode(), b"ACK\n\n",
+                        b"CONTROL:\nMonitor Out: combined matte\n\n"])
+    u.connect()
+    assert u.set_control("Monitor Out", "Combined Matte") == "combined matte"
+    assert sock.sent.endswith(b"CONTROL:\nMonitor Out: combined matte\n\n")
+    with pytest.raises(ControlValueError):
+        u.set_control("Monitor Out", "matte")        # no such choice
+
+
+def session_4k(unit, **kw):
+    kw.setdefault("idle_timeout", 0.3)
+    return Ultimatte("127.0.0.1", unit.port, **kw)
+
+
+def test_4k_sample_wall_waits_out_the_silence(fake_4k):
+    fake_4k.sample_silence = 0.5             # 4 s on the unit
+    with session_4k(fake_4k, function_idle_timeout=1.5) as u:
+        u.set_control("Wall Cursor Position Enable", True)
+        t0 = time.monotonic()
+        u.run_function("Sample Wall")
+        assert time.monotonic() - t0 >= 0.45
+        assert u.state.controls["Wall Cursor Position Enable"] is False
+        assert u.state.controls["Floor Color Red"] == 8333
+        assert u.state.control_defaults["Direct Light Green"] == 3253
+
+
+def test_4k_sample_floor_without_yes(fake_4k):
+    fake_4k.sample_silence = 0.2
+    with session_4k(fake_4k, function_idle_timeout=1.0) as u:
+        u.set_control("Floor Cursor Position Enable", True)
+        seen = []
+        u.subscribe(lambda upd: seen.append(upd.changes), ["CONTROL"])
+        u.run_function("Sample Floor")
+        assert u.state.controls["Floor Cursor Position Enable"] is False
+        assert not any("Sample Floor" in c for c in seen)      # never "yes"
+
+
+def test_4k_sample_silence_is_the_function_timeout_s_to_cover(fake_4k):
+    fake_4k.sample_silence = 0.8
+    with session_4k(fake_4k, function_idle_timeout=0.3) as u:
+        with pytest.raises(UltimatteTimeout):
+            u.run_function("Sample Wall")
+
+
+def test_default_function_timeout_covers_the_captured_silence():
+    from ultimattewire.client import DEFAULT_FUNCTION_IDLE_TIMEOUT
+    assert DEFAULT_FUNCTION_IDLE_TIMEOUT >= 2 * 4.0     # 4.0 s seen twice
+
+
+def test_4k_cursor_moves_need_their_cursor(fake_4k):
+    with session_4k(fake_4k) as u:
+        with pytest.raises(UltimatteMessageError, match="Enable 'Cursor'"):
+            u.offset_control("Cursor X", 15)
+        assert u.connected                   # a refusal, not a broken session
+        u.set_control("Wall Cursor Position Enable", True)
+        assert u.offset_control("Cursor X", 15) == 207
+        with pytest.raises(UltimatteMessageError):
+            u.offset_control("Cursor 2 Y", -15)      # floor cursor still off
+        u.set_control("Floor Cursor Position Enable", True)
+        assert u.offset_control("Cursor 2 Y", -15) == 957
+
+
+def test_4k_same_value_write_is_echoed(fake_4k):
+    with session_4k(fake_4k) as u:
+        assert u.get_control("Matte Density") == 2500
+        assert u.set_control("Matte Density", 2500) == 2500
+        u.wait_for(lambda s: s.current_file.modified)
+        assert fake_4k.received[-1] == "CONTROL:\nMatte Density: 2500"
+
+
+def test_4k_colour_stream_does_not_hold_a_wait_open(fake_4k):
+    fake_4k.stream_interval = 0.01
+    fake_4k.silent_controls = {"Matte Density"}
+    with session_4k(fake_4k, idle_timeout=0.3) as u:
+        assert u.set_control("Wall Cursor Position Enable", True) is True
+        t0 = time.monotonic()
+        with pytest.raises(UltimatteTimeout, match="cursor colour stream"):
+            u.set_control("Matte Density", 3000)
+        assert time.monotonic() - t0 < 1.5
+    with session_4k(fake_4k, idle_timeout=0.3) as u:
+        t0 = time.monotonic()
+        with pytest.raises(UltimatteTimeout):
+            u.wait_for(lambda s: False)
+        assert time.monotonic() - t0 < 1.5
+        assert u.state.controls["Wall Color Red"] == 5490   # still applied
+
+
+def test_4k_writes_go_through_the_colour_stream(fake_4k):
+    fake_4k.stream_interval = 0.005
+    with session_4k(fake_4k) as u:
+        u.set_control("Wall Cursor Position Enable", True)
+        u.set_control("Floor Cursor Position Enable", True)
+        for v in (2600, 2700, 2500):
+            assert u.set_control("Matte Density", v) == v
+        assert u.offset_control("Cursor 2 X", -15) == 1713
+
+
+def test_4k_refresh_spells_the_header_as_software_control(fake_4k):
+    with session_4k(fake_4k) as u:
+        for header in ("FRAME BUFFER", "IMAGE LIST", "FILE LIST", "CURRENT FILE"):
+            assert u.refresh(header)[0] == header + ":"
+    assert fake_4k.received == ["Frame Buffer:", "Image List:", "File List:",
+                                "Current File:"]

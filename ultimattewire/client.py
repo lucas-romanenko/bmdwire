@@ -66,8 +66,9 @@ DEFAULT_CONNECT_TIMEOUT = 5.0
 # prelude, for an ACK, for an update. Counted from the last byte received,
 # never from the start of the wait.
 DEFAULT_IDLE_TIMEOUT = 3.0
-# Functions (Auto Screen Sample, Factory Defaults, ...) answer "Yes" when
-# done; how long the unit may stay silent before that.
+# How long the unit may stay silent while a function (Auto Screen Sample,
+# Sample Wall, ...) runs. A 12 4K on 2.3 said nothing at all for 4.0 s
+# after Sample Wall / Sample Floor (captured 2026-11-12).
 DEFAULT_FUNCTION_IDLE_TIMEOUT = 10.0
 CONNECT_RETRY_DELAY_S = 0.25        # one retry: a cold unit drops the first SYN
 
@@ -84,6 +85,21 @@ NAMED_BUFFERS = {"Background 1": "BG 1", "Layer 1": "LY 1",
                  "Background 2": "BG 2", "Layer 2": "LY 2",
                  "Garbage Matte": "GM", "Holdout Matte": "HM"}
 _NAMED_LAYERS = {"Background": "BG", "Layer": "LY"}
+
+# Bare headers as Software Control spells them when it asks a 12 4K for one
+# block (captured 2026-11-11 and -12); the unit answers ACK and the block
+# in capitals. Any other header goes as the document writes it.
+_REFRESH_SPELLING = {"FRAME BUFFER": "Frame Buffer", "IMAGE LIST": "Image List",
+                     "FILE LIST": "File List", "CURRENT FILE": "Current File"}
+
+# While a cursor is on (Wall / Floor Cursor Position Enable) a 12 4K pushes
+# the colour under it, one CONTROL block per component, about every 40 ms
+# (captured 2026-11-12). It answers nothing, so it doesn't count as the
+# unit making progress: a wait still ends after ``idle_timeout`` of
+# anything else.
+CURSOR_COLOR_KEYS = frozenset(f"{where} Color {c}".lower()
+                              for where in ("Wall", "Floor")
+                              for c in ("Red", "Green", "Blue"))
 
 
 # --------------------------------------------------------------------------
@@ -107,8 +123,10 @@ class UltimatteNak(UltimatteError):
 
 
 class UltimatteMessageError(UltimatteError):
-    """The unit answered a FILE or GPI command with a MESSAGE block
-    (``Warning: Event limit exceeded``) instead of the update."""
+    """The unit answered a command with a MESSAGE block instead of the
+    update: a FILE or GPI command (``Warning: Event limit exceeded``), or a
+    CONTROL the unit won't take now (``Control Locked - Enable 'Cursor'
+    function``, a cursor move with the cursor off)."""
 
     def __init__(self, message: Dict[str, str], block: str):
         self.message = message
@@ -458,12 +476,14 @@ class Ultimatte:
         after a change that the unit really holds it."""
         self._require()
         idle = self.idle_timeout if idle_timeout is None else idle_timeout
+        clock = _IdleClock(idle)
         while not predicate(self.state):
-            block = self._recv_block(idle)
+            block = self._recv_block(clock.left())
             if block is None:
                 raise UltimatteTimeout(
                     f"{self.host}: the expected state did not arrive "
-                    f"(nothing from the unit for {idle:g}s)")
+                    f"({clock.silence()})")
+            clock.saw(block)
             self._apply(block)
         return self.state
 
@@ -475,9 +495,13 @@ class Ultimatte:
         """Ask the unit to resend a whole block (``refresh('CONTROL')``,
         ``refresh('NETWORK INTERFACE 0')``) and return its lines once it
         has been applied. A header with several blocks (GPI LIST) returns
-        the first; the rest are applied as they arrive."""
+        the first; the rest are applied as they arrive.
+
+        FRAME BUFFER, IMAGE LIST, FILE LIST and CURRENT FILE go out
+        spelled as Software Control sends them (``Frame Buffer:``)."""
         header = header.rstrip(":").strip().upper()
-        return self._command(header, [], expect=lambda h, b: h == header + ":")
+        return self._command(_REFRESH_SPELLING.get(header, header), [],
+                             expect=lambda h, b: h == header + ":")
 
     # ------------------------------------------------------------------
     # Controls
@@ -495,7 +519,14 @@ class Ultimatte:
         model's footnotes and the protocol version before anything is sent
         (``validate=False`` sends it as given). With ``wait`` (the default)
         this returns once the unit's CONTROL update carrying the control
-        arrives; the document says to trust that update, not the ACK."""
+        arrives; the document says to trust that update, not the ACK. A
+        12 4K echoes a value the control already has too (captured on 2.3).
+
+        A unit that ACKs and then won't (``MESSAGE: Control Locked - Enable
+        'Cursor' function`` for a cursor move with the cursor off) raises
+        :class:`UltimatteMessageError` rather than waiting for an echo that
+        never comes. Pushes the unit makes meanwhile (the cursor colour
+        stream) are applied on the way."""
         return self.set_controls({name: value}, validate=validate,
                                  wait=wait)[self._wire_name(name)]
 
@@ -525,14 +556,15 @@ class Ultimatte:
                     k = ln.partition(":")[0].strip().lower()
                     seen.add(k)
             return all(n.lower() in seen for n in names)
-        self._command("CONTROL", lines, expect=done)
+        self._command("CONTROL", lines, expect=done, messages=True)
         return {n: self.state.controls.get(n) for n in names}
 
     def offset_control(self, name: str, delta: int, *, validate: bool = True,
                        wait: bool = True):
         """Change a numeric control by ``delta`` (``Offset <name>: <delta>``)
         and return the value the unit reports. "Only controls with
-        numerical ranges support this relative mode." """
+        numerical ranges support this relative mode." A MESSAGE in place of
+        the echo (a cursor that is off) raises UltimatteMessageError."""
         wire = self._wire_name(name)
         control = C.lookup(wire)
         if validate:
@@ -545,13 +577,24 @@ class Ultimatte:
         if not wait:
             self._command("CONTROL", [line])
             return None
-        self._command("CONTROL", [line], expect=_has_key("CONTROL:", wire))
+        self._command("CONTROL", [line], expect=_has_key("CONTROL:", wire),
+                      messages=True)
         return self.state.controls.get(wire)
 
     def run_function(self, name: str, *, idle_timeout: Optional[float] = None):
         """Run a function control (``Factory Defaults``, ``Auto Screen
-        Sample``, ``Matte Reset``, ...): send ``yes``, and return once the
-        unit answers ``yes`` ("to indicate the function is complete")."""
+        Sample``, ``Sample Wall``, ``Matte Reset``, ...): send ``yes`` and
+        return once the unit says it is done.
+
+        The document says the unit answers ``yes`` "to indicate the
+        function is complete"; that ends the wait. A 12 4K on 2.3 never
+        sent it for Sample Wall / Sample Floor (captured 2026-11-12): it
+        ACKed, said nothing for 4 s, then switched the cursor off itself,
+        pushed the new colours and a whole ``CONTROL DEFAULT:`` block. That
+        block ends the wait too, so this returns with the new colours in
+        state. ``idle_timeout`` (default ``function_idle_timeout``, 10 s)
+        is how long the unit may stay silent before that. A MESSAGE after
+        the ACK raises UltimatteMessageError."""
         wire = self._wire_name(name)
         control = C.lookup(wire)
         if control is None or control.kind != C.FUNCTION:
@@ -559,6 +602,8 @@ class Ultimatte:
         C.format_value(control, True, self.context())
 
         def done(h, block):
+            if h == "CONTROL DEFAULT:":
+                return True
             if h != "CONTROL:":
                 return False
             for ln in block[1:]:
@@ -566,7 +611,7 @@ class Ultimatte:
                 if k.strip().lower() == wire.lower() and C.parse_bool(v):
                     return True
             return False
-        self._command("CONTROL", [f"{wire}: yes"], expect=done,
+        self._command("CONTROL", [f"{wire}: yes"], expect=done, messages=True,
                       idle_timeout=(self.function_idle_timeout
                                     if idle_timeout is None else idle_timeout))
 
@@ -703,11 +748,17 @@ class Ultimatte:
         """Put the image called ``image`` on ``buffer``.
 
         On a unit that names images per buffer (the 12 4K) this sends
-        ``Background 1: <image>`` as Software Control does and returns
-        once the unit's FRAME BUFFER update shows it there. The unit ACKs
-        and then refuses with a MESSAGE when the image isn't the running
-        format's size or no FG input is locked: UltimatteMessageError.
-        ``enable`` doesn't apply there.
+        ``Frame Buffer:`` / ``Background 1: <image>`` as Software Control
+        does (``Garbage Matte``, ``Holdout Matte`` and the others alike)
+        and returns once the unit's FRAME BUFFER update shows it there. The
+        unit ACKs and then refuses with a MESSAGE when the image isn't the
+        running format's size or no FG input is locked:
+        UltimatteMessageError. ``enable`` doesn't apply there. After an
+        assignment to a background or a mask the 12 4K sets that input's
+        ``BM`` / ``GM`` / ``HM Input Offset: 10000`` and ``Input Level:
+        6878`` itself and pushes CONTROL DEFAULT (captured 2026-11-12); it
+        doesn't turn ``GM Enable`` / ``HM Enable`` on. Those pushes are
+        applied when the session next reads.
 
         Otherwise it is the document's form: the image's ``Frame Buffer n``
         number on ``buffer``, enabled."""
@@ -754,18 +805,24 @@ class Ultimatte:
     # Media pool (not in the document; from captures of Software Control)
     # ------------------------------------------------------------------
 
-    def upload_image(self, name: str, data: bytes, *,
+    def upload_image(self, name: str, data, *, size: Optional[int] = None,
+                     progress: Optional[Callable[[int, int], None]] = None,
                      check_format: bool = True,
                      idle_timeout: Optional[float] = None) -> List[str]:
-        """Load the PNG ``data`` into the media pool as ``name`` (over 9996,
-        see :mod:`ultimattewire.media`) and return the IMAGE LIST once this
-        session has seen the name in it. With ``check_format`` an image
-        that isn't the running format's size is refused before sending,
-        since the unit couldn't put it on a frame buffer."""
+        """Load a PNG or JPG into the media pool as ``name`` (over 9996, see
+        :mod:`ultimattewire.media`) and return the IMAGE LIST once this
+        session has seen the name in it.
+
+        ``data`` is the file as bytes, a path, a binary file or an iterable
+        of chunks (``size`` for a stream that can't tell its length); it is
+        sent in chunks, calling ``progress(sent, total)`` after each. With
+        ``check_format`` an image that isn't the running format's size is
+        refused before sending, since the unit couldn't put it on a frame
+        buffer."""
         from ultimattewire import media
         self._require()
         name = media.check_name(name)
-        media.upload_image(self.host, name, data,
+        media.upload_image(self.host, name, data, size=size, progress=progress,
                            video_format=(self.state.device.video_format
                                          if check_format else None),
                            port=self.settings_port)
@@ -800,10 +857,12 @@ class Ultimatte:
         unit has been quiet for ``quiet`` seconds."""
         text = "CONTROL:\nFLUSH SETTINGS: YES\n"
         self._command("CONTROL", ["FLUSH SETTINGS: YES"])
+        clock = _IdleClock(quiet)
         while True:
-            block = self._recv_block(quiet)
+            block = self._recv_block(clock.left())
             if block is None:
                 return
+            clock.saw(block)
             self._apply(block)
             if block[0].strip() == "MESSAGE:":
                 raise UltimatteMessageError(_kv_dict(block[1:], keep_bare=True), text)
@@ -886,7 +945,8 @@ class Ultimatte:
         """Send ``header`` + ``lines`` + blank line; wait for ACK/NAK, then
         (if ``expect``) for the block ``expect(header, lines)`` accepts.
         Every other block on the way is applied. With ``messages``, a
-        MESSAGE block in place of the expected one raises."""
+        MESSAGE block in place of the expected one raises. The cursor
+        colour stream doesn't hold the wait open (:class:`_IdleClock`)."""
         self._require()
         text = header + ":\n" + "".join(ln + "\n" for ln in lines) + "\n"
         idle = self.idle_timeout if idle_timeout is None else idle_timeout
@@ -899,16 +959,18 @@ class Ultimatte:
                 f"{self.host}: connection lost sending {header} ({e})") from e
         acked = False
         matched = None
+        clock = _IdleClock(idle)
         while True:
-            block = self._recv_block(idle)
+            block = self._recv_block(clock.left())
             if block is None:
                 # A late ACK would be taken as the next command's: the
                 # session can't be trusted any more, so it ends here.
                 self.close()
                 what = "ACK" if not acked else "update after the ACK"
                 raise UltimatteTimeout(
-                    f"{self.host}: no {what} for {header} (nothing from the "
-                    f"unit for {idle:g}s); session closed, connect again")
+                    f"{self.host}: no {what} for {header} ({clock.silence()}); "
+                    f"session closed, connect again")
+            clock.saw(block)
             h = block[0].strip()
             if h == "ACK":
                 acked = True
@@ -933,9 +995,10 @@ class Ultimatte:
 
     def _recv_block(self, idle: float) -> Optional[List[str]]:
         """One blank-line-terminated block (lines, header first), or None
-        once the unit has been silent for ``idle`` seconds. Bytes arriving
-        restart the wait: a long dump that keeps coming never times out.
-        EOF raises UltimatteConnectionError."""
+        once the unit has been silent for ``idle`` seconds (0: take only
+        what is already here). Bytes arriving restart the wait: a long dump
+        that keeps coming never times out. EOF raises
+        UltimatteConnectionError."""
         while True:
             self._buf = self._buf.lstrip(b"\r\n")     # blank lines between blocks
             if self._buf.startswith(_END_PRELUDE_LINE):
@@ -1149,6 +1212,40 @@ class Ultimatte:
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+
+class _IdleClock:
+    """The no-progress clock of one wait: ``idle`` seconds from the last
+    block that wasn't cursor colour stream. Blocks of the stream are still
+    read and applied; they just don't restart the clock, so a wait for an
+    answer that never comes ends while a cursor is on."""
+
+    def __init__(self, idle: float):
+        self.idle = idle
+        self.since = time.monotonic()
+        self.streamed = False
+
+    def left(self) -> float:
+        """Seconds the wait has left (0: only what is already here)."""
+        return max(self.idle - (time.monotonic() - self.since), 0.0)
+
+    def saw(self, block: List[str]) -> None:
+        if _is_cursor_stream(block):
+            self.streamed = True
+        else:
+            self.since = time.monotonic()
+
+    def silence(self) -> str:
+        return (f"nothing from the unit for {self.idle:g}s"
+                + (" but the cursor colour stream" if self.streamed else ""))
+
+
+def _is_cursor_stream(block: List[str]) -> bool:
+    """A CONTROL push carrying nothing but the colour under a cursor."""
+    if block[0].strip() != "CONTROL:":
+        return False
+    keys = [k.lower() for k, _ in _kv_pairs(block[1:])]
+    return bool(keys) and all(k in CURSOR_COLOR_KEYS for k in keys)
+
 
 def _kv_pairs(body: List[str]):
     for ln in body:

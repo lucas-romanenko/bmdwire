@@ -133,10 +133,12 @@ _FAKE_4K = _load_fake_module("fake_captured_4k.py")
 @pytest.fixture
 def fake_4k():
     """A fake Ultimatte 12 4K doing what the real one did in the 2026-11-11
-    captures (named frame buffers, image upload on 9996, delete, flush);
-    ``.png(w, h)`` makes a PNG header to upload. Stopped after the test."""
+    and -12 captures (named frame buffers, image upload on 9996, delete,
+    flush, sampling, the cursor and its colour stream); ``.png(w, h)`` and
+    ``.jpg(w, h)`` make image headers to upload. Stopped after the test."""
     unit = _FAKE_4K.FakeCaptured4K().start()
     unit.png = _FAKE_4K.png
+    unit.jpg = _FAKE_4K.jpg
     yield unit
     unit.stop()
 

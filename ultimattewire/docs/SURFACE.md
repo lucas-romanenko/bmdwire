@@ -15,7 +15,10 @@ with every kind of input by running it (bmdctl
   branch: the documented 9998 protocol in full (`client.py`,
   `controls.py`, `smoke.py`; §1.3, §2.6, §3.3), `parse_interface` reading
   `DynamicIP` too, and `UltimatteNetworkError` under the new
-  `UltimatteError`.
+  `UltimatteError`; then media pool images (`media.py`), and what three
+  Wireshark captures of Software Control on a 12 4K (2026-11-12) showed:
+  functions that end without `yes`, the cursor lock MESSAGE, the cursor
+  colour stream, JPG uploads, streamed uploads.
 - **Two channels:** TCP 9998, a text channel (the prelude the unit sends on
   connect, then blocks), and TCP 9996, a binary channel (one request per
   connection: preset slots and two named resources).
@@ -141,20 +144,20 @@ it has run against a unit yet.
 
 | method | block sent | waits for | returns |
 |---|---|---|---|
-| `set_control(name, value, *, validate=True, wait=True)` | `CONTROL:` `<name>: <value>` | a CONTROL update holding the name | the value as the unit reports it, typed |
-| `set_controls({name: value}, *, validate=True, wait=True)` | one `CONTROL:` with every line; one bad value sends nothing | every name in CONTROL updates | `{name: value}` |
-| `offset_control(name, delta, *, validate=True, wait=True)` | `CONTROL:` `Offset <name>: <delta>` (range controls only) | the name | the new value |
-| `run_function(name, *, idle_timeout=None)` | `CONTROL:` `<name>: yes` (the 20 function controls) | `<name>: yes` back ("the function is complete"), `function_idle_timeout` of silence at most | `None` |
-| `refresh(header)` | `<HEADER>:` and the blank line (a status dump request) | the block | its lines |
+| `set_control(name, value, *, validate=True, wait=True)` | `CONTROL:` `<name>: <value>` | a CONTROL update holding the name (a 12 4K echoes a value the control already has too: captured), or a MESSAGE (raises `UltimatteMessageError`: `Control Locked - Enable 'Cursor' function` for a cursor with its cursor off) | the value as the unit reports it, typed |
+| `set_controls({name: value}, *, validate=True, wait=True)` | one `CONTROL:` with every line; one bad value sends nothing | every name in CONTROL updates, or a MESSAGE (raises) | `{name: value}` |
+| `offset_control(name, delta, *, validate=True, wait=True)` | `CONTROL:` `Offset <name>: <delta>` (range controls only) | the name (absolute value), or a MESSAGE (raises) | the new value |
+| `run_function(name, *, idle_timeout=None)` | `CONTROL:` `<name>: yes` (the 20 function controls) | `<name>: yes` back ("the function is complete", the document) **or** a `CONTROL DEFAULT:` block (a 12 4K ends Sample Wall / Sample Floor that way, never `yes`: captured), or a MESSAGE (raises); `function_idle_timeout` (10 s) of silence at most, the unit having said nothing for 4.0 s after a sample | `None` |
+| `refresh(header)` | `<HEADER>:` and the blank line (a status dump request); `Frame Buffer:`, `Image List:`, `File List:`, `Current File:` as Software Control spells them (captured: ACK, then the block in capitals) | the block | its lines |
 | `load_file(name)` | `FILE:` `Load: <name>` | CURRENT FILE, or a MESSAGE (raises `UltimatteMessageError`) | `state.current_file` |
 | `save_file(name)`, `delete_file(name)`, `rename_file(name, new_name)` | `FILE:` `Save:` / `Delete:` / `Rename:` + `To:` | FILE LIST, or a MESSAGE (raises) | `state.file_list` |
 | `gpi_insert(gpi, filename, at=-1)` | `GPI:` `ID:`, `Insert:`, `At:` (-1 the end) | that GPI's GPI LIST, or a MESSAGE (raises) | its `GpiList` |
 | `gpi_remove(gpi, index)` | `GPI:` `ID:`, `Remove:` (0 all) | as above | as above |
 | `gpi_set_index(gpi, index)` | `GPI:` `ID:`, `Index:` | as above | as above |
 | `set_frame_buffer(buffer, *, index=None, enable=None)` | `FRAME BUFFER:` `<buffer> Frame Buffer Index:` then `... Enable: on/off` | both keys in FRAME BUFFER updates | the `FrameBuffer` |
-| `assign_image(buffer, image, enable=True)` | a unit that names images per buffer (12 4K, `state.frame_buffer.assigned` filled, or the image only in IMAGE LIST): `Frame Buffer:` `Background 1: <image>` (the long names `Background 1/2`, `Layer 1/2`, `Garbage Matte`, `Holdout Matte`; header spelled as Software Control sends it; `enable` unused). Otherwise as above, the index of the `Frame Buffer n:` line naming the image | named: FRAME BUFFER holding that key, or a MESSAGE (raises; the unit ACKs and then refuses: `Mismatched formats: ...`, `Invalid operation - No Foreground source present`); the key showing another image raises `UltimatteError` | named: `FrameBuffer(short name)`; otherwise as above |
+| `assign_image(buffer, image, enable=True)` | a unit that names images per buffer (12 4K, `state.frame_buffer.assigned` filled, or the image only in IMAGE LIST): `Frame Buffer:` `Background 1: <image>` (the long names `Background 1/2`, `Layer 1/2`, `Garbage Matte`, `Holdout Matte`, or the short `BG 1`, `GM`, `HM`; header spelled as Software Control sends it; `enable` unused; PNG and JPG alike). After a background, GM or HM the unit itself sets `BM`/`GM`/`HM Input Offset: 10000` and `Input Level: 6878` and pushes DEVICE and CONTROL DEFAULT twice; it doesn't send `GM`/`HM Enable` (captured; applied when the session next reads; layers not captured). Otherwise as above, the index of the `Frame Buffer n:` line naming the image | named: FRAME BUFFER holding that key, or a MESSAGE (raises; the unit ACKs and then refuses: `Mismatched formats: ...`, `Invalid operation - No Foreground source present`); the key showing another image raises `UltimatteError` | named: `FrameBuffer(short name)`; otherwise as above |
 | `assigned_image(buffer)` | nothing (state) | | the image name on the buffer, `""` none, `None` not reported |
-| `upload_image(name, data, *, check_format=True, idle_timeout=None)` | not 9998: `media.upload_image` on 9996 (§3.1, opcode `0x0101`) | IMAGE LIST holding the name, `function_idle_timeout` of silence at most | `state.image_list` |
+| `upload_image(name, data, *, size=None, progress=None, check_format=True, idle_timeout=None)` | not 9998: `media.upload_image` on 9996 (§3.1, opcode `0x0101`; a PNG or JPG as bytes, a path, a binary file or chunks) | IMAGE LIST holding the name, `function_idle_timeout` of silence at most | `state.image_list` |
 | `delete_image(name)` | `Image:` `Delete: <name>` (not in the document; Software Control's spelling) | IMAGE LIST without the name, or a MESSAGE (raises); the unit also pushes FRAME BUFFER with the image cleared | `state.image_list` |
 | `flush_settings(quiet=0.5)` | `CONTROL:` `FLUSH SETTINGS: YES` (not in the document; Software Control sends it before an Archive: live state into SavedSettings) | ACK, then reads until `quiet` seconds of silence; a MESSAGE raises (no FG locked: `Invalid operation - No Foreground source present`) | `None` |
 | `set_frame_buffer_mix(layer, value)` | `FRAME BUFFER:` `BG`/`LY Frame Buffer Mix:` | the key | the mix |
@@ -180,6 +183,14 @@ with a line break are refused. Frame buffers are `BG 1`, `LY 1`, `BG 2`,
 Frame Buffers`; mix and duration any integer from 0 (the document gives
 no range); GPI IDs from 1, `At` from -1, `Remove` and `Index` from 0;
 a camera id from 0.
+
+Monitor Out's choices are the document's 16; the unit reports and takes
+them by full name in lower case (`combined matte`, `internal matte`; `fg`
+as the document writes FG), and there is no `matte` alias. Software
+Control offers only 6 (Program, Foreground Input, Background Input,
+Combined Matte, Internal Matte, Fill Out), even with GM on and a mask
+assigned, so the other 10 (Layer In, the matte inputs, the processed
+mattes, Screen Correction) are the document's only, never seen on a unit.
 
 `wait=False` returns at the ACK. A MESSAGE before the ACK is applied,
 not raised. A timeout during a command closes the session (a late ACK
@@ -317,6 +328,8 @@ seconds. Returns `(zip_bytes, info)`:
 - **`to_display(name, raw_value)`**: `(None, None)` for a name not in
   the table or a value `float()` refuses; `(raw, unit)` for an as-is one;
   else `dmin + (raw - rmin) / (rmax - rmin) * (dmax - dmin)`, unclamped.
+  `Matte Density` 2500 (the unit's default) is 0%, as Software Control
+  shows it (captured 2026-11-12; a test pins it).
 - **`annotate_preamble(preamble)`**: the prelude's lines (`splitlines()`,
   each `rstrip('\r')`), with each `Name: value` line under `CONTROL:` or
   `CONTROL DEFAULT:` (a header is a line ending in `:` and not starting
@@ -414,17 +427,31 @@ One request per connection; the unit closes it after replying.
 | `0x0000` | read | a preset slot |
 | `0x0003` | read | a named resource |
 | `0x0100` | write | a preset slot (`.../presets/<slot>`) |
-| `0x0101` | write | a media pool image: name = the file name, data = the PNG file as is (captured 2026-11-11; the unit answered one zero byte) |
+| `0x0101` | write | a media pool image: name = the file name, data = the PNG or JPG file as is (captured 2026-11-11 and -12: the frame doesn't say the format; the unit answered one zero byte) |
 | `0x0103` | write | a named resource (`.../GPISettings`, `.../SavedSettings`) |
 
-`upload_one` takes `port=9996` too. **`media.upload_image(host, name,
-data, *, video_format=None, connect_timeout=5.0, read_timeout=30.0,
-port=9996)`** (`media.py`) checks the name (no `/`, `\`, line break), that
-the data is a PNG (`media.png_size`, IHDR), and with `video_format` that
-its size is the format's (`media.format_size`: 720/1080/2160/4320 lines),
-raising `media.UltimatteImageError` before sending; an `IOError` from
-`upload_one` is raised as `UltimatteImageError` too. Returns (width,
-height).
+`upload_one` takes `port=9996` too. **`upload_stream(host, opcode, name,
+size, chunks, progress=None, connect_timeout=5.0, read_timeout=30.0,
+port=9996)`** is the same frame with the data sent chunk by chunk:
+`size` (1 byte to 4 GiB) goes in the header, `progress(sent, size)` is
+called after each chunk, and chunks adding up to more or less than
+`size` raise `IOError` without the trailing zero, so the unit never takes
+a short file. The ACK is read as `upload_one`'s.
+
+**`media.upload_image(host, name, data, *, size=None, progress=None,
+chunk_size=262144, video_format=None, connect_timeout=5.0,
+read_timeout=30.0, port=9996)`** (`media.py`): `data` is bytes, a path,
+a binary file (sent from where it stands) or an iterable of chunks; a
+file that can't tell its length and an iterable need `size`. It checks
+the name (no `/`, `\`, line break), reads the first chunks (up to 1 MiB)
+for the format and size (`media.image_size`: a PNG's IHDR, a JPEG's
+SOF, walking its APPn segments; anything else is refused, since only PNG
+and JPG were seen going in), and with `video_format` that the size is
+the format's (`media.format_size`: 720/1080/2160/4320 lines), raising
+`media.UltimatteImageError` before sending; an `IOError` from
+`upload_stream` is raised as `UltimatteImageError` too, and an exception
+from `progress` abandons the upload. Returns (width, height).
+`media.png_size` and `media.jpeg_size` read one format each.
 
 ### 3.2 TCP 9998, text (`_preamble.py`, `network.py`)
 
@@ -463,10 +490,18 @@ height).
   from each line); blank lines between blocks skipped; UTF-8, errors
   replaced. `ACK` and `NAK` are blocks of their own.
 - **No-progress waits.** Every wait (the dump, an ACK, an update, a
-  function's `yes`) ends after `idle_timeout` (`function_idle_timeout`)
+  function's end) ends after `idle_timeout` (`function_idle_timeout`)
   seconds with nothing received, counted from the last byte, so a long
-  dump that keeps coming never times out. No thread, no timer, no
-  keep-alive: nothing is read or sent unless a method is called.
+  dump that keeps coming never times out. One exception: while a cursor
+  is on, a 12 4K pushes the colour under it (`Wall Color Red/Green/Blue`
+  for the wall cursor, `Floor Color ...` for the floor one, one block per
+  component) about every 40 ms (captured 2026-11-12). Those blocks
+  (`client.CURSOR_COLOR_KEYS`, nothing else in the block) are applied
+  but don't restart the clock, so a wait for an answer that never comes
+  still ends; the timeout says "but the cursor colour stream". Without
+  this a wait could last as long as the cursor stayed on. No thread, no
+  timer, no keep-alive: nothing is read or sent unless a method is
+  called.
 - **Errors:** `UltimatteConnectionError` (also a `ConnectionError`):
   refused ("nothing listening on the Ultimatte text port"), no answer to
   the connect, closed before a word ("no free connection on the unit, or
@@ -474,7 +509,9 @@ height).
   connected. `UltimatteTimeout` (also a `TimeoutError`): dump stalled,
   silence from the start, no ACK, no update; a command's timeout closes
   the session. `UltimatteNak` (`.block`), `UltimatteMessageError`
-  (`.message`, `.block`). All are `UltimatteError`, as is
+  (`.message`, `.block`): a MESSAGE after the ACK of a CONTROL, FILE,
+  GPI, FRAME BUFFER assignment, `Image:` or FLUSH SETTINGS; the session
+  stays open. All are `UltimatteError`, as is
   `UltimatteNetworkError`.
 
 ## 4. Connections
@@ -500,10 +537,20 @@ height).
 
 ### 5.1 In the protocol, not in ultimattewire
 
-- **Media pool images**: loading (9996 `0x0101`) and removing (`Image:`
-  `Delete:`) are implemented from 2026-11-11 captures of Software Control,
-  not yet run from ultimattewire against a unit. Reading an image back
-  (for `images/` in an archive) is still not captured.
+- **Media pool images**: loading (9996 `0x0101`, PNG and JPG) and
+  removing (`Image:` `Delete:`) are implemented from 2026-11-11 and -12
+  captures of Software Control, not yet run from ultimattewire against a
+  unit. Reading an image back (for `images/` in an archive) is still not
+  captured; nor are other image formats.
+- **Unverified on a unit** (the document's only, or not captured):
+  functions other than Sample Wall / Sample Floor (whether a 12 4K
+  answers `yes` for Auto Screen Sample, Matte Reset, ... is not known;
+  either ending is taken); the 10 Monitor Out choices Software Control
+  doesn't offer; which cursor `Cursor 2 X/Y` needs (the floor one, by
+  the capture's order) and whether absolute cursor writes are locked
+  like `Offset` ones; what drives the colour stream (with the
+  cursor on it paused for up to 5 s at a time, so it seems to follow the
+  colour, not a clock).
 - On 9996: every opcode but the four (the README notes the gaps between
   `0x0000` and `0x0003`, and between `0x0100` and `0x0103`); `images/`
   and `quickfiles/` (always written empty: a unit holding images or quick
@@ -573,6 +620,7 @@ the package.
 | Blocks (9998) | 19 read (the 16 of the dump, END PRELUDE among them; MESSAGE, `ACK`, `NAK`), 6 sent (CONTROL, FILE, GPI, FRAME BUFFER, CAMERACONTROL, `NETWORK INTERFACE n`) and the status dump request of any |
 | Controls (the document's table) | 289: 176 range, 79 On/Off, 1 read only, 13 choices, 20 functions |
 | `Ultimatte` commands | 21 methods that send (§1.3) |
+| Image formats (9996 `0x0101`) | 2 sent: PNG, JPG (both captured) |
 | `NetworkInterface` fields | 14 |
 | Display ranges | 176 |
 | Archive members | 5 fixed (3 directories, 2 resources), one per preset, the readable dump |

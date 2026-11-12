@@ -19,7 +19,9 @@ Kinds:
   ``Video Format: auto detect``).
 - ``function``: footnote 5, "These controls represent functions. Send
   'Yes' to execute the function. Ultimatte will respond with a 'Yes' to
-  indicate the function is complete."
+  indicate the function is complete." An Ultimatte 12 4K on 2.3 never
+  did for Sample Wall / Sample Floor (captured 2026-11-12); see
+  ``Ultimatte.run_function``.
 - ``readonly``: ``Tally Active``, "On/Off {Read Only}".
 
 Model limits, from the footnotes:
