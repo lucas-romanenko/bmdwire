@@ -111,3 +111,56 @@ def fake_binary_socket(monkeypatch):
         monkeypatch.setattr(protocol, "_CONNECT_RETRY_DELAY", 0)
         return sock
     return _install
+
+
+def _load_fake_module(file="fake_ultimatte.py"):
+    # By file path, not by import name: the tests also run against an
+    # installed wheel, which ships without ultimattewire.tests.
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).with_name(file)
+    spec = importlib.util.spec_from_file_location(
+        "_ultimatte_" + file[:-3], path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_FAKE = _load_fake_module()
+_FAKE_4K = _load_fake_module("fake_captured_4k.py")
+
+
+@pytest.fixture
+def fake_4k():
+    """A fake Ultimatte 12 4K doing what the real one did in the 2026-11-11
+    and -12 captures (named frame buffers, image upload on 9996, delete,
+    flush, sampling, the cursor and its colour stream); ``.png(w, h)`` and
+    ``.jpg(w, h)`` make image headers to upload. Stopped after the test."""
+    unit = _FAKE_4K.FakeCaptured4K().start()
+    unit.png = _FAKE_4K.png
+    unit.jpg = _FAKE_4K.jpg
+    yield unit
+    unit.stop()
+
+
+@pytest.fixture
+def fake_unit():
+    """Start fake Ultimattes speaking the documented 9998 protocol on
+    127.0.0.1: ``fake_unit(model="8K", protocol="2.0")``. Each is stopped
+    at the end of the test."""
+    started = []
+
+    def _start(model="8K", protocol="2.0", **attrs):
+        unit = _FAKE.FakeUltimatte(model, protocol)
+        for k, v in attrs.items():
+            setattr(unit, k, v)
+        started.append(unit.start())
+        return unit
+    yield _start
+    for unit in started:
+        unit.stop()
+
+
+@pytest.fixture
+def fake_module():
+    return _FAKE

@@ -113,6 +113,9 @@ def test_extract_label_sanitizes_for_filenames(sample_prelude):
 
 @pytest.mark.parametrize("name,raw,expected", [
     ("Matte Density", "5000", (100.0, "%")),      # -100..300 span, midpoint
+    # 2500, the unit's default, shows as 0 in Software Control (captured
+    # 2026-11-12), not 25 as raw/100 would have it
+    ("Matte Density", "2500", (0.0, "%")),
     ("Black Balance", "2500", (-50.0, "%")),      # -100..100 span, quarter
     ("Transition Rate", "30", (30.0, "frames")),  # shown as-is
     ("Matte Density", "abc", (None, None)),

@@ -102,7 +102,7 @@ def binary_request(host, opcode, payload, timeout=CONNECT_TIMEOUT):
 
 
 def upload_one(host, opcode, name, payload, connect_timeout=CONNECT_TIMEOUT,
-               read_timeout=READ_TIMEOUT):
+               read_timeout=READ_TIMEOUT, port=SETTINGS_PORT):
     """Issue a binary write on 9996. Raises IOError if the unit rejects.
 
     Frame: send [opcode:2BE][name_len:4BE][name:N][data_len:4BE][data:M][0x00]
@@ -119,28 +119,69 @@ def upload_one(host, opcode, name, payload, connect_timeout=CONNECT_TIMEOUT,
         + payload
         + b"\x00"
     )
-    s = _connect_with_retry(host, SETTINGS_PORT, timeout=connect_timeout)
+    s = _connect_with_retry(host, port, timeout=connect_timeout)
     try:
         s.settimeout(read_timeout)
         s.sendall(frame)
-        # The unit sends the ACK then closes the connection quickly, so recv()
-        # can surface EOF before all ACK_LEN bytes arrive depending on TCP
-        # timing. Tolerate short reads as long as we get something that looks
-        # like a success ACK (all zeros).
-        ack = b""
-        while len(ack) < ACK_LEN:
-            try:
-                chunk = s.recv(ACK_LEN - len(ack))
-            except socket.timeout:
-                raise IOError(
-                    f"timeout waiting for ACK (got {len(ack)} of {ACK_LEN} bytes)"
-                )
-            if not chunk:
-                break
-            ack += chunk
-        if len(ack) == 0:
-            raise IOError("connection closed with no ACK bytes (frame rejected)")
-        if any(b != 0 for b in ack):
-            raise IOError(f"non-zero ACK from unit (likely error): {ack.hex()}")
+        _read_write_ack(s)
     finally:
         s.close()
+
+
+def upload_stream(host, opcode, name, size, chunks, progress=None,
+                  connect_timeout=CONNECT_TIMEOUT, read_timeout=READ_TIMEOUT,
+                  port=SETTINGS_PORT):
+    """The same write frame as :func:`upload_one`, with the payload sent
+    from ``chunks`` (an iterable of bytes adding up to exactly ``size``)
+    instead of built in memory. ``progress(sent, size)`` is called after
+    each chunk. Raises IOError if the chunks don't add up to ``size`` (the
+    trailing 0x00 is then never sent, so the unit can't take a short or
+    long file) or the unit rejects."""
+    if not 0 < size <= 0xFFFFFFFF:
+        raise IOError(f"payload size {size} doesn't fit the frame (1 to 4 GiB)")
+    name_bytes = name.encode("utf-8")
+    head = (struct.pack(">H", opcode) + struct.pack(">I", len(name_bytes))
+            + name_bytes + struct.pack(">I", size))
+    s = _connect_with_retry(host, port, timeout=connect_timeout)
+    try:
+        s.settimeout(read_timeout)
+        s.sendall(head)
+        sent = 0
+        for chunk in chunks:
+            if not chunk:
+                continue
+            if sent + len(chunk) > size:
+                raise IOError(f"the data is longer than the {size} bytes announced")
+            s.sendall(chunk)
+            sent += len(chunk)
+            if progress is not None:
+                progress(sent, size)
+        if sent != size:
+            raise IOError(f"the data ended after {sent} of the {size} bytes announced")
+        s.sendall(b"\x00")
+        _read_write_ack(s)
+    finally:
+        s.close()
+
+
+def _read_write_ack(s):
+    """The unit's answer to a write: zero bytes. It sends the ACK then
+    closes the connection quickly, so recv() can surface EOF before all
+    ACK_LEN bytes arrive depending on TCP timing (an Ultimatte 12 4K sent a
+    single 0x00 for an image). Tolerate short reads as long as we get
+    something that looks like a success ACK (all zeros)."""
+    ack = b""
+    while len(ack) < ACK_LEN:
+        try:
+            chunk = s.recv(ACK_LEN - len(ack))
+        except socket.timeout:
+            raise IOError(
+                f"timeout waiting for ACK (got {len(ack)} of {ACK_LEN} bytes)"
+            )
+        if not chunk:
+            break
+        ack += chunk
+    if len(ack) == 0:
+        raise IOError("connection closed with no ACK bytes (frame rejected)")
+    if any(b != 0 for b in ack):
+        raise IOError(f"non-zero ACK from unit (likely error): {ack.hex()}")
