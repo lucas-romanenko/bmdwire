@@ -8,6 +8,7 @@ could be connected from a Mac on Monterey. The transport now steps down
 16, 8, 4, 1 MB and keeps the first size the system takes.
 """
 import errno
+import queue
 import socket
 
 from atemwire import transport
@@ -35,6 +36,9 @@ class _RefusingSock:
 
 
 def _protocol_on(monkeypatch, sock):
+    # With socket.socket faked, a non-POSIX system would build the
+    # SocketQueue's loopback pair from the fake too.
+    monkeypatch.setattr(transport, 'SocketQueue', queue.Queue)
     monkeypatch.setattr(transport.socket, 'socket', lambda *_args: sock)
     return UdpProtocol('10.0.0.99')
 

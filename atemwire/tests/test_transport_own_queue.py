@@ -18,6 +18,8 @@ transfer broadcasts reached the uploading session mid-budget.
 Now what the UDP thread sends goes to the socket at once; every other
 thread still queues.
 """
+import errno
+import os
 import threading
 import time
 
@@ -116,6 +118,9 @@ def _as_udp_thread(p, work):
     return done
 
 
+@pytest.mark.skipif(os.name != 'posix', reason=(
+    "needs a queue a 768-chunk budget fills: a Unix socketpair holds ~278 "
+    "wakeup bytes, the loopback TCP pair of other systems takes them all"))
 def test_an_ack_mid_budget_goes_out_at_once(proto):
     filler = _fill_like_a_budget(proto)
     proto.sock._rx = (_from_switcher(1), ('127.0.0.1', 9910))
@@ -139,7 +144,7 @@ def test_a_transient_error_on_the_udp_thread_drops_the_ack(proto):
     """As the loop does for a queued ACK: logged and dropped, the thread
     stays up."""
     def refuse(raw, addr):
-        raise OSError(113, 'No route to host')
+        raise OSError(errno.EHOSTUNREACH, 'No route to host')   # 113 on Linux, 10065 on Windows
     proto.sock.sendto = refuse
     proto.sock._rx = (_from_switcher(1), ('127.0.0.1', 9910))
     done = _as_udp_thread(proto, proto._receive_packet_low)
