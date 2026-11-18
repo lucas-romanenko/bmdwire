@@ -53,6 +53,8 @@ python -m pytest
 
 The editable install matters: a plain `pip install .` puts the extension in site-packages, and `python -m pytest` run from the checkout then imports the source tree without it and fails on `atemwire.mediaconvert`. The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request, and builds an sdist and a wheel to prove the metadata.
 
+`tools/` holds bench scripts that check the libraries against a real device, from a checkout: `python tools/<script>.py <ip>` (each says what it does, and which ones write, at the top; `atem_state_check`, `roundtrip_smoke`, `hyperdeck_delete_clip` and `videohub_smoke` among them). They are not part of the package, and the suite only parses them.
+
 A release is a tag `v<version>` on `main` whose version equals `project.version` in `pyproject.toml`; pushing it builds the sdist and the wheels and publishes them to PyPI. `pip show bmdwire`, not a hand-typed number, is how to know what is installed.
 
 Not affiliated with or endorsed by Blackmagic Design Pty Ltd. ATEM, HyperDeck, Ultimatte and Videohub are trademarks of Blackmagic Design.
