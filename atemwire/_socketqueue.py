@@ -38,14 +38,21 @@ class SocketQueue(queue.Queue):
         return super().get(**kwargs)
 
     def get_waiting(self):
-        """Every item put so far, without blocking: one read of the wakeup
-        bytes, then that many items. For a reader woken by select() that
-        should empty the queue in one go instead of one item per wakeup."""
+        """Return all queued items without blocking."""
+        import select
+
+        if not select.select([self._getsocket], [], [], 0)[0]:
+            return []
+
         try:
-            marks = self._getsocket.recv(4096, socket.MSG_DONTWAIT)
+            marks = self._getsocket.recv(4096)
         except (BlockingIOError, InterruptedError):
             return []
-        return [super(SocketQueue, self).get() for _ in range(len(marks))]
+
+        return [
+            super(SocketQueue, self).get()
+            for _ in range(len(marks))
+        ]
 
     def close(self):
         """Free the socketpair FDs. Idempotent. Without this the pair was
