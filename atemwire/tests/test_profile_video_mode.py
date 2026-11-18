@@ -22,7 +22,7 @@ from atemwire.profile import (
 )
 
 
-ALL_MODES = sorted(VideoModeField._MODE_TABLE)
+ALL_MODES = sorted(VideoModeField.MODE_TABLE)
 
 # Everything Profile.from_atem's settle wait looks for, so it returns at once.
 _SETTLED = (

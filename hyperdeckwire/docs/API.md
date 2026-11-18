@@ -298,6 +298,11 @@ print(result.throughput_mb_s)   # bench unit hit 47.6 MB/s on a 50MB clip
 # Explicit slot — skip auto-detect:
 upload_clip('192.0.2.11', '/local/clip.mp4', slot=2)
 
+# The same auto-detect on an FTP connection of your own (to list or delete
+# clips, say); public since 1.14.1:
+from hyperdeckwire.upload import resolve_slot_dir
+slot_dir = resolve_slot_dir(ftp)     # '1', or 'sd1' on a deck that names its mounts
+
 # Progress reporting (called after each chunk with running byte count):
 def on_progress(bytes_so_far):
     print(f'{bytes_so_far:,} bytes uploaded')

@@ -82,7 +82,7 @@ class FakeAtemProtocol:
         # Real atemwire fires 'connected' AFTER the initial state dump
         # completes (post-InCm). Our wait_ready check is "connected event
         # fired AND 'video-mode' in mixerstate" — populate both.
-        self.mixerstate['video-mode'] = _FakeVideoMode()
+        self.mixerstate['video-mode'] = FakeVideoMode()
         self.connected = True
         self.initialized = True
         # Wake any blocked loop().
@@ -122,9 +122,16 @@ class FakeAtemProtocol:
         self.send_log.append(list(commands))
 
 
-class _FakeVideoMode:
+class FakeVideoMode:
+    """A 1080p50 ``video-mode`` for a fake mixerstate (the one
+    ``FakeAtemProtocol`` starts with). Public since 1.14.1; ``_FakeVideoMode``
+    is its old name."""
+
     def get_resolution(self):
         return (1920, 1080)
 
     def get_label(self):
         return '1080p50'
+
+
+_FakeVideoMode = FakeVideoMode

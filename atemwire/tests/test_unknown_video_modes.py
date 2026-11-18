@@ -40,8 +40,8 @@ from atemwire.state import build_full_state, display_fps
 from atemwire.transport import Packet, UdpProtocol
 
 
-KNOWN = sorted(VideoModeField._MODE_TABLE)
-UNKNOWN = [m for m in range(256) if m not in VideoModeField._MODE_TABLE]
+KNOWN = sorted(VideoModeField.MODE_TABLE)
+UNKNOWN = [m for m in range(256) if m not in VideoModeField.MODE_TABLE]
 
 # What a UHD switcher on newer firmware might list: its HD and 4K modes plus
 # two codes past the table (30, 31) and one far out (200).
@@ -90,7 +90,7 @@ def test_an_unknown_vidm_code_parses_as_an_unknown_mode():
 def test_a_known_vidm_code_is_unchanged(mode):
     vm = _vidm(mode)
     assert vm.known is True
-    res, inter, rate, ws = VideoModeField._MODE_TABLE[mode]
+    res, inter, rate, ws = VideoModeField.MODE_TABLE[mode]
     assert (vm.resolution, vm.interlaced, vm.rate, vm.widescreen) == (res, inter, rate, ws)
     w, h = vm.get_resolution()
     assert h in (480, 576, 720, 1080, 2160, 4320)

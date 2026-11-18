@@ -25,9 +25,12 @@ from ultimattewire.controls import ControlValueError, UnsupportedError
 from ultimattewire.media import UltimatteImageError
 from ultimattewire.network import (NetworkInterface, UltimatteNetworkError,
                                    read_network, set_network)
+from ultimattewire._preamble import parse_section, read_preamble
 from ultimattewire.profile import archive_unit_to_bytes, restore_unit_from_bytes
 
 __all__ = [
+    "read_preamble",
+    "parse_section",
     "archive_unit_to_bytes",
     "restore_unit_from_bytes",
     "read_network",
