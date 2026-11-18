@@ -15,7 +15,7 @@ pip install bmdwire
 | **`ultimattewire`** | Ultimatte 12 keyers: the whole documented text protocol (state, live updates, controls, presets, GPI, frame buffers), archive and restore with Smart Remote 4 compatible zips, network setup | MIT | [ultimattewire/README.md](ultimattewire/README.md) |
 | **`videohubwire`** | Videohub routers: state snapshot, crosspoint routing, labels over TCP 9990 | MIT | [videohubwire/README.md](videohubwire/README.md) |
 
-All four are pure standard library except atemwire, whose small C extension ships prebuilt for Linux, macOS and Windows on CPython 3.10 to 3.14, so installing needs no compiler. Pin the version in a requirements file (`bmdwire==1.14.0`) so a later release cannot change your install under you.
+All four are pure standard library except atemwire, whose small C extension ships prebuilt for Linux, macOS and Windows on CPython 3.10 to 3.14, so installing needs no compiler. Pin the version in a requirements file (`bmdwire==1.14.1`) so a later release cannot change your install under you.
 
 ## atemwire stands on pyatem
 
@@ -52,6 +52,8 @@ python -m pytest
 ```
 
 The editable install matters: a plain `pip install .` puts the extension in site-packages, and `python -m pytest` run from the checkout then imports the source tree without it and fails on `atemwire.mediaconvert`. The suite needs no hardware. CI runs it on Python 3.10, 3.12 and 3.14 for every push and pull request, and builds an sdist and a wheel to prove the metadata.
+
+`tools/` holds bench scripts that check the libraries against a real device, from a checkout: `python tools/<script>.py <ip>` (each says what it does, and which ones write, at the top; `atem_state_check`, `roundtrip_smoke`, `hyperdeck_delete_clip` and `videohub_smoke` among them). They are not part of the package, and the suite only parses them.
 
 A release is a tag `v<version>` on `main` whose version equals `project.version` in `pyproject.toml`; pushing it builds the sdist and the wheels and publishes them to PyPI. `pip show bmdwire`, not a hand-typed number, is how to know what is installed.
 

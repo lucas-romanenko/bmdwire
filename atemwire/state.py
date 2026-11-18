@@ -692,7 +692,7 @@ class ATEMStateMixin:
         # Hardware capability counts (Stage 2 of the control-topology
         # refactor). Counts only — source/input data stays in
         # state['sources'] / state['inputLabels'] above.
-        state['topology'] = self._build_topology(mx)
+        state['topology'] = self.build_topology(mx)
 
         # The switcher's self-assigned name (ATEM Setup, via WhoI), falling
         # back to the model string. Added 2026-08-23 as a NEW top-level
@@ -902,8 +902,11 @@ class ATEMStateMixin:
     # =========================================================================
 
     @staticmethod
-    def _build_topology(mx) -> dict:
-        """Capability counts for the dynamic-count frontend surfaces.
+    def build_topology(mx) -> dict:
+        """Capability counts for the dynamic-count frontend surfaces: the
+        ``topology`` key of ``build_full_state``, for a caller that wants
+        only this part of a mixerstate. Public since 1.14.1;
+        ``_build_topology`` is the old name of the same function.
 
         Counts come from the parsed capability packets where atemwire has a
         parser: ``_top`` (TopologyField), ``_MeC`` (MixerEffectConfigField,
@@ -970,6 +973,8 @@ class ATEMStateMixin:
             'macros': _index_count(mx.get('macro-properties') or {}),
             **topology_block_counts(mx),
         }
+
+    _build_topology = build_topology
 
     # =========================================================================
     # Audio (Fairlight, or the legacy mixer)

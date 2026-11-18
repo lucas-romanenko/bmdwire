@@ -20,7 +20,7 @@ from atemwire.state import _kv, decode_name
 from atemwire.messages._dsl import Recv, Send, string, u8, u16
 
 
-# Name → wire enum (matches VideoModeField._MODE_TABLE). The XML form of
+# Name → wire enum (matches VideoModeField.MODE_TABLE). The XML form of
 # the rate elides the decimal point (29.97 → "2997", 59.94 → "5994").
 # ATEM Software Control spells the UHD modes "4KHDp…" and "8KHDp…" (its own
 # profile exports, and the SDK's bmdSwitcherVideoMode names); the
@@ -265,7 +265,7 @@ class VideoModeField(Recv):
     ====== ==== ====== ===========
 
     The ``mode`` integer maps to a ``(resolution, interlaced, rate,
-    widescreen)`` tuple via ``_MODE_TABLE``. Helper methods produce a
+    widescreen)`` tuple via ``MODE_TABLE``. Helper methods produce a
     label string and a (width, height) pixel resolution.
 
     A mode number with no table entry (newer firmware lists modes this
@@ -280,8 +280,10 @@ class VideoModeField(Recv):
 
     mode = u8(at=0)
 
-    # (vertical resolution, interlaced, rate, widescreen)
-    _MODE_TABLE = {
+    # (vertical resolution, interlaced, rate, widescreen). Public since
+    # 1.14.1, for a caller listing every mode atemwire knows (a format
+    # picker); ``_MODE_TABLE`` is the same dict under its old name.
+    MODE_TABLE = {
         0:  (525,  True,  59.94, False),
         1:  (625,  True,  50,    False),
         2:  (525,  True,  59.94, True),
@@ -313,6 +315,7 @@ class VideoModeField(Recv):
         28: (720,  False, 60,    True),
         29: (1080, True,  60,    True),
     }
+    _MODE_TABLE = MODE_TABLE
 
     # vertical resolution → frame size in pixels
     _FRAME_SIZES = {
@@ -326,7 +329,7 @@ class VideoModeField(Recv):
 
     def __init__(self, raw: bytes):
         super().__init__(raw)
-        res, inter, rate, ws = self._MODE_TABLE.get(
+        res, inter, rate, ws = self.MODE_TABLE.get(
             self.mode, (None, None, None, None))
         self.resolution = res
         self.interlaced = inter
@@ -336,7 +339,7 @@ class VideoModeField(Recv):
     @property
     def known(self):
         """False for a mode number atemwire has no table entry for."""
-        return self.mode in self._MODE_TABLE
+        return self.mode in self.MODE_TABLE
 
     def get_label(self):
         if self.resolution is None:

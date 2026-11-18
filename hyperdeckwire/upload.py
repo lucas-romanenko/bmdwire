@@ -127,7 +127,7 @@ def upload_clip(host: str,
             # with the canonical ``anonymous`` user.
             ftp.login('anonymous', '')
 
-        slot_dir = _resolve_slot_dir(ftp, slot)
+        slot_dir = resolve_slot_dir(ftp, slot)
         ftp.cwd(slot_dir)
 
         bytes_sent = [0]
@@ -200,8 +200,8 @@ def _discard_partial(ftp: ftplib.FTP, name: str) -> bool:
         return False
 
 
-def _resolve_slot_dir(ftp: ftplib.FTP, slot=None) -> str:
-    """Return the slot dir to CWD into. A caller-supplied ``slot`` wins
+def resolve_slot_dir(ftp: ftplib.FTP, slot=None) -> str:
+    """Return the slot dir to CWD into, on a logged-in FTP connection. A caller-supplied ``slot`` wins
     (an int slot id like ``2`` or a literal dir name like ``'sd1'``);
     otherwise list root and pick a storage volume.
 
@@ -221,3 +221,8 @@ def _resolve_slot_dir(ftp: ftplib.FTP, slot=None) -> str:
             return named[0]
     raise OSError(
         f'no slot dir found at FTP root (entries: {entries!r})')
+
+
+# Public since 1.14.1 (a host deleting clips finds the slot the same way an
+# upload does); the old name stays for code written against 1.14.0.
+_resolve_slot_dir = resolve_slot_dir
