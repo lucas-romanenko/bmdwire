@@ -1,6 +1,5 @@
 """The bench scripts here need a live device, so the suite never runs them
-against one. They moved here from AV Server on 2026-11-18 with these
-checks, and are exercised nowhere else:
+against one. They are exercised nowhere else, so it checks:
 
   * every one parses;
   * every one that opens an ATEM session installs ``_exit_signals`` (a

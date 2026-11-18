@@ -2,8 +2,7 @@
 """SH-20a (2026-07-06 session hygiene): ``Hyperdeck.connect`` never leaks a
 socket. A greeting-read failure closes and clears the socket it just opened;
 a reconnect over a live connection says ``quit`` and closes the old socket
-before opening the new one. Moved here from AV Server (2026-11-18), which
-tested this client from the outside.
+before opening the new one.
 """
 from typing import List, Optional
 
