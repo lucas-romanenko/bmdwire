@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-3.0-only
-"""Names a downstream app reaches for (AV Server does) are public since
-1.14.1, and the underscore names they had before still work as the same
-objects: a 1.x release never drops either."""
+"""Names a downstream app reaches for are public since 1.14.1, and the
+underscore names they had before still work as the same objects: a 1.x
+release never drops either."""
 from atemwire.messages.input_video import VideoModeField
 from atemwire.state import ATEMStateMixin
 from atemwire import testing

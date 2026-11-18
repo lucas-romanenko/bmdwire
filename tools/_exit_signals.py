@@ -11,8 +11,7 @@ SIGINT raises ``KeyboardInterrupt`` as Python always does; SIGTERM and
 SIGHUP raise ``SystemExit(128 + signal)``. A second signal while unwinding
 is ignored, so it cannot cut a goodbye in half (SIGKILL still works).
 
-The same handler as AV Server's ``av_server/exit_signals.py``, where these
-scripts lived until 2026-11-18. Standard library only.
+Standard library only.
 """
 import signal
 import sys

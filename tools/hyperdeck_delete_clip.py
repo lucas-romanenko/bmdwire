@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Delete one or all clips off a HyperDeck — test/setup helper for
-content-change runs that need a clean slot.
+runs that need a clean slot.
 
 Usage:
 
