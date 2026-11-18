@@ -1,6 +1,6 @@
 # One distribution, one suite: the four packages' tests run together from
-# the repository root (pytest.ini lists them), on three Pythons, for every
-# push and pull request. The editable install builds atemwire's C extension
+# the repository root (pytest.ini lists them), on three Pythons on Linux
+# and one on Windows, for every push and pull request. The editable install builds atemwire's C extension
 # in place with the runner's gcc, which the source tree needs to import.
 #
 # The `build` job proves the metadata: an sdist and a wheel that pass
@@ -31,6 +31,22 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+  # Windows has its own socket module (no MSG_DONTWAIT, no socketpair of
+  # Unix sockets), and for 1.11.0 to 1.14.2 no switcher connected there
+  # while every Linux run was green.
+  windows:
+    name: Windows, Python 3.12
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install editable with the test extras
+        run: pip install -e ".[test]"
+      - name: Test
+        run: python -m pytest -q
+
   build:
     name: sdist and wheel
     runs-on: ubuntu-latest
@@ -48,16 +64,17 @@ jobs:
           cd /tmp && python -c "import atemwire.mediaconvert, hyperdeckwire, ultimattewire, videohubwire; print('ok')"
 
   # One check with a fixed name for branch protection to require; green only
-  # when every matrix entry and the build passed.
+  # when every matrix entry, the Windows run and the build passed.
   result:
     name: CI result
-    needs: [test, build]
+    needs: [test, windows, build]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - env:
           TESTS: ${{ needs.test.result }}
+          WINDOWS: ${{ needs.windows.result }}
           BUILD: ${{ needs.build.result }}
         run: |
-          echo "tests=$TESTS build=$BUILD"
-          test "$TESTS" = "success" && test "$BUILD" = "success"
+          echo "tests=$TESTS windows=$WINDOWS build=$BUILD"
+          test "$TESTS" = "success" && test "$WINDOWS" = "success" && test "$BUILD" = "success"
