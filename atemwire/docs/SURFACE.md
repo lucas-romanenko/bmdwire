@@ -1004,7 +1004,8 @@ Items 1, 2 and 4 were fixed after 1.2.0, in the commits named in each; they stil
 were fixed after 1.4.0 and still apply to it. Item 26 was fixed after 1.5.0 and still applies to
 it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and still apply to it.
 Items 34 to 37 were fixed after 1.8.0 and still apply to it. Item 3 and items 38 to 41 were
-fixed after 1.9.0 and still apply to it. Items 48 to 52 were fixed in 1.13.0 and still apply to 1.12.1 and earlier.
+fixed after 1.9.0 and still apply to it. Items 48 to 52 were fixed in 1.13.0 and still apply to 1.12.1 and earlier. Item 53 was fixed
+after 1.14.2 and still applies to 1.11.0 through 1.14.2.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1405,6 +1406,12 @@ fixed after 1.9.0 and still apply to it. Items 48 to 52 were fixed in 1.13.0 and
     then, or a chunk left unanswered, holds its transfer engine, and every later request from
     every session is refused with `FTDE 1`, which read at the caller as "stalled (no data for
     15 s)" with the lock granted, slot after slot. *Fixed in 1.13.0:* §3.0.
+53. **No switcher connects from Windows** (1.11.0). `SocketQueue.get_waiting` read the wakeup
+    bytes with `socket.MSG_DONTWAIT`, which Python on Windows does not have: the UDP thread ended
+    with an `AttributeError` at its first send, and every connect timed out. *Fixed in `e93357d`*
+    (bmdwire#83): `select()` with no timeout asks whether there is anything to read, then a plain
+    `recv`. Over the loopback TCP pair a non-POSIX system gets in place of a socketpair, one read
+    can return fewer wakeup bytes than were put; the rest come at the next wakeup.
 
 ## Counts
 

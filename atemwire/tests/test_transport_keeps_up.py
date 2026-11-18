@@ -18,6 +18,9 @@ system capped is reported.
 """
 import errno
 import logging
+import os
+import queue
+import select
 import socket
 import types
 
@@ -150,10 +153,23 @@ def test_the_socket_queue_hands_over_everything_waiting():
         assert q.get_waiting() == []
         for i in range(200):                     # the socketpair holds ~270 marks
             q.put(i)
-        assert q.get_waiting() == list(range(200))
+        got = q.get_waiting()
+        while os.name != 'posix' and len(got) < 200:
+            # a loopback TCP pair may hand the marks over in more than one
+            # read (test_socketqueue_windows.py)
+            assert select.select([q], [], [], 5.0)[0]
+            got += q.get_waiting()
+        assert got == list(range(200))
         assert q.get_waiting() == []
     finally:
         q.close()
+
+
+def _no_socket_queue(monkeypatch):
+    """With socket.socket faked, a non-POSIX system would build the
+    SocketQueue's loopback pair from the fake too; these tests are about the
+    UDP socket alone."""
+    monkeypatch.setattr(transport, 'SocketQueue', queue.Queue)
 
 
 class _CappedSock:
@@ -178,6 +194,7 @@ class _CappedSock:
 
 def test_a_capped_receive_buffer_is_reported_once(monkeypatch, caplog):
     monkeypatch.setattr(transport, '_rcvbuf_warned', False)
+    _no_socket_queue(monkeypatch)
     monkeypatch.setattr(transport.socket, 'socket', lambda *_a: _CappedSock(212992))
     with caplog.at_level(logging.WARNING, logger='UdpTransport'):
         p = UdpProtocol('10.0.0.99')
@@ -190,6 +207,7 @@ def test_a_capped_receive_buffer_is_reported_once(monkeypatch, caplog):
 
 def test_a_receive_buffer_granted_in_full_is_not_reported(monkeypatch, caplog):
     monkeypatch.setattr(transport, '_rcvbuf_warned', False)
+    _no_socket_queue(monkeypatch)
     monkeypatch.setattr(transport.socket, 'socket', lambda *_a: _CappedSock(16 * 1024 * 1024))
     with caplog.at_level(logging.WARNING, logger='UdpTransport'):
         p = UdpProtocol('10.0.0.99')
