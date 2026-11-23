@@ -1537,6 +1537,18 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     timeouts are now seconds without progress. The network matrix's `macro_fail_cleanup`.
     Whether a real switcher's transfer engine takes the next upload at once after an abandoned
     one is for the bench.
+63. **A packet of commands too big for the path blocks the session** (1.0). Commands go out
+    several to a packet, up to 1,300 bytes of them (`send_commands`; a profile restore, 20
+    labels). Over a path that drops datagrams that big the packet never got through, and the
+    switcher, which takes our packets in order only, took nothing after it: 20 labels at a path
+    MTU of 576 never arrived, and a profile restore over a VPN at MTU 1,200 restored nothing and
+    sat out its macro upload's timeout. Item 58's take-back covered data chunks only. *Fixed in
+    1.15.0 (`COMMIT_C`):* a stuck command packet of two or more commands, bigger than the next
+    `CHUNK_STEPS` size, the switcher heard all along, is taken back with everything after it and
+    its commands go again split into packets of at most that size plus
+    `UdpProtocol.COMMAND_ROOM` (12) bytes, in order; chunks of an upload among them go back to it.
+    From then on every command packet to that switcher is split to fit as it is sent. The
+    network matrix's `labels` at `mtu576` and `profile_restore` at `vpn`.
 
 ## Counts
 

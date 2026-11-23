@@ -113,6 +113,47 @@ def _ftda(packet):
     return transfer, size
 
 
+def _commands(data):
+    """The commands one packet carries (each its 8-byte header and body),
+    or None if ``data`` does not split into whole commands."""
+    out, i, end = [], 0, len(data or b'')
+    while i < end:
+        if i + 8 > end:
+            return None
+        n = struct.unpack_from('>H', data, i)[0]
+        if n < 8 or i + n > end:
+            return None
+        out.append(bytes(data[i:i + n]))
+        i += n
+    return out
+
+
+def _split_commands(packet, room):
+    """``packet``'s commands in packets of at most ``room`` bytes of data,
+    in order; a command bigger than ``room`` goes alone. [packet] when
+    there is nothing to split."""
+    cmds = _commands(packet.data)
+    if not cmds or len(cmds) < 2:
+        return [packet]
+    out, cur = [], b''
+    for c in cmds:
+        if cur and len(cur) + len(c) > room:
+            out.append(cur)
+            cur = b''
+        cur += c
+    out.append(cur)
+    if len(out) == 1:
+        return [packet]
+    pieces = []
+    for data in out:
+        q = Packet()
+        q.flags = packet.flags & ~UdpProtocol.FLAG_RETRANSMISSION
+        q.data = data
+        q.label = getattr(packet, 'label', None)
+        pieces.append(q)
+    return pieces
+
+
 class Wakeup:
     """Sentinel returned from ``receive_packet`` when an external caller has
     poked the worker awake (via ``thread_recv_queue.put(Wakeup())``) so it
@@ -433,8 +474,19 @@ class UdpProtocol(BaseProtocol):
     # VPN at MTU 1,280) never passed, and the upload hung again as in
     # 1.14.6. Heard between resends holds whatever the switcher's rate,
     # as long as it is heard within RESEND_MAX, the timer's longest wait.
+    #
+    # Command packets carry several commands, up to 1,300 bytes of them (a
+    # profile restore, 20 labels at once): over a path MTU of 1,200 or 576
+    # such a packet never got through either, and every packet after it
+    # waited behind it. A stuck command packet bigger than the next size
+    # down, the switcher heard all along, is taken back the same way, and
+    # its commands go again split into packets of at most that size; from
+    # then on every command packet to that switcher is split to fit
+    # (``max_chunk`` + COMMAND_ROOM bytes of commands: a datagram no
+    # bigger than a chunk's).
     CHUNK_STEPS = (1224, 952, 504)
     TOO_BIG_AFTER = 3
+    COMMAND_ROOM = 12
 
     # receive_packet looks every DEAD_THREAD_CHECK whether the UDP thread
     # is still there, and with it gone hands back None, DEAD_THREAD_PAUSE
@@ -1059,6 +1111,14 @@ class UdpProtocol(BaseProtocol):
         self._send_window()
 
     def _send_on_udp_thread(self, packet, window=True):
+        if (self.max_chunk and packet.data is not None
+                and not packet.flags & (UdpProtocol.FLAG_SYN | UdpProtocol.FLAG_ACK)
+                and len(packet.data) > self.max_chunk + UdpProtocol.COMMAND_ROOM):
+            pieces = _split_commands(packet, self.max_chunk + UdpProtocol.COMMAND_ROOM)
+            if len(pieces) > 1:
+                for q in pieces:
+                    self._send_on_udp_thread(q, window)
+                return
         if window and self._window_full(packet):
             self._held.append(packet)
             return
@@ -1652,11 +1712,19 @@ class UdpProtocol(BaseProtocol):
         them go again now, the chunks through the protocol (ChunksTakenBack).
         False if this is not the case."""
         pkt = self.retransmission_buffer.get(first)
-        chunk = _ftda(pkt) if pkt is not None else None
-        if chunk is None:
+        if pkt is None:
             return False
-        transfer, size = chunk
-        smaller = [s for s in UdpProtocol.CHUNK_STEPS if s < size]
+        chunk = _ftda(pkt)
+        if chunk is not None:
+            transfer, size = chunk
+        else:
+            # A command packet: too big only if it can go again smaller.
+            cmds = _commands(pkt.data)
+            if not cmds or len(cmds) < 2:
+                return False
+            transfer, size = None, len(pkt.data) - UdpProtocol.COMMAND_ROOM
+        smaller = [s for s in UdpProtocol.CHUNK_STEPS
+                   if s < size and (self.max_chunk is None or s <= self.max_chunk)]
         if not smaller:
             return False
         if time.monotonic() - self.last_rx_monotonic > UdpProtocol.RESEND_MAX:
@@ -1704,6 +1772,9 @@ class UdpProtocol(BaseProtocol):
         self._backoff = 1
         self._stuck_seq, self._stuck_count = None, 0
         self.max_chunk = _CHUNK_LIMITS[self.ip] = limit
+        if transfer is None:
+            # The chunks of an upload among them, if any, go back to it.
+            transfer = next((c[0] for c in map(_ftda, taken) if c is not None), None)
         sizes = []
         for p in taken:
             c = _ftda(p)
@@ -1711,14 +1782,17 @@ class UdpProtocol(BaseProtocol):
                 sizes.append(c[1])
                 continue
             p.flags &= ~UdpProtocol.FLAG_RETRANSMISSION
-            self._send_on_udp_thread(p)
+            self._send_on_udp_thread(p)      # split to fit, if it must be
+        what = (f"no data chunk of {size} bytes" if chunk is not None
+                else f"no command packet of {len(pkt.data) + 12} bytes")
         self.log.warning(
-            f"{self.ip}: no data chunk of {size} bytes got through (sent "
+            f"{self.ip}: {what} got through (sent "
             f"{UdpProtocol.TOO_BIG_AFTER + 1} times, nothing acknowledged, the "
             f"switcher still answering): datagrams that big are not reaching "
-            f"it. {len(sizes)} chunk(s) go again, in chunks of {limit} bytes "
-            f"from now on")
-        self.thread_recv_queue.put(ChunksTakenBack(transfer, sizes, limit))
+            f"it. Data chunks of at most {limit} bytes, and commands split to "
+            f"fit, from now on")
+        if transfer is not None:
+            self.thread_recv_queue.put(ChunksTakenBack(transfer, sizes, limit))
         return True
 
     def _retransmit_from(self, request_seq, quiet=False):
