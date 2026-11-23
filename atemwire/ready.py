@@ -98,6 +98,7 @@ def wait_ready(
         started = time.monotonic()
         deadline = started + timeout
         transport = getattr(protocol, 'transport', None)
+        seen_tick = getattr(transport, 'silence_tick', None)
         while time.monotonic() < deadline:
             if stop_event is not None and stop_event.is_set():
                 raise WaitAborted("stop_event set before ready")
@@ -118,7 +119,22 @@ def wait_ready(
                 # tick more, each tick, up to ``timeout``.
                 answered = last >= started
                 limit = stall_timeout if answered or hello_timeout is None else hello_timeout
-                if time.monotonic() - max(started, last) >= limit - _TICK_SLACK:
+                stalled = time.monotonic() - max(started, last) >= limit - _TICK_SLACK
+                # A silence tick since the last look is judged on how long
+                # the switcher had been silent when it fired: the tick
+                # re-sends the hello, and the switcher's answer to it is not
+                # progress. Read from last_rx_monotonic, that answer
+                # restarted the stall clock whenever the UDP thread took it
+                # before this look, one more tick each time (bmdwire#89).
+                tick = getattr(transport, 'silence_tick', None)
+                if tick is not seen_tick and isinstance(tick, tuple):
+                    seen_tick = tick
+                    tick_at, tick_last = tick
+                    if tick_at >= started and not stalled:
+                        answered = tick_last >= started
+                        limit = stall_timeout if answered or hello_timeout is None else hello_timeout
+                        stalled = tick_at - max(started, tick_last) >= limit - _TICK_SLACK
+                if stalled:
                     raise TimeoutError(
                         f"wait_ready: nothing from the switcher for {limit}s")
             if (

@@ -545,6 +545,12 @@ class UdpProtocol(BaseProtocol):
         # Kept apart from ``last_rx_monotonic``, which callers read as
         # "last packet from the switcher" and connect() must not reset.
         self._last_heard: float = time.monotonic()
+        # The last silence tick: (when it fired, last_rx_monotonic then),
+        # set before the tick re-sends the hello and wakes the protocol.
+        # wait_ready judges a stall from it, so the switcher's answer to that
+        # hello, which may arrive before the pump looks, is not progress
+        # (bmdwire#89). A new tuple each tick: one assignment, read whole.
+        self.silence_tick = None
 
     def queue_trigger(self):
         """Paced send (default) or aggressive drain (if aggressive_drain=True).
@@ -604,6 +610,10 @@ class UdpProtocol(BaseProtocol):
             remaining = self.timeout - (time.monotonic() - self._last_heard)
             if remaining <= 0:
                 self.log.error("Timeout reading from ATEM")
+                # Before the re-hello: the switcher may answer it at once,
+                # and that answer moves last_rx_monotonic, maybe before
+                # whoever waits on the connect has looked (bmdwire#89).
+                self.silence_tick = (time.monotonic(), self.last_rx_monotonic)
                 # Goodbye to the session being replaced first: if the link
                 # is back, the switcher ends it at once, its store lock and
                 # any transfer of it with it, instead of holding them until
