@@ -412,8 +412,20 @@ class UdpProtocol(BaseProtocol):
     # size here (from 1,224 bytes: a 1,280-byte path), for that switcher
     # from then on. The switcher has none of them: it takes nothing after
     # a packet it lacks.
+    #
+    # "The switcher goes on sending" has to hold the whole time the chunk
+    # is stuck, not only at the moment of the decision: the switcher sends
+    # a Time packet every 40 ms, so a gap of more than HEARD_GAP in what we
+    # receive means the link was down, and a chunk stuck across that gap
+    # may well have got through with its ACK lost in it. Taking it back
+    # then sent other data under sequence numbers the switcher already had:
+    # it kept the old packets, took the new ones after them, and the still
+    # ended up with chunks twice and an MD5 it never checks (a cable out for
+    # 3 s in the middle of an upload on a LAN, where four resends take
+    # 0.75 s; the netmatrix's cable_pull).
     CHUNK_STEPS = (1224, 952, 504)
     TOO_BIG_AFTER = 3
+    HEARD_GAP = 0.25
 
     # A new session's reliable packets are numbered from 1 (_handshake). If
     # packet 1 has not come FIRST_PACKET_WAIT after the handshake while
@@ -563,6 +575,10 @@ class UdpProtocol(BaseProtocol):
         self._first_due = None
         self._stuck_seq = None
         self._stuck_count = 0
+        self._stuck_since = 0.0
+        # When the switcher was last heard after a silence of more than
+        # HEARD_GAP (TOO_BIG_AFTER).
+        self._heard_again_at = 0.0
         self._dup_acks = 0
         self._resends_logged = 0
         self._resend_last_log = 0.0
@@ -1046,7 +1062,10 @@ class UdpProtocol(BaseProtocol):
                     f"session_id ← 0x{packet.session:04x} (set from first RX after handshake)"
                 )
 
-        self.last_rx_monotonic = time.monotonic()
+        now = time.monotonic()
+        if now - self.last_rx_monotonic > UdpProtocol.HEARD_GAP:
+            self._heard_again_at = now
+        self.last_rx_monotonic = now
         self._last_heard = self.last_rx_monotonic
         self.rx_packet_count += 1
 
@@ -1307,6 +1326,8 @@ class UdpProtocol(BaseProtocol):
             self._stuck_count += 1
         else:
             self._stuck_seq, self._stuck_count = first, 1
+            # Unacknowledged for one timer's length by now.
+            self._stuck_since = time.monotonic() - self.resend_after()
         if self._stuck_count > UdpProtocol.TOO_BIG_AFTER and self._take_back_chunks(first):
             return
         waited = self.resend_after()
@@ -1341,8 +1362,11 @@ class UdpProtocol(BaseProtocol):
         smaller = [s for s in UdpProtocol.CHUNK_STEPS if s < size]
         if not smaller:
             return False
-        if time.monotonic() - self.last_rx_monotonic > UdpProtocol.RESEND_MAX:
-            # The switcher has gone quiet too: the link, not the size.
+        now = time.monotonic()
+        if (now - self.last_rx_monotonic > UdpProtocol.HEARD_GAP
+                or self._heard_again_at >= self._stuck_since):
+            # The switcher has gone quiet too, now or since the chunk was
+            # first sent: the link, not the size (HEARD_GAP).
             return False
         limit = smaller[0]
         last = self.local_sequence_number
