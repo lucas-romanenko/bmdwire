@@ -1482,9 +1482,10 @@ Items 17, 58 and 59 were fixed in 1.14.7 and still apply to 1.14.6 and earlier.
     Their sequence numbers went again with other data while the switcher may already have had
     them (their ACKs lost with the cable): it kept the old ones, took the new ones after them, and
     the still arrived with chunks twice and the wrong MD5, which the switcher does not check.
-    *Fixed in 1.14.8 (`COMMIT_A`):* the switcher must have been heard without a gap of more than
+    *Fixed in 1.14.8 (`ea4452a`):* the switcher must have been heard without a gap of more than
     `UdpProtocol.HEARD_GAP` (0.25 s; its Time packets come every 40 ms) since the chunk got stuck,
-    not only at the moment of the decision. The network matrix's `cable_pull`.
+    not only at the moment of the decision. Found offline: a fake switcher, the cable out for 3 s
+    mid-upload through a relay.
 
 ## Counts
 
