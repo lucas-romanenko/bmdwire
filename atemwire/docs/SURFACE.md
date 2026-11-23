@@ -1543,7 +1543,7 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     switcher, which takes our packets in order only, took nothing after it: 20 labels at a path
     MTU of 576 never arrived, and a profile restore over a VPN at MTU 1,200 restored nothing and
     sat out its macro upload's timeout. Item 58's take-back covered data chunks only. *Fixed in
-    1.15.0 (`COMMIT_C`):* a stuck command packet of two or more commands, bigger than the next
+    1.15.0 (`fd7b5d6`):* a stuck command packet of two or more commands, bigger than the next
     `CHUNK_STEPS` size, the switcher heard all along, is taken back with everything after it and
     its commands go again split into packets of at most that size plus
     `UdpProtocol.COMMAND_ROOM` (12) bytes, in order; chunks of an upload among them go back to it.
