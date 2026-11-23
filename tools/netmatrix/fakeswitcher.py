@@ -272,7 +272,8 @@ class Fake:
         if s.sid is None:
             if flags & 0x10:
                 s.sid = self.next_sid
-                self.next_sid = 0x8001 + ((self.next_sid + 1 - 0x8001) & 0x7ffe)
+                # A new id for every session, as the units number them.
+                self.next_sid = 0x8001 + (self.next_sid + 1 - 0x8001) % 0x7ffe
                 self.stats['sessions'] += 1
                 self.dump(s)
             return
