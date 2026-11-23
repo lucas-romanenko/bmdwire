@@ -150,7 +150,8 @@ class Session:
 
 class Fake:
     def __init__(self, sock, *, max_sessions=5, dump_kb=200, budget=768, prep=(0.13, 0.4),
-                 rtx_request=False, reap=5.0, inputs=20, seed=1, width=1920, height=1080):
+                 rtx_request=False, reap=5.0, inputs=20, seed=1, width=1920, height=1080,
+                 tick=TICK):
         self.sock = sock
         self.max_sessions = max_sessions
         self.dump_kb = dump_kb
@@ -158,6 +159,7 @@ class Fake:
         self.prep = prep
         self.rtx_request = rtx_request
         self.reap = reap
+        self.tick = tick
         self.width, self.height = width, height
         self.rng = random.Random(seed)
         self.lock = threading.Lock()
@@ -186,7 +188,7 @@ class Fake:
         self.preview = 2
         self.labels = {i: ('Camera %d' % i, 'CM%d' % i) for i in range(1, self.inputs + 1)}
         self.mv = {w: w for w in range(16)}
-        self.next_tick = time.monotonic() + TICK
+        self.next_tick = time.monotonic() + self.tick
 
     def reboot(self, seconds):
         self.stats['reboots'] += 1
@@ -572,7 +574,7 @@ class Fake:
                 if s.sid is not None and now - s.last_heard > self.reap:
                     self.end_session(s, 'reaped')
             if now >= self.next_tick:
-                self.next_tick = now + TICK
+                self.next_tick = now + self.tick
                 lk = b''.join(cmd(b'LKST', x) for x in self.lkst_pending)
                 self.lkst_pending = []
                 for s in self.established():
