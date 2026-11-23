@@ -1006,6 +1006,7 @@ it; item 27 was fixed after 1.5.1. Items 32 and 33 were fixed after 1.5.5 and st
 Items 34 to 37 were fixed after 1.8.0 and still apply to it. Item 3 and items 38 to 41 were
 fixed after 1.9.0 and still apply to it. Items 48 to 52 were fixed in 1.13.0 and still apply to 1.12.1 and earlier. Item 53 was fixed
 after 1.14.2 and still applies to 1.11.0 through 1.14.2.
+Items 54 and 55 were fixed after 1.14.3 and still apply to it.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1412,6 +1413,21 @@ after 1.14.2 and still applies to 1.11.0 through 1.14.2.
     (bmdwire#83): `select()` with no timeout asks whether there is anything to read, then a plain
     `recv`. Over the loopback TCP pair a non-POSIX system gets in place of a socketpair, one read
     can return fewer wakeup bytes than were put; the rest come at the next wakeup.
+54. **A connect that cannot succeed waits out its cap on Windows** (1.12.0). With nothing arriving,
+    `wait_ready` looks only when the transport's 5 s silence tick wakes it, and its two limits
+    (`stall_timeout` 5 s, `hello_timeout` 10 s) are whole ticks, tested with `>`. Windows' clock
+    steps in 15.6 ms: the tick reads exactly 5.000 s after the answer, and the answer the same
+    instant as the start of the wait, so each tick waited for the next. A switcher that welcomed
+    and then sent nothing was given up on after 10 to 40 s (a 40 s cap; Linux: 5 s), one that
+    never answered after 10 or 15 s. *Fixed after 1.14.3:* `>=`, and within `ready._TICK_SLACK`
+    (0.1 s) of the limit counts as reaching it.
+55. **A reset on `recvfrom` ends the UDP thread on Windows** (1.0). Windows hands the ICMP
+    port-unreachable for a datagram we sent to the next `recvfrom` as `WSAECONNRESET`: a host
+    that is up with nothing on 9910 (a wrong address, a switcher still booting). It was raised
+    out of `_drain_socket`, the UDP thread ended, and with it the silence tick and every
+    re-hello: a connect to such an address sat out `CONNECT_MAX`, and a session that met one
+    would not re-handshake. *Fixed after 1.14.3:* `_drain_socket` takes
+    `ConnectionResetError` and `ConnectionRefusedError` as nothing arrived.
 
 ## Counts
 
