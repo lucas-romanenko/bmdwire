@@ -1445,6 +1445,13 @@ Item 56 was fixed in 1.14.5 and still applies to 1.12.0 through 1.14.4.
     10 for a lost first hello). *Fixed in 1.14.5:* the transport notes at each tick, before
     the re-hello, when it fired and `last_rx_monotonic` then (`UdpProtocol.silence_tick`), and
     `wait_ready` judges each tick since its last look from that, whichever thread runs first.
+57. **On a legacy mixer the headphones read the monitor bus** (1.6.0). The legacy mixer's
+    headphone packet `AMHP` had no class, so it was stored raw under `mx['AMHP']`, and
+    `legacy_audio_headphones` gave the monitor bus (`AMmO`); on a unit with a headphone output
+    that may be the wrong bus (bmdwire#51). *Fixed in `7ac3b4c`:* `AMHP` is parsed, `CAMH` /
+    `set_audio_headphones` write it, the reader takes it when the unit sends one and says which
+    with `bus`, and the first `AMHP` is logged with the other legacy-audio packets (§1.11, §2.4).
+    Which models send it is still not known. Untested on a switcher.
 
 ## Counts
 
