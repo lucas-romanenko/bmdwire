@@ -767,7 +767,7 @@ Profile enum tables (`profile/_enums.py`):
 | HyperDeck bind planning | `hyperdeck.plan_binding_push(mx, deck_ip, switcher_input, *, exclude_slots=()) -> (slot\|None, needs_write)` | pure function; the write is `set_hyperdeck_settings` |
 | full snapshot | `state.build_full_state(conn)` / `ATEM.snapshot()` | §2.6 |
 | meters | `fairlight.enable_fairlight_levels`, `audio_legacy.enable_audio_levels` | opt-in streams (`FMLv`/`FDLv`, `AMLv`) at ~10 Hz; re-arm after every reconnect |
-| session count | `sessions.count_sessions(ip, *, port=9910, limit=16, answer_timeout=10.0, max_sessions=None) -> {'ip', 'free', 'full', 'stopped', 'model', 'max', 'in_use', 'session_ids', 'accepts', 'seconds'}`; command `python -m atemwire.sessions IP [--json] [--limit N] [--max N]` | how many sessions the switcher has free, by everyone. The switcher reports no client count, so it opens handshake sessions one at a time (each waits for the answer to the last, each pumped and ACKed like any client) until the hello is answered `0x03`, then sends every one the goodbye (a session whose first packet, and so its id, hasn't come yet is waited for up to `CLOSE_ID_TIMEOUT`, 5 s, so its goodbye carries the id). `stopped` is `'no room'` (`full`, `free` exact), `'limit'` (at least `free`) or `'no answer'` (nothing for `answer_timeout`; at least `free`). `in_use = max - free`, derived, only when `full` and the model's max is known (`max_sessions`, else `sessions.MAX_SESSIONS[model]`, empty until measured on an idle unit). `session_ids` and `accepts` (each 0x02 answer's payload, hex) are kept as evidence for whether the switcher numbers sessions by table slot (unverified). The report shows `free`, and `in use` only when the max is known. Sessions already open are untouched; while it holds the table full (well under a second on a good link) anyone else's hello is answered `0x03`, so it is not for use during a live show |
+| session count | `sessions.count_sessions(ip, *, port=9910, limit=16, answer_timeout=10.0, max_sessions=None) -> {'ip', 'free', 'full', 'stopped', 'model', 'max', 'in_use', 'session_ids', 'accepts', 'seconds'}`; command `python -m atemwire.sessions IP [--json] [--limit N] [--max N]` | how many sessions the switcher has free, by everyone. The switcher reports no client count, so it opens handshake sessions one at a time (each waits for the answer to the last, each pumped and ACKed like any client) until the hello is answered `0x03`, then sends every one the goodbye (a session whose first packet, and so its id, hasn't come yet is waited for up to `CLOSE_ID_TIMEOUT`, 5 s, so its goodbye carries the id). `stopped` is `'no room'` (`full`, `free` exact), `'limit'` (at least `free`) or `'no answer'` (nothing for `answer_timeout`; at least `free`). `in_use = max - free`, derived, only when `full` and the model's max is known (`max_sessions`, else `sessions.MAX_SESSIONS[model]`, measured on an idle unit: `ATEM 1 M/E Constellation HD` 5). `session_ids` and `accepts` (each 0x02 answer's payload, hex) are kept as evidence for whether the switcher numbers sessions by table slot (unverified). The report shows `free`, and `in use` only when the max is known. Sessions already open are untouched; while it holds the table full (well under a second on a good link) anyone else's hello is answered `0x03`, so it is not for use during a live show |
 | macro record by replay | `macro_start_recording` → ops → `macro_sleep` → `macro_stop_recording` | the live way to build a macro without bytecode |
 
 ## 4. Connection lifecycle
@@ -1134,8 +1134,10 @@ Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
     and `ATEMConnection.connect` fails after 15 s; other fields in it are silently missing.
     *Partly fixed in `2fc9375`:* a dump that ends (`InCm`) without `video-mode` raises
     `disconnected` and re-handshakes at once, up to 3 times in a row, then carries on as before.
-    Other fields lost with the first packet are still missing. The real fix, a known first
-    sequence number, waits for a trace showing what it is (bmdwire#13).
+    *Fixed in `79b847f`* (bmdwire#13): the first reliable packet after the handshake was seq 1 on
+    10 of 10 connects to two Constellation HD units, so the ACK starts at 0 and the delivery
+    cursor at 1 once the handshake completes; a lost first packet stalls the ACK and is sent
+    again like any other. The re-handshake stays as the fallback.
 18. **A `*XFC` on a UDP session is handled** (1.3.0). No ATEM sends it, but if one arrives (a
     non-ATEM peer, a fuzzer, a future firmware) the handler indexes `transfer_queue[store]`: with
     nothing queued that raises `KeyError`, which escapes `loop()` and loses the rest of the
@@ -1466,6 +1468,11 @@ Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
     of the next `UdpProtocol.CHUNK_STEPS` size (1,224, 952, 504 bytes), never more chunks than
     the budget; the size is kept for that switcher's address for the process. Other packets
     among them go again at once. Not checked against a real switcher.
+59. **Every closed session logs an ERROR** (1.0). A close says goodbye, then closes the socket,
+    which the UDP thread then meets in `select()` (EBADF; WSAENOTSOCK, 10038, on Windows): "UDP
+    thread exiting" at ERROR, once for every session WebATEM's uploader closed and every session
+    `python -m atemwire.sessions` counted, on stderr. *Fixed in `79b847f`:* after the goodbye
+    (state closed) it is logged at debug; a socket closed under a live session is still an ERROR.
 
 ## Counts
 
