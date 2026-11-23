@@ -576,6 +576,7 @@ in the transfer flow. At field level, the `CKDV`/`CTDv` fields are all echoed, b
   (an RLE header word is never split), then `FTFD(name, description, md5)` once the send queue
   drains. Download chunks are acked one by one with `FTUA(tid, 0)`. Since `d050c10` `FTFD` goes
   with the first budget and each budget is sent whole as it is granted (§5.4 items 22 and 23).
+  Chunks the path does not let through go again smaller (§5.4 item 58).
 - **The protocol layer has no timeouts.** A transfer ends on `FTDC`, a fatal `FTDE`, or
   `abort_transfers()`. Timeouts live in the callers below.
 - Lane control: `AtemProtocol.abort_transfers()` clears the lane and releases held locks;
@@ -1454,6 +1455,17 @@ Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
     `set_audio_headphones` write it, the reader takes it when the unit sends one and says which
     with `bus`, and the first `AMHP` is logged with the other legacy-audio packets (§1.11, §2.4).
     Which models send it is still not known. Untested on a switcher.
+58. **An upload stalls for good where the path drops big datagrams** (1.0). Upload chunks are as
+    big as the `FTCD` allows (1,392 bytes of data, 1,416-byte datagrams). An ATEM Mini Pro over a
+    VPN at 80 ms got the lock request, `FTSD` and `FTFD` and not one chunk, in 90 s and some 70
+    resends; the switcher takes our packets in order only, so nothing after the first chunk
+    counted either, and the caller gave up (WebATEM #63). It asked for that chunk again the moment
+    a small packet came after it. *Fixed in `6067211`:* when the first packet the switcher has
+    not acknowledged is a data chunk, sent `UdpProtocol.TOO_BIG_AFTER` (3) times more while the
+    switcher goes on sending, it and every chunk after it are taken back and go again in chunks
+    of the next `UdpProtocol.CHUNK_STEPS` size (1,224, 952, 504 bytes), never more chunks than
+    the budget; the size is kept for that switcher's address for the process. Other packets
+    among them go again at once. Not checked against a real switcher.
 
 ## Counts
 
