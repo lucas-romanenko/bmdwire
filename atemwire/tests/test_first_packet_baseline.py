@@ -56,3 +56,35 @@ def test_a_re_handshake_starts_at_1_again():
     got = s.dump(NEW, [1])
     assert [p.sequence_number for p in got] == [1]
 
+
+
+def test_a_packet_1_that_never_comes_is_not_waited_for_for_ever(monkeypatch):
+    # A switcher that numbered from elsewhere, or a packet 1 that never gets
+    # through: after FIRST_PACKET_WAIT delivery starts from the first that
+    # came, as before, and the dump-without-video-mode re-handshake follows.
+    t = [100.0]
+    monkeypatch.setattr('atemwire.transport.time.monotonic', lambda: t[0])
+    s = _Session()
+    s.connect()
+    s.handshake()
+    assert s.dump(NEW, [5, 6]) == [True, True]
+    t[0] += UdpProtocol.FIRST_PACKET_WAIT + 0.1
+    s.dump(NEW, [7])
+    delivered = []
+    while not s.t.thread_recv_queue.empty():
+        delivered.append(s.t.thread_recv_queue.get_nowait())
+    assert [p.sequence_number for p in delivered] == [5, 6, 7]
+    assert s.t.ack_number == 7
+    assert s.dump(NEW, [8])[0].sequence_number == 8
+
+
+def test_packet_1_late_but_within_the_wait_is_still_first(monkeypatch):
+    t = [100.0]
+    monkeypatch.setattr('atemwire.transport.time.monotonic', lambda: t[0])
+    s = _Session()
+    s.connect()
+    s.handshake()
+    s.dump(NEW, [2, 3])
+    t[0] += UdpProtocol.FIRST_PACKET_WAIT / 2
+    s.dump(NEW, [4])
+    assert s.t.thread_recv_queue.empty() and s.t.ack_number == 0

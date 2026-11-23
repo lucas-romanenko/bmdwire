@@ -415,6 +415,15 @@ class UdpProtocol(BaseProtocol):
     CHUNK_STEPS = (1224, 952, 504)
     TOO_BIG_AFTER = 3
 
+    # A new session's reliable packets are numbered from 1 (_handshake). If
+    # packet 1 has not come FIRST_PACKET_WAIT after the handshake while
+    # later ones do (the switcher sends it again every ~80 ms), delivery
+    # starts from the first that came, as it did before; the re-handshake
+    # on a dump without a video mode then follows, as before. Without it a
+    # switcher that numbered from anything else, or a packet 1 that never
+    # gets through, would hold the whole dump back until the connect gave up.
+    FIRST_PACKET_WAIT = 1.0
+
     # A send the kernel refuses for a moment (a full buffer: ENOBUFS, which
     # macOS returns rather than blocking, or EAGAIN) is tried again, 1 ms
     # apart, this many times, before the packet counts as lost on the wire.
@@ -549,6 +558,9 @@ class UdpProtocol(BaseProtocol):
         # switcher's own), and the first unacknowledged packet the resend
         # timer last fired for, and how many times in a row.
         self.max_chunk = _CHUNK_LIMITS.get(ip)
+        # When delivery stops waiting for packet 1 (FIRST_PACKET_WAIT);
+        # None once something has been delivered, or before a handshake.
+        self._first_due = None
         self._stuck_seq = None
         self._stuck_count = 0
         self._dup_acks = 0
@@ -1117,6 +1129,7 @@ class UdpProtocol(BaseProtocol):
 
         dist = (seq - self._deliver_next) & 0x7FFF
         if dist == 0:
+            self._first_due = None
             self._deliver_next = (seq + 1) & 0x7FFF
             if not self._parked:
                 return packet
@@ -1133,6 +1146,8 @@ class UdpProtocol(BaseProtocol):
             # Ahead of a gap: hold it; the stalled ACK above makes the ATEM
             # retransmit the missing packet, which will drain this one.
             self._parked[seq] = packet
+            if self._first_due is not None and time.monotonic() >= self._first_due:
+                self._start_without_packet_1()
             return True
         # Absurd forward jump — beyond any real in-flight window. Resync
         # rather than deadlock; drop the (equally stale) parked packets.
@@ -1142,6 +1157,23 @@ class UdpProtocol(BaseProtocol):
         self._parked.clear()
         self._deliver_next = (seq + 1) & 0x7FFF
         return packet
+
+    def _start_without_packet_1(self):
+        """Packet 1 has not come in FIRST_PACKET_WAIT: deliver from the
+        first parked packet, as before bmdwire#13's known start."""
+        self._first_due = None
+        first = min(self._parked, key=lambda q: (q - self._deliver_next) & 0x7FFF)
+        self.log.warning(f"{self.ip}: the session's first packet has not come in "
+                         f"{UdpProtocol.FIRST_PACKET_WAIT:.0f} s; starting from "
+                         f"seq {first}, as the switcher's first")
+        self._deliver_next = first
+        self.ack_number = (first - 1) & 0x7FFF
+        while self._deliver_next in self._parked:
+            self.thread_recv_queue.put(self._parked.pop(self._deliver_next))
+            self._deliver_next = (self._deliver_next + 1) & 0x7FFF
+        while ((self.ack_number + 1) & 0x7FFF) in self.received_packets:
+            self.ack_number = (self.ack_number + 1) & 0x7FFF
+        self._ack_owed()
 
     def _update_ack_number(self, packet):
         """Advance the contiguous-ACK high-water mark.
@@ -1433,6 +1465,7 @@ class UdpProtocol(BaseProtocol):
             self.ack_number = 0
             self._rx_established = True
             self._deliver_next = 1
+            self._first_due = time.monotonic() + UdpProtocol.FIRST_PACKET_WAIT
 
         # Got a valid 2nd handshake packet, send back the third one
         response = Packet()
@@ -1464,6 +1497,7 @@ class UdpProtocol(BaseProtocol):
         # sequence space and must never drain into the new one.
         self._deliver_next = None
         self._parked.clear()
+        self._first_due = None
         self._stashed_packet = None
         # Remember the session being replaced, so its stragglers are
         # dropped. Only a switcher-assigned id: after a handshake that never
