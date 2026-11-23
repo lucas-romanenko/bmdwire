@@ -401,6 +401,7 @@ class UdpProtocol(BaseProtocol):
     RESEND_AFTER = 0.25
     RESEND_MIN = 0.05
     RESEND_MAX = 1.0
+    RESEND_MARGIN = 0.025
     DUP_ACKS = 2
 
     # Upload data chunks (FTDa) are as big as the switcher's FTCD allows,
@@ -461,6 +462,39 @@ class UdpProtocol(BaseProtocol):
     # switcher that numbered from anything else, or a packet 1 that never
     # gets through, would hold the whole dump back until the connect gave up.
     FIRST_PACKET_WAIT = 1.0
+    # How many of an upload's data chunks (FTDa) may be out unacknowledged
+    # at once, as TCP's congestion window: CWND_START at first, one more
+    # for each packet acknowledged (so about twice as many each round
+    # trip) up to CWND_MAX, one more per round trip once a loss has been
+    # seen; on a loss with packets queueing on the way (the round trip
+    # grown over the shortest seen by CWND_QUEUE_MIN or a quarter), halved
+    # when the duplicate ACKs show it and CWND_MIN after the resend timer
+    # fires; on a loss without (random loss) kept. The rest wait their
+    # turn on the UDP thread, and anything queued behind them waits too, in
+    # order. A packet found lost is sent again with everything after it
+    # (the switcher takes our packets in order only and drops the rest), as
+    # the window lets them go: go-back-N, paced by the ACKs. Other packets
+    # (commands, a download's acknowledgements) go at once when nothing is
+    # waiting: they don't come in bursts, and a download's FTUAs held
+    # behind a loss held the switcher's own send window shut.
+    #
+    # An upload budget used to go out whole, back to back (768 chunks,
+    # about 1 MB, in 35 ms: what ATEM Software Control does on a LAN), and
+    # the next one the same. Where the path is narrower than that, a short
+    # queue on the way dropped most of each burst; the switcher drops every
+    # chunk after one it lacks, and the resend sent at most
+    # RETRANSMIT_MAX_BURST of them and waited out the whole timer for each
+    # next lot: 1 Mbit/s never finished a 1080p still, 5 Mbit/s took 52 s,
+    # a slow site (3 Mbit/s, 60 ms, 1 % loss) 84 s (the network matrix).
+    # CWND_START is still one budget, so the first goes as it always did
+    # and a good link never waits for the window to open (a start of 128
+    # cost 200 ms links 0.4 s a still).
+    CWND_START = 768
+    CWND_MIN = 16
+    CWND_MAX = 1024
+    CWND_BETA = 0.5
+    CWND_QUEUE_MIN = 0.01
+    CWND_DELAY_BASED = True
 
     # A send the kernel refuses for a moment (a full buffer: ENOBUFS, which
     # macOS returns rather than blocking, or EAGAIN) is tried again, 1 ms
@@ -589,6 +623,7 @@ class UdpProtocol(BaseProtocol):
         self._sent_at = {}
         self._srtt = None
         self._rttvar = None
+        self._min_rtt = None
         self._backoff = 1
         self.resends = 0
         self.fast_resends = 0
@@ -611,6 +646,17 @@ class UdpProtocol(BaseProtocol):
         # (GAP_ASK_AFTER), None with no gap; how many times we have asked.
         self._gap_due = None
         self.gaps_asked = 0
+        # The congestion window (CWND_*): its size, the slow-start
+        # threshold, our reliable packets waiting for room in it, the
+        # highest sequence sent in the current pass (behind
+        # local_sequence_number while lost ones are sent again), and the
+        # last sequence out when a loss was last answered, before which
+        # another loss is the same one.
+        self._cwnd = float(UdpProtocol.CWND_START)
+        self._ssthresh = float(UdpProtocol.CWND_MAX)
+        self._held = collections.deque()
+        self._sent_through = None
+        self._recover = None
         self._dup_acks = 0
         self._resends_logged = 0
         self._resend_last_log = 0.0
@@ -921,7 +967,90 @@ class UdpProtocol(BaseProtocol):
                 f"sysctl -w net.core.rmem_max={asked}")
         return got
 
-    def _send_on_udp_thread(self, packet):
+    def _window_full(self, packet):
+        """Whether a reliable packet of ours must wait for room in the
+        congestion window (CWND_*): others are waiting before it, lost
+        ones are being sent again, or the window is full."""
+        if self.state != UdpProtocol.STATE_ESTABLISHED or self._acked_through is None:
+            return False
+        if packet.flags & (UdpProtocol.FLAG_SYN | UdpProtocol.FLAG_ACK):
+            return False
+        if self._held:
+            return True                          # in turn, behind those waiting
+        if _ftda(packet) is None:
+            # Only an upload's data chunks wait for the window: they are
+            # what comes in bursts. Anything else goes at once, as before:
+            # a download's acknowledgements (FTUA) held back behind a loss
+            # held the switcher's own send window shut (a slow site's still
+            # download, 46 s, took 54 s). Sent during a go-back-N pass it is
+            # sent again in its turn if the switcher dropped it.
+            return False
+        if self._sent_through != self.local_sequence_number:
+            return True
+        return self._in_flight() >= int(self._cwnd)
+
+    def _in_flight(self):
+        """Our reliable packets sent in this pass and not yet acknowledged."""
+        if self._acked_through is None or self._sent_through is None:
+            return 0
+        n = (self._sent_through - self._acked_through) & 0x7FFF
+        return 0 if n >= UdpProtocol.RETRANSMIT_WINDOW else n
+
+    def _send_window(self):
+        """Send what the congestion window has room for: lost packets
+        again first, in order, then those waiting (CWND_*)."""
+        sent = 0
+        while self.state == UdpProtocol.STATE_ESTABLISHED and self._in_flight() < int(self._cwnd):
+            if self._sent_through is not None and self._sent_through != self.local_sequence_number:
+                seq = (self._sent_through + 1) & 0x7FFF
+                self._sent_through = seq
+                pkt = self.retransmission_buffer.get(seq)
+                if pkt is None:
+                    continue
+                pkt.flags |= UdpProtocol.FLAG_RETRANSMISSION
+                self._sent_at.pop(seq, None)
+                try:
+                    self._sendto(pkt.to_bytes())
+                except OSError as exc:
+                    self.log.error(f"resend of seq {seq} failed: {exc}")
+                    break
+                self.tx_packet_count += 1
+            elif self._held:
+                self._send_on_udp_thread(self._held.popleft(), window=False)
+            else:
+                break
+            sent += 1
+        return sent
+
+    def _on_loss(self, timeout):
+        """A packet of ours was lost: the switcher repeated its ACK
+        (``timeout`` False) or the resend timer fired. Send it again with
+        everything after it, as the window lets them go, the window halved,
+        or down to CWND_MIN on a timeout; once per loss (``_recover``)."""
+        if self._acked_through is None:
+            return
+        in_recovery = (self._recover is not None
+                       and 0 < ((self._recover - self._acked_through) & 0x7FFF)
+                       < UdpProtocol.RETRANSMIT_WINDOW)
+        if not in_recovery or timeout:
+            flight = max(self._in_flight(), int(self._cwnd))
+            if self._queueing():
+                if timeout:
+                    self._ssthresh = max(float(UdpProtocol.CWND_MIN), flight / 2)
+                    self._cwnd = float(UdpProtocol.CWND_MIN)
+                else:
+                    self._cwnd = max(float(UdpProtocol.CWND_MIN), flight * UdpProtocol.CWND_BETA)
+                    self._ssthresh = self._cwnd
+            elif timeout:
+                self._cwnd = max(float(UdpProtocol.CWND_MIN), self._cwnd / 2)
+            self._recover = self.local_sequence_number
+        self._sent_through = self._acked_through
+        self._send_window()
+
+    def _send_on_udp_thread(self, packet, window=True):
+        if window and self._window_full(packet):
+            self._held.append(packet)
+            return
         try:
             self._send_packet_low(packet)
         except OSError as e:
@@ -1051,6 +1180,7 @@ class UdpProtocol(BaseProtocol):
                 % 0x8000, None)
             now = time.monotonic()
             self._sent_at[self.local_sequence_number] = now
+            self._sent_through = self.local_sequence_number
             if self._resend_due is None:
                 self._resend_due = now + self.resend_after()
 
@@ -1369,7 +1499,7 @@ class UdpProtocol(BaseProtocol):
                     and 0 < outstanding < UdpProtocol.RETRANSMIT_WINDOW
                     and self.state == UdpProtocol.STATE_ESTABLISHED):
                 self.fast_resends += 1
-                self._retransmit_from((number + 1) & 0x7FFF, quiet=True)
+                self._on_loss(timeout=False)
                 self._resend_due = time.monotonic() + self.resend_after()
             return
         self._dup_acks = 0
@@ -1392,13 +1522,40 @@ class UdpProtocol(BaseProtocol):
                 q = (q + 1) & 0x7FFF
                 self._sent_at.pop(q, None)
         self._backoff = 1
+        if previous is not None:
+            newly = (number - previous) & 0x7FFF
+            if newly < UdpProtocol.RETRANSMIT_WINDOW:
+                if self._cwnd < self._ssthresh:
+                    self._cwnd += newly
+                else:
+                    self._cwnd += newly / self._cwnd
+                self._cwnd = min(self._cwnd, float(UdpProtocol.CWND_MAX))
+        if (self._sent_through is None
+                or ((self._sent_through - number) & 0x7FFF) >= UdpProtocol.RETRANSMIT_WINDOW):
+            # The switcher has more than this pass has sent again: a resend
+            # it did not need.
+            self._sent_through = number
+        self._send_window()
+        outstanding = (self.local_sequence_number - number) & 0x7FFF
         if outstanding == 0:
             self._resend_due = None
         else:
             self._resend_due = now + self.resend_after()
 
+    def _queueing(self):
+        """Whether our packets are waiting in a queue on the way: the
+        smoothed round trip is over the shortest seen by more than
+        CWND_QUEUE_MIN, or a quarter of it."""
+        if not UdpProtocol.CWND_DELAY_BASED:
+            return True
+        if self._srtt is None or self._min_rtt is None:
+            return False
+        return self._srtt > self._min_rtt + max(UdpProtocol.CWND_QUEUE_MIN, self._min_rtt / 4)
+
     def _sample_rtt(self, r):
         """One round trip measured: RFC 6298's smoothing (1/8, 1/4)."""
+        if self._min_rtt is None or r < self._min_rtt:
+            self._min_rtt = r
         if self._srtt is None:
             self._srtt, self._rttvar = r, r / 2
         else:
@@ -1411,7 +1568,7 @@ class UdpProtocol(BaseProtocol):
         if self._srtt is None:
             base = UdpProtocol.RESEND_AFTER
         else:
-            base = self._srtt + 4 * self._rttvar
+            base = self._srtt + max(4 * self._rttvar, UdpProtocol.RESEND_MARGIN)
         base = min(UdpProtocol.RESEND_MAX, max(UdpProtocol.RESEND_MIN, base))
         return min(UdpProtocol.RESEND_MAX, base * self._backoff)
 
@@ -1439,7 +1596,7 @@ class UdpProtocol(BaseProtocol):
         self.log.debug(f"no ACK for seq {first} through {self.local_sequence_number} "
                        f"in {waited * 1000:.0f} ms: resending")
         self.resends += 1
-        self._retransmit_from(first, quiet=True)
+        self._on_loss(timeout=True)
         now = time.monotonic()
         if now - self._resend_last_log >= 5.0:
             # One line per ~5 s, as for the switcher's resends: on a lossy
@@ -1524,9 +1681,14 @@ class UdpProtocol(BaseProtocol):
             if seq == last:
                 break
             seq = (seq + 1) & 0x7FFF
-        # Ours not sent yet go after them, as they would have.
+        # Ours not sent yet go after them, as they would have: those
+        # waiting for room in the congestion window, then the queue's.
+        taken.extend(self._held)
+        self._held.clear()
         taken.extend(item for item in self.thread_queue.get_waiting() if item is not None)
         self.local_sequence_number = self._acked_through
+        self._sent_through = self._acked_through
+        self._recover = None
         self._resend_due = None
         self._backoff = 1
         self._stuck_seq, self._stuck_count = None, 0
@@ -1687,6 +1849,11 @@ class UdpProtocol(BaseProtocol):
         self._sent_at.clear()
         self._backoff = 1
         self._dup_acks = 0
+        self._cwnd = float(UdpProtocol.CWND_START)
+        self._ssthresh = float(UdpProtocol.CWND_MAX)
+        self._held.clear()
+        self._sent_through = None
+        self._recover = None
         self._last_ack_sent = None
         self._ack_repeat = False
         # received_packets drives BOTH the retransmission dup-drop and the
