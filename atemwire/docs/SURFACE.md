@@ -1018,6 +1018,7 @@ after 1.14.2 and still applies to 1.11.0 through 1.14.2.
 Items 54 and 55 were fixed in 1.14.4 and still apply to 1.14.3 and earlier.
 Item 56 was fixed in 1.14.5 and still applies to 1.12.0 through 1.14.4.
 Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
+Items 17, 58 and 59 were fixed in 1.14.7 and still apply to 1.14.6 and earlier.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1134,7 +1135,7 @@ Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
     and `ATEMConnection.connect` fails after 15 s; other fields in it are silently missing.
     *Partly fixed in `2fc9375`:* a dump that ends (`InCm`) without `video-mode` raises
     `disconnected` and re-handshakes at once, up to 3 times in a row, then carries on as before.
-    *Fixed in `79b847f`* (bmdwire#13): the first reliable packet after the handshake was seq 1 on
+    *Fixed in 1.14.7 (`79b847f`)* (bmdwire#13): the first reliable packet after the handshake was seq 1 on
     10 of 10 connects to two Constellation HD units, so the ACK starts at 0 and the delivery
     cursor at 1 once the handshake completes; a lost first packet stalls the ACK and is sent
     again like any other. If packet 1 has not come `UdpProtocol.FIRST_PACKET_WAIT` (1 s) after
@@ -1464,7 +1465,7 @@ Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
     VPN at 80 ms got the lock request, `FTSD` and `FTFD` and not one chunk, in 90 s and some 70
     resends; the switcher takes our packets in order only, so nothing after the first chunk
     counted either, and the caller gave up (WebATEM #63). It asked for that chunk again the moment
-    a small packet came after it. *Fixed in `6067211`:* when the first packet the switcher has
+    a small packet came after it. *Fixed in 1.14.7 (`6067211`):* when the first packet the switcher has
     not acknowledged is a data chunk, sent `UdpProtocol.TOO_BIG_AFTER` (3) times more while the
     switcher goes on sending, it and every chunk after it are taken back and go again in chunks
     of the next `UdpProtocol.CHUNK_STEPS` size (1,224, 952, 504 bytes), never more chunks than
@@ -1473,7 +1474,7 @@ Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
 59. **Every closed session logs an ERROR** (1.0). A close says goodbye, then closes the socket,
     which the UDP thread then meets in `select()` (EBADF; WSAENOTSOCK, 10038, on Windows): "UDP
     thread exiting" at ERROR, once for every session WebATEM's uploader closed and every session
-    `python -m atemwire.sessions` counted, on stderr. *Fixed in `79b847f`:* after the goodbye
+    `python -m atemwire.sessions` counted, on stderr. *Fixed in 1.14.7 (`79b847f`):* after the goodbye
     (state closed) it is logged at debug; a socket closed under a live session is still an ERROR.
 
 ## Counts
