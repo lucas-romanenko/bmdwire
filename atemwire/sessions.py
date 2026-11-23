@@ -8,15 +8,17 @@ state dump or ATEM Software Control says how many clients are connected
 (looked for 2026-11-05). So this counts by headroom. It opens sessions one
 at a time, each waiting for the switcher's answer to the last, until the
 switcher answers a hello 0x03 ("no room"), then logs every one off with the
-protocol goodbye. ``free`` is how many it got. ``in_use`` is the model's
-maximum minus ``free``: derived, not reported, and only known once the
-maximum for that model has been measured (run this on that model with
-nothing else connected: ``free`` is then the maximum; record it in
-``MAX_SESSIONS``).
+protocol goodbye. ``free`` is how many it got, and is what it shows.
+``in_use`` (the model's maximum minus ``free``) is derived, not reported,
+and only given once the maximum for that model has been measured: run this
+on that model with nothing else connected, when ``free`` is the maximum,
+and record it in ``MAX_SESSIONS`` (empty: none is measured yet).
 
 Sessions already open are never touched. While the count runs (well under
-a second on a healthy link) the table is full, so someone else connecting
-in that moment can be turned away; they get the same 0x03 and can retry.
+a second on a healthy link) the table is full, so anyone else connecting
+in that moment (ATEM Software Control, a panel, a client re-handshaking
+after a blip) is turned away with the same 0x03 and has to retry. **Don't
+run it during a live show.**
 
 Run by hand, one switcher per run::
 
@@ -51,10 +53,18 @@ ANSWER_TIMEOUT = CONNECT_HELLO_TIMEOUT
 # its switcher-assigned id and starts the state dump (product name).
 FIRST_PACKET_TIMEOUT = 2.0
 
+# How long logging a session off waits for that id when it hasn't come
+# yet: the goodbye must carry it, and one sent without it is dropped
+# (``session_id`` None does not serialise), which would leave the slot
+# held until the switcher reaps it (~5 s). The switcher resends its first
+# packet until it is ACKed, so on a working link it comes.
+CLOSE_ID_TIMEOUT = 5.0
+
 WARNING = ('Opens sessions one at a time until the switcher has no room, '
            'then logs each one off. Sessions already open are not touched; '
-           'for the second or so this takes, someone else connecting may be '
-           'turned away and has to try again.')
+           'for the second or so this takes, anyone else connecting is '
+           'turned away and has to try again, so do not run it during a '
+           'live show.')
 
 
 class _Session:
@@ -104,6 +114,12 @@ class _Session:
         return None if sid in (None, 0x1337) else sid
 
     def close(self):
+        if self.accepted and self.session_id is None:
+            # Still pumped, so the first packet is ACKed when it comes.
+            if not _wait(lambda: self.session_id is not None, CLOSE_ID_TIMEOUT):
+                logging.getLogger('AtemProtocol').warning(
+                    'session count: no session id from the switcher in %.0f s; '
+                    'that session is left for it to reap', CLOSE_ID_TIMEOUT)
         self._stop.set()
         try:
             self.transport.close_session()
@@ -222,12 +238,6 @@ def format_result(r):
         lines.append(f"  in use   {r['in_use']}   = max {r['max']} − free "
                      f"{r['free']} (worked out; the switcher does not "
                      f"report it)")
-    elif r['full'] and r['max'] is None:
-        lines.append('  in use   unknown: the most sessions this model allows '
-                     'is not measured yet. Run this once with nothing else '
-                     'connected; that free count is the max.')
-    else:
-        lines.append('  in use   unknown')
     lines.append(f"  took     {r['seconds']:.1f} s, every session logged off")
     return '\n'.join(lines)
 

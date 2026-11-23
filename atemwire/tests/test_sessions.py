@@ -24,14 +24,18 @@ class TableSwitcher(threading.Thread):
     """A switcher with ``slots`` sessions. A hello gets 0x02 while one is
     free and 0x03 ("no room") when not; the ACK of the 0x02 gets a reliable
     packet under the assigned id carrying ``_pin``; a goodbye (0x04) frees
-    the slot. ``taken`` slots start held by someone else. ``answer=False``
-    answers nothing once ``answer_first`` hellos have been accepted."""
+    the slot, if it carries that session's id (anything else is ignored, so
+    a goodbye sent before the id is known logs nothing off). ``taken`` slots
+    start held by someone else. ``answer=False`` answers nothing once
+    ``answer_first`` hellos have been accepted. ``first_packet_delay`` holds
+    each session's first packet back that long after the ACK."""
 
-    def __init__(self, slots, taken=0, *, answer_first=None):
+    def __init__(self, slots, taken=0, *, answer_first=None, first_packet_delay=0.0):
         super().__init__(daemon=True)
         self.slots = slots
         self.taken = taken
         self.answer_first = answer_first
+        self.first_packet_delay = first_packet_delay
         self.ip = f'127.{random.randint(1, 254)}.{random.randint(1, 254)}.{random.randint(2, 254)}'
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((self.ip, 9910))
@@ -64,7 +68,9 @@ class TableSwitcher(threading.Thread):
                 if op == 0x01:
                     self._hello(peer)
                 elif op == 0x04:
-                    if self.table.pop(peer, None) is not None:
+                    session = struct.unpack_from('>H', data, 2)[0]
+                    if self.table.get(peer) == session:
+                        del self.table[peer]
                         self.goodbyes += 1
             elif flags & 0x10 and peer in self.pending:
                 self.pending.discard(peer)
@@ -73,8 +79,18 @@ class TableSwitcher(threading.Thread):
                 self.table[peer] = sid
                 pin = MODEL.encode().ljust(40, b'\0') + bytes([0x1f, 0, 0, 0])
                 field = struct.pack('!H2x4s', 8 + len(pin), b'_pin') + pin
-                self.sock.sendto(_header(0x01, 12 + len(field), sid, seq=1) + field, peer)
+                first = _header(0x01, 12 + len(field), sid, seq=1) + field
+                if self.first_packet_delay:
+                    threading.Timer(self.first_packet_delay, self._send, (first, peer)).start()
+                else:
+                    self.sock.sendto(first, peer)
             self.most_held = max(self.most_held, len(self.table))
+
+    def _send(self, data, peer):
+        try:
+            self.sock.sendto(data, peer)
+        except OSError:
+            pass
 
     def _hello(self, peer):
         if peer in self.table or peer in self.pending:
@@ -127,11 +143,24 @@ def test_in_use_is_max_minus_free_once_the_max_is_known(monkeypatch):
     assert 'in use   5   = max 8 − free 3' in format_result(r)
 
 
-def test_in_use_is_unknown_until_the_model_is_measured():
+def test_only_free_is_shown_until_the_model_is_measured():
     with TableSwitcher(slots=4, taken=1) as sw:
         r = count_sessions(sw.ip)
     assert r['free'] == 3 and r['max'] is None and r['in_use'] is None
-    assert 'not measured yet' in format_result(r)
+    assert 'in use' not in format_result(r)
+    assert 'free     3' in format_result(r)
+
+
+def test_a_session_whose_first_packet_is_late_is_still_logged_off(monkeypatch):
+    # The switcher's first packet gives the session its id; the goodbye has
+    # to carry it. Closing before it arrived sent nothing (session id None
+    # does not serialise), leaving the slot for the switcher to reap.
+    monkeypatch.setattr(sessions, 'FIRST_PACKET_TIMEOUT', 0.05)
+    with TableSwitcher(slots=4, first_packet_delay=0.4) as sw:
+        r = count_sessions(sw.ip, limit=2)
+        _settled(sw)
+        assert sw.goodbyes == 2 and not sw.table
+    assert r['free'] == 2
 
 
 def test_an_idle_switcher_gives_its_max():
