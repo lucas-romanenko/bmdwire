@@ -1562,7 +1562,7 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
 65. **Downloads on a pooled connection give up after a fixed total** (1.0). `download_still`
     (30 s), `download_macro` (10 s) and the profile save's media capture (30 s a slot) took
     `timeout` for the whole download, however it was going: a 1080p still over 1 Mbit/s (130 s)
-    or a slow site (45 s) never made it. *Fixed in 1.15.0 (`COMMIT_D`):* `timeout` alone is now
+    or a slow site (45 s) never made it. *Fixed in 1.15.0 (`ce5cbe1`):* `timeout` alone is now
     seconds with nothing arriving (waiting for the lock counts as nothing), as the uploads'
     are; with `stall_timeout` as well, that is the no-data limit and `timeout` the cap, as
     before. The network matrix's `pooled_download`.
