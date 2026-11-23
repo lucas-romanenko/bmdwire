@@ -1555,7 +1555,7 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     5 s after the switcher could answer (an 8 s cut: back after 10.0 s, once 15.2 s at 5 % loss).
     The goodbye was one datagram: lost, it left the session on the switcher until it reaped it,
     against its five (1 in 3 of five connect/disconnects at 5 % loss). *Fixed in 1.15.0
-    (`COMMIT_H`):* an unanswered hello goes again after `UdpProtocol.HELLO_RETRY` (1 s), then
+    (`9575bfc`):* an unanswered hello goes again after `UdpProtocol.HELLO_RETRY` (1 s), then
     every `HELLO_RETRY_MAX` (2 s), the same hello, the silence window unmoved; the goodbye goes
     `UdpProtocol.GOODBYES` (3) times. An 8 s cut: back after 8.5 s. The network matrix's
     `idle_cut` and `disconnect`.
