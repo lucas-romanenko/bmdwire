@@ -1016,6 +1016,7 @@ fixed after 1.9.0 and still apply to it. Items 48 to 52 were fixed in 1.13.0 and
 after 1.14.2 and still applies to 1.11.0 through 1.14.2.
 Items 54 and 55 were fixed in 1.14.4 and still apply to 1.14.3 and earlier.
 Item 56 was fixed in 1.14.5 and still applies to 1.12.0 through 1.14.4.
+Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1449,7 +1450,7 @@ Item 56 was fixed in 1.14.5 and still applies to 1.12.0 through 1.14.4.
 57. **On a legacy mixer the headphones read the monitor bus** (1.6.0). The legacy mixer's
     headphone packet `AMHP` had no class, so it was stored raw under `mx['AMHP']`, and
     `legacy_audio_headphones` gave the monitor bus (`AMmO`); on a unit with a headphone output
-    that may be the wrong bus (bmdwire#51). *Fixed in `7ac3b4c`:* `AMHP` is parsed, `CAMH` /
+    that may be the wrong bus (bmdwire#51). *Fixed in 1.14.6 (`7ac3b4c`):* `AMHP` is parsed, `CAMH` /
     `set_audio_headphones` write it, the reader takes it when the unit sends one and says which
     with `bus`, and the first `AMHP` is logged with the other legacy-audio packets (§1.11, §2.4).
     Which models send it is still not known. Untested on a switcher.
