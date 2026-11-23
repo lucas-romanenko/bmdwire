@@ -23,6 +23,12 @@ from atemwire.transport import NoFreeConnection
 logger = logging.getLogger(__name__)
 
 
+# How far short of a stall limit still counts as reaching it: more than a
+# clock step and a select() that returns early, far less than the 5 s tick
+# the pump would otherwise wait for.
+_TICK_SLACK = 0.1
+
+
 class WaitAborted(Exception):
     """Raised by ``wait_ready()`` when ``stop_event`` fires before the
     connection becomes ready."""
@@ -103,9 +109,16 @@ def wait_ready(
                 raise NoFreeConnection(getattr(transport, 'ip', None))
             if stall_timeout is not None:
                 last = getattr(transport, 'last_rx_monotonic', 0.0) or 0.0
-                answered = last > started
+                # >=, and _TICK_SLACK short of the limit: with nothing
+                # arriving, loop() returns only on the transport's 5 s
+                # silence tick, and both limits are whole ticks. On a clock
+                # that steps in 15.6 ms (Windows) the tick reads exactly
+                # 5.000 s after the answer, or the answer reads the same
+                # instant as ``started``; a strict test then waited a whole
+                # tick more, each tick, up to ``timeout``.
+                answered = last >= started
                 limit = stall_timeout if answered or hello_timeout is None else hello_timeout
-                if time.monotonic() - max(started, last) > limit:
+                if time.monotonic() - max(started, last) >= limit - _TICK_SLACK:
                     raise TimeoutError(
                         f"wait_ready: nothing from the switcher for {limit}s")
             if (

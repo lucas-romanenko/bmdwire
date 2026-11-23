@@ -658,6 +658,15 @@ class UdpProtocol(BaseProtocol):
                     packet = self._receive_packet_low()
                 except (BlockingIOError, InterruptedError):
                     break
+                except (ConnectionResetError, ConnectionRefusedError):
+                    # Not a datagram: Windows hands the ICMP port-unreachable
+                    # for something we sent to the next recvfrom, as
+                    # WSAECONNRESET (a host that is up with nothing on 9910:
+                    # a wrong address, a switcher still booting). Raised out
+                    # of here it ended the UDP thread, and with it every
+                    # re-hello: the connect sat out its whole cap. Nothing
+                    # arrived; the silence tick carries on.
+                    continue
                 # True: dropped (a duplicate) or already handed on (the
                 # in-order gate's drain); nothing for the protocol.
                 if packet is not None and packet is not True:

@@ -5,7 +5,6 @@ A connect says so at once (``NoFreeConnection``) instead of re-sending the
 hello until its timeout and reading as "offline"; and a connect waits for as
 long as the switcher keeps sending, giving up only after
 ``CONNECT_STALL_TIMEOUT`` with nothing from it."""
-import os
 import random
 import socket
 import struct
@@ -116,10 +115,6 @@ def test_wait_ready_raises_it_for_a_bare_protocol():
             p.transport.sock.close()
 
 
-@pytest.mark.skipif(os.name != 'posix', reason=(
-    "timing: this switcher answers the hello the silence tick re-sends, and "
-    "on Windows that answer can reach the transport before the pump looks, "
-    "so the stall is noticed a tick or more later (10.0 s seen, not 5)"))
 def test_a_switcher_that_goes_quiet_fails_after_the_stall_not_the_cap(clean_pool, monkeypatch):
     monkeypatch.setattr(_connection, 'CONNECT_STALL_TIMEOUT', 0.6)
     monkeypatch.setattr(_connection, 'CONNECT_MAX', 30.0)
