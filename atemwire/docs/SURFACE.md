@@ -1137,7 +1137,9 @@ Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
     *Fixed in `79b847f`* (bmdwire#13): the first reliable packet after the handshake was seq 1 on
     10 of 10 connects to two Constellation HD units, so the ACK starts at 0 and the delivery
     cursor at 1 once the handshake completes; a lost first packet stalls the ACK and is sent
-    again like any other. The re-handshake stays as the fallback.
+    again like any other. If packet 1 has not come `UdpProtocol.FIRST_PACKET_WAIT` (1 s) after
+    the handshake while later ones do, delivery starts from the first that came, as before, and
+    the re-handshake follows (`d959fe4`).
 18. **A `*XFC` on a UDP session is handled** (1.3.0). No ATEM sends it, but if one arrives (a
     non-ATEM peer, a fuzzer, a future firmware) the handler indexes `transfer_queue[store]`: with
     nothing queued that raises `KeyError`, which escapes `loop()` and loses the rest of the
