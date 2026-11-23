@@ -63,6 +63,7 @@ def chunk(n, size=1392):
 
 def a_stuck_upload(udp, clock, chunks=10):
     """FTFD acknowledged, then chunks the switcher never gets."""
+    time_packet(udp)
     udp._send_packet_low(reliable(b'\x00\xdcFTFD' + bytes(212)))
     clock[0] += 0.08
     udp._on_ack(1, ack_only=True)
@@ -70,11 +71,34 @@ def a_stuck_upload(udp, clock, chunks=10):
         udp._send_packet_low(chunk(n))
 
 
+def time_packet(udp):
+    """One of the switcher's Time packets (every 40 ms), through the
+    receive path."""
+    udp._rx_seq = getattr(udp, '_rx_seq', 0) + 1
+    pkt = Packet()
+    pkt.flags = UdpProtocol.FLAG_RELIABLE
+    pkt.session = udp.session_id
+    pkt.sequence_number = udp._rx_seq
+    pkt.data = b'\x00\x10\x00\x00Time' + bytes(8)
+    raw = pkt.to_bytes()
+    udp.sock.recvfrom = lambda n: (raw, ('127.0.0.1', 9910))
+    udp._receive_packet_low()
+
+
+def heard_until(udp, clock, until):
+    """The switcher's Time packets, 40 ms apart, up to ``until``."""
+    while clock[0] + 0.04 <= until:
+        clock[0] += 0.04
+        time_packet(udp)
+    clock[0] = until
+
+
 def timer_fires(udp, clock, times, answering=True):
     for _ in range(times):
-        clock[0] = udp._resend_due if udp._resend_due else clock[0] + 1
+        due = udp._resend_due if udp._resend_due else clock[0] + 1
         if answering:
-            udp.last_rx_monotonic = clock[0]     # its Time packets keep coming
+            heard_until(udp, clock, due)         # its Time packets keep coming
+        clock[0] = due
         udp._resend_unacked()
 
 
@@ -142,7 +166,8 @@ def test_other_packets_among_them_go_again_now_in_order(udp, clock):
     timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
     [taken] = taken_back(udp)
     assert taken.sizes == [1392] * 3
-    resent = [Packet.from_bytes(r) for r in udp.sock.sent]
+    resent = [q for q in (Packet.from_bytes(r) for r in udp.sock.sent)
+              if q.flags & UdpProtocol.FLAG_RELIABLE]     # not our ACKs
     assert [(q.sequence_number, bytes(q.data)[4:8]) for q in resent][-1] == (2, b'LOCK')
     assert not resent[-1].flags & UdpProtocol.FLAG_RETRANSMISSION
 
@@ -317,3 +342,56 @@ def test_the_protocol_loop_takes_them(proto):
     proto.transport.thread_recv_queue.put(ChunksTakenBack(proto.transfer.tid, sizes, 1224))
     proto.loop()
     assert b''.join(payloads(proto)[10:]) == DATA
+
+
+# --- a link down for a moment is not a path too small -----------------------
+
+def a_stuck_upload_on_a_lan(udp, clock, chunks=10):
+    """As a_stuck_upload, on a LAN: the ACK in 2 ms, so the resend timer
+    runs at RESEND_MIN and doubles (50, 100, 200, 400 ms)."""
+    time_packet(udp)
+    udp._send_packet_low(reliable(b'\x00\xdcFTFD' + bytes(212)))
+    clock[0] += 0.002
+    udp._on_ack(1, ack_only=True)
+    for n in range(chunks):
+        udp._send_packet_low(chunk(n))
+
+
+def test_chunks_stuck_while_the_cable_is_out_are_not_taken_back(udp, clock):
+    # The netmatrix's cable_pull: the cable out for 3 s mid-upload. Four
+    # resends take 0.75 s on a LAN, under RESEND_MAX: 1.14.7 took the
+    # chunks back as too big, and their sequence numbers went again with
+    # other data, though the switcher may have had them (their ACKs lost
+    # with the cable). The still arrived with an MD5 that did not match.
+    a_stuck_upload_on_a_lan(udp, clock)
+    out = clock[0]
+    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1, answering=False)
+    assert clock[0] - out < UdpProtocol.RESEND_MAX, 'the case 1.14.7 got wrong'
+    assert taken_back(udp) == []
+    # The cable back in: the switcher is heard again at once, and the
+    # chunks still not acknowledged at the next resends are resent, not
+    # taken back: they were stuck across the silence.
+    heard_until(udp, clock, out + 3.0)
+    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 2)
+    assert taken_back(udp) == []
+    assert udp.max_chunk is None
+    assert udp.local_sequence_number == 11, 'no sequence number used twice'
+
+
+def test_a_short_gap_in_what_the_switcher_sends_is_a_link_down(udp, clock):
+    # Heard at the moment of the decision is not enough: a gap of more
+    # than HEARD_GAP since the chunk got stuck rules a take-back out.
+    a_stuck_upload_on_a_lan(udp, clock)
+    timer_fires(udp, clock, 1)
+    clock[0] += UdpProtocol.HEARD_GAP + 0.05     # quiet, then heard again
+    time_packet(udp)
+    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
+    assert taken_back(udp) == []
+
+
+def test_chunks_too_big_on_a_lan_are_still_taken_back(udp, clock):
+    # The switcher heard all along: the size, as before.
+    a_stuck_upload_on_a_lan(udp, clock)
+    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
+    [taken] = taken_back(udp)
+    assert taken.limit == 1224

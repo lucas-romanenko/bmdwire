@@ -1476,6 +1476,15 @@ Items 17, 58 and 59 were fixed in 1.14.7 and still apply to 1.14.6 and earlier.
     thread exiting" at ERROR, once for every session WebATEM's uploader closed and every session
     `python -m atemwire.sessions` counted, on stderr. *Fixed in 1.14.7 (`79b847f`):* after the goodbye
     (state closed) it is logged at debug; a socket closed under a live session is still an ERROR.
+60. **A cable out for a moment mid-upload can corrupt the still** (1.14.7). Four resends of a
+    stuck chunk take 0.75 s on a LAN, under the 1 s `RESEND_MAX` that item 58's take-back took for
+    "the switcher still answering", so a cable out for 3 s had the chunks taken back as too big.
+    Their sequence numbers went again with other data while the switcher may already have had
+    them (their ACKs lost with the cable): it kept the old ones, took the new ones after them, and
+    the still arrived with chunks twice and the wrong MD5, which the switcher does not check.
+    *Fixed in 1.14.8 (`COMMIT_A`):* the switcher must have been heard without a gap of more than
+    `UdpProtocol.HEARD_GAP` (0.25 s; its Time packets come every 40 ms) since the chunk got stuck,
+    not only at the moment of the decision. The network matrix's `cable_pull`.
 
 ## Counts
 
