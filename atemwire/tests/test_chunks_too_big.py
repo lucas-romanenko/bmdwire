@@ -365,28 +365,49 @@ def test_chunks_stuck_while_the_cable_is_out_are_not_taken_back(udp, clock):
     # with the cable). The still arrived with an MD5 that did not match.
     a_stuck_upload_on_a_lan(udp, clock)
     out = clock[0]
-    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1, answering=False)
-    assert clock[0] - out < UdpProtocol.RESEND_MAX, 'the case 1.14.7 got wrong'
-    assert taken_back(udp) == []
-    # The cable back in: the switcher is heard again at once, and the
-    # chunks still not acknowledged at the next resends are resent, not
-    # taken back: they were stuck across the silence.
+    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 3, answering=False)
+    assert clock[0] - out < 3.0
+    assert taken_back(udp) == [], 'resends nobody heard an answer to do not count'
+    # The cable back in: heard again, and the next resend reaches the
+    # switcher, which acknowledges it (it had the chunk, or has it now).
     heard_until(udp, clock, out + 3.0)
-    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 2)
+    timer_fires(udp, clock, 1)
+    udp._on_ack(11, ack_only=True)
     assert taken_back(udp) == []
     assert udp.max_chunk is None
     assert udp.local_sequence_number == 11, 'no sequence number used twice'
 
 
-def test_a_short_gap_in_what_the_switcher_sends_is_a_link_down(udp, clock):
-    # Heard at the moment of the decision is not enough: a gap of more
-    # than HEARD_GAP since the chunk got stuck rules a take-back out.
+def test_resends_into_silence_do_not_count_towards_too_big(udp, clock):
+    # Out for a while, then heard: only the resends after which the
+    # switcher was heard count, so a few more are needed after the cut.
     a_stuck_upload_on_a_lan(udp, clock)
-    timer_fires(udp, clock, 1)
-    clock[0] += UdpProtocol.HEARD_GAP + 0.05     # quiet, then heard again
-    time_packet(udp)
-    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
+    timer_fires(udp, clock, 6, answering=False)
+    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER - 1)
     assert taken_back(udp) == []
+    timer_fires(udp, clock, 1)
+    [taken] = taken_back(udp)
+    assert taken.limit == 1224
+
+
+def test_a_switcher_that_sends_every_half_second_is_heard(udp, clock):
+    # WebATEM #63 on 2.6.9 (bmdwire 1.14.8): over a VPN at MTU 1,280 the
+    # upload hung again. 1.14.8 wanted no gap over 0.25 s in what the
+    # switcher sends, taking a Constellation's Time packet every 40 ms for
+    # every switcher's; Tim's sends less often, so the chunks never went
+    # again smaller. Heard between our resends is what counts.
+    a_stuck_upload(udp, clock)
+    for _ in range(UdpProtocol.TOO_BIG_AFTER + 1):
+        due = udp._resend_due
+        while clock[0] + 0.5 <= due:
+            clock[0] += 0.5
+            time_packet(udp)
+        clock[0] = due + 0.5                     # heard just after each resend
+        time_packet(udp)
+        clock[0] = max(clock[0], udp._resend_due or clock[0])
+        udp._resend_unacked()
+    [taken] = taken_back(udp)
+    assert taken.limit == 1224
 
 
 def test_chunks_too_big_on_a_lan_are_still_taken_back(udp, clock):

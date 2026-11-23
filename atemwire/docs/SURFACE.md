@@ -1487,6 +1487,16 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     `UdpProtocol.HEARD_GAP` (0.25 s; its Time packets come every 40 ms) since the chunk got stuck,
     not only at the moment of the decision. Found offline: a fake switcher, the cable out for 3 s
     mid-upload through a relay.
+61. **1.14.8's take-back never fires for a switcher that sends less often** (1.14.8). Item 60's
+    fix asked for the switcher heard with no gap over 0.25 s since the chunk got stuck, taking a
+    Constellation's Time packet every 40 ms for every switcher's. The switcher behind WebATEM #63
+    (an ATEM Mini Pro over a ZeroTier VPN at MTU 1,280) sends less often: the chunks never went
+    again smaller and its uploads hung as in 1.14.6, with the lock and the transfer lane held
+    meanwhile. *Fixed in 1.14.9 (`COMMIT_R`):* a resend of the stuck chunk counts towards
+    `TOO_BIG_AFTER` only if the switcher was heard between it and the one before, and the
+    switcher must have been heard within `RESEND_MAX` (as 1.14.7). With the cable out nothing
+    is heard and no resend counts (item 60 stays fixed); a switcher heard every 0.5 s gets its
+    chunks taken back as before 1.14.8. `UdpProtocol.HEARD_GAP` is gone.
 
 ## Counts
 
