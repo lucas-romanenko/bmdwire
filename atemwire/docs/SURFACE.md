@@ -1007,6 +1007,7 @@ Items 34 to 37 were fixed after 1.8.0 and still apply to it. Item 3 and items 38
 fixed after 1.9.0 and still apply to it. Items 48 to 52 were fixed in 1.13.0 and still apply to 1.12.1 and earlier. Item 53 was fixed
 after 1.14.2 and still applies to 1.11.0 through 1.14.2.
 Items 54 and 55 were fixed in 1.14.4 and still apply to 1.14.3 and earlier.
+Item 56 was fixed after 1.14.4 and still applies to 1.12.0 through 1.14.4.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1428,6 +1429,15 @@ Items 54 and 55 were fixed in 1.14.4 and still apply to 1.14.3 and earlier.
     re-hello: a connect to such an address sat out `CONNECT_MAX`, and a session that met one
     would not re-handshake. *Fixed in 1.14.4:* `_drain_socket` takes
     `ConnectionResetError` and `ConnectionRefusedError` as nothing arrived.
+56. **The answer to a re-sent hello restarts the stall clock** (1.12.0). A switcher that
+    welcomes the hello and then sends nothing is given up on at the transport's silence tick,
+    which re-sends the hello and wakes `wait_ready`. A switcher that answers that hello too moved
+    `last_rx_monotonic`, and when the UDP thread took the answer before `wait_ready` looked, the
+    stall clock restarted and the connect waited one more 5 s tick, each tick the same race
+    (bmdwire#89). On Linux 1 in 8 to 1 in 17 such connects took 10 to 20 s in place of 5 (or
+    10 for a lost first hello). *Fixed after 1.14.4:* the transport notes at each tick, before
+    the re-hello, when it fired and `last_rx_monotonic` then (`UdpProtocol.silence_tick`), and
+    `wait_ready` judges each tick since its last look from that, whichever thread runs first.
 
 ## Counts
 
