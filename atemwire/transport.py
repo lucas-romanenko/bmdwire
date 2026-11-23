@@ -82,6 +82,37 @@ class ConnectionReady:
         pass
 
 
+class ChunksTakenBack:
+    """Sentinel from ``receive_packet``: data chunks of an upload (FTDa)
+    that did not get through to the switcher, taken back to go again in
+    smaller chunks (UdpProtocol.CHUNK_STEPS). ``sizes`` are their data
+    lengths, in the order they were sent; ``limit`` the chunk size to use
+    from now on."""
+
+    def __init__(self, transfer, sizes, limit):
+        self.transfer = transfer
+        self.sizes = sizes
+        self.limit = limit
+
+
+# The data chunk size each switcher was last found to need
+# (UdpProtocol.CHUNK_STEPS), by address, for every session of the process:
+# WebATEM opens a new session for each upload.
+_CHUNK_LIMITS = {}
+
+
+def _ftda(packet):
+    """(transfer id, data length) if ``packet`` carries exactly one upload
+    data chunk (FTDa), as _queue_chunks sends them; else None."""
+    data = packet.data
+    if data is None or len(data) < 12 or bytes(data[4:8]) != b'FTDa':
+        return None
+    if struct.unpack_from('>H', data, 0)[0] != len(data):
+        return None
+    transfer, size = struct.unpack_from('>HH', data, 8)
+    return transfer, size
+
+
 class Wakeup:
     """Sentinel returned from ``receive_packet`` when an external caller has
     poked the worker awake (via ``thread_recv_queue.put(Wakeup())``) so it
@@ -367,6 +398,32 @@ class UdpProtocol(BaseProtocol):
     RESEND_MAX = 1.0
     DUP_ACKS = 2
 
+    # Upload data chunks (FTDa) are as big as the switcher's FTCD allows,
+    # 1,392 bytes of data: 1,416-byte datagrams. A path that drops
+    # datagrams that big (a VPN route whose MTU is under ~1,444 bytes) let
+    # every smaller packet through and none of the chunks, and the switcher,
+    # which takes our packets in order only, never got past the first:
+    # an ATEM Mini Pro over a VPN at 80 ms, whose lock request, FTSD and
+    # FTFD went through and whose first chunk was sent 70 times in 90 s
+    # (WebATEM #63). When the first packet the switcher has not
+    # acknowledged is a data chunk, sent TOO_BIG_AFTER times more with
+    # nothing acknowledged while the switcher goes on sending, it and every
+    # chunk after it are taken back and go again in chunks of the next
+    # size here (from 1,224 bytes: a 1,280-byte path), for that switcher
+    # from then on. The switcher has none of them: it takes nothing after
+    # a packet it lacks.
+    CHUNK_STEPS = (1224, 952, 504)
+    TOO_BIG_AFTER = 3
+
+    # A new session's reliable packets are numbered from 1 (_handshake). If
+    # packet 1 has not come FIRST_PACKET_WAIT after the handshake while
+    # later ones do (the switcher sends it again every ~80 ms), delivery
+    # starts from the first that came, as it did before; the re-handshake
+    # on a dump without a video mode then follows, as before. Without it a
+    # switcher that numbered from anything else, or a packet 1 that never
+    # gets through, would hold the whole dump back until the connect gave up.
+    FIRST_PACKET_WAIT = 1.0
+
     # A send the kernel refuses for a moment (a full buffer: ENOBUFS, which
     # macOS returns rather than blocking, or EAGAIN) is tried again, 1 ms
     # apart, this many times, before the packet counts as lost on the wire.
@@ -497,6 +554,15 @@ class UdpProtocol(BaseProtocol):
         self._backoff = 1
         self.resends = 0
         self.fast_resends = 0
+        # The data chunk size this switcher needs (CHUNK_STEPS; None: the
+        # switcher's own), and the first unacknowledged packet the resend
+        # timer last fired for, and how many times in a row.
+        self.max_chunk = _CHUNK_LIMITS.get(ip)
+        # When delivery stops waiting for packet 1 (FIRST_PACKET_WAIT);
+        # None once something has been delivered, or before a handshake.
+        self._first_due = None
+        self._stuck_seq = None
+        self._stuck_count = 0
         self._dup_acks = 0
         self._resends_logged = 0
         self._resend_last_log = 0.0
@@ -592,12 +658,29 @@ class UdpProtocol(BaseProtocol):
         try:
             self._udp_thread_loop()
         except Exception as e:
-            self.log.error(f"UDP thread exiting: {e!r}")
+            if self.state == UdpProtocol.STATE_CLOSED and self._closed_socket(e):
+                # Our own goodbye then sock.close(): the thread meets the
+                # closed socket. The end it was meant to have; it was an
+                # ERROR line for every session closed (WebATEM's uploader,
+                # atemwire.sessions).
+                self.log.debug(f"UDP thread ending on the closed socket: {e!r}")
+            else:
+                self.log.error(f"UDP thread exiting: {e!r}")
         finally:
             try:
                 self.thread_recv_queue.put(None)
             except Exception:
                 pass
+
+    def _closed_socket(self, e):
+        """Whether ``e`` is what the UDP thread gets from a socket closed
+        under it: EBADF on POSIX, WSAENOTSOCK (10038) on Windows, or the
+        ValueError select() raises for a file descriptor of -1."""
+        if isinstance(e, ValueError):
+            return self.sock.fileno() == -1
+        return isinstance(e, OSError) and (
+            e.errno in (errno.EBADF, errno.ENOTSOCK, 10038)
+            or getattr(e, 'winerror', None) == 10038)
 
     def _udp_thread_loop(self):
         # Non-blocking for the drain: select() says when to read, and a
@@ -1046,6 +1129,7 @@ class UdpProtocol(BaseProtocol):
 
         dist = (seq - self._deliver_next) & 0x7FFF
         if dist == 0:
+            self._first_due = None
             self._deliver_next = (seq + 1) & 0x7FFF
             if not self._parked:
                 return packet
@@ -1062,6 +1146,8 @@ class UdpProtocol(BaseProtocol):
             # Ahead of a gap: hold it; the stalled ACK above makes the ATEM
             # retransmit the missing packet, which will drain this one.
             self._parked[seq] = packet
+            if self._first_due is not None and time.monotonic() >= self._first_due:
+                self._start_without_packet_1()
             return True
         # Absurd forward jump — beyond any real in-flight window. Resync
         # rather than deadlock; drop the (equally stale) parked packets.
@@ -1071,6 +1157,23 @@ class UdpProtocol(BaseProtocol):
         self._parked.clear()
         self._deliver_next = (seq + 1) & 0x7FFF
         return packet
+
+    def _start_without_packet_1(self):
+        """Packet 1 has not come in FIRST_PACKET_WAIT: deliver from the
+        first parked packet, as before bmdwire#13's known start."""
+        self._first_due = None
+        first = min(self._parked, key=lambda q: (q - self._deliver_next) & 0x7FFF)
+        self.log.warning(f"{self.ip}: the session's first packet has not come in "
+                         f"{UdpProtocol.FIRST_PACKET_WAIT:.0f} s; starting from "
+                         f"seq {first}, as the switcher's first")
+        self._deliver_next = first
+        self.ack_number = (first - 1) & 0x7FFF
+        while self._deliver_next in self._parked:
+            self.thread_recv_queue.put(self._parked.pop(self._deliver_next))
+            self._deliver_next = (self._deliver_next + 1) & 0x7FFF
+        while ((self.ack_number + 1) & 0x7FFF) in self.received_packets:
+            self.ack_number = (self.ack_number + 1) & 0x7FFF
+        self._ack_owed()
 
     def _update_ack_number(self, packet):
         """Advance the contiguous-ACK high-water mark.
@@ -1200,6 +1303,12 @@ class UdpProtocol(BaseProtocol):
         outstanding = (self.local_sequence_number - self._acked_through) & 0x7FFF
         if outstanding == 0 or outstanding >= UdpProtocol.RETRANSMIT_WINDOW:
             return
+        if first == self._stuck_seq:
+            self._stuck_count += 1
+        else:
+            self._stuck_seq, self._stuck_count = first, 1
+        if self._stuck_count > UdpProtocol.TOO_BIG_AFTER and self._take_back_chunks(first):
+            return
         waited = self.resend_after()
         self.log.debug(f"no ACK for seq {first} through {self.local_sequence_number} "
                        f"in {waited * 1000:.0f} ms: resending")
@@ -1217,6 +1326,59 @@ class UdpProtocol(BaseProtocol):
             self._resend_last_log = now
         self._backoff = min(self._backoff * 2, 64)
         self._resend_due = time.monotonic() + self.resend_after()
+
+    def _take_back_chunks(self, first):
+        """The data chunk at ``first`` was sent TOO_BIG_AFTER times more and
+        never acknowledged, while the switcher goes on sending: take it and
+        everything after it back (CHUNK_STEPS). The other packets among
+        them go again now, the chunks through the protocol (ChunksTakenBack).
+        False if this is not the case."""
+        pkt = self.retransmission_buffer.get(first)
+        chunk = _ftda(pkt) if pkt is not None else None
+        if chunk is None:
+            return False
+        transfer, size = chunk
+        smaller = [s for s in UdpProtocol.CHUNK_STEPS if s < size]
+        if not smaller:
+            return False
+        if time.monotonic() - self.last_rx_monotonic > UdpProtocol.RESEND_MAX:
+            # The switcher has gone quiet too: the link, not the size.
+            return False
+        limit = smaller[0]
+        last = self.local_sequence_number
+        taken = []
+        seq = first
+        while True:
+            p = self.retransmission_buffer.pop(seq, None)
+            self._sent_at.pop(seq, None)
+            if p is not None:
+                taken.append(p)
+            if seq == last:
+                break
+            seq = (seq + 1) & 0x7FFF
+        # Ours not sent yet go after them, as they would have.
+        taken.extend(item for item in self.thread_queue.get_waiting() if item is not None)
+        self.local_sequence_number = self._acked_through
+        self._resend_due = None
+        self._backoff = 1
+        self._stuck_seq, self._stuck_count = None, 0
+        self.max_chunk = _CHUNK_LIMITS[self.ip] = limit
+        sizes = []
+        for p in taken:
+            c = _ftda(p)
+            if c is not None and c[0] == transfer:
+                sizes.append(c[1])
+                continue
+            p.flags &= ~UdpProtocol.FLAG_RETRANSMISSION
+            self._send_on_udp_thread(p)
+        self.log.warning(
+            f"{self.ip}: no data chunk of {size} bytes got through (sent "
+            f"{UdpProtocol.TOO_BIG_AFTER + 1} times, nothing acknowledged, the "
+            f"switcher still answering): datagrams that big are not reaching "
+            f"it. {len(sizes)} chunk(s) go again, in chunks of {limit} bytes "
+            f"from now on")
+        self.thread_recv_queue.put(ChunksTakenBack(transfer, sizes, limit))
+        return True
 
     def _retransmit_from(self, request_seq, quiet=False):
         """Resend every buffered packet from ``request_seq`` through the
@@ -1290,6 +1452,20 @@ class UdpProtocol(BaseProtocol):
 
         if response_code == 0x02:
             self.state = UdpProtocol.STATE_ESTABLISHED
+            # The switcher numbers a new session's reliable packets from 1
+            # (the first reliable packet after the handshake was seq 1, 1,394
+            # bytes, on 10 of 10 connects to two Constellation HD units,
+            # 2026-11-23). So the ACK and the delivery cursor start there,
+            # instead of at whatever arrives first: a lost first packet
+            # stalls the ACK at 0 and is sent again, like any other.
+            # Taking the first arrival as the start acknowledged a lost
+            # seq 1 for good, and its fields (VidM, the video mode) never
+            # came (bmdwire#13). The dump-without-video-mode re-handshake
+            # stays as the fallback.
+            self.ack_number = 0
+            self._rx_established = True
+            self._deliver_next = 1
+            self._first_due = time.monotonic() + UdpProtocol.FIRST_PACKET_WAIT
 
         # Got a valid 2nd handshake packet, send back the third one
         response = Packet()
@@ -1321,6 +1497,7 @@ class UdpProtocol(BaseProtocol):
         # sequence space and must never drain into the new one.
         self._deliver_next = None
         self._parked.clear()
+        self._first_due = None
         self._stashed_packet = None
         # Remember the session being replaced, so its stragglers are
         # dropped. Only a switcher-assigned id: after a handshake that never
@@ -1403,6 +1580,9 @@ class UdpProtocol(BaseProtocol):
             if packet is None:
                 # When None is in the receive queue the socket has disconnected
                 return None
+
+            if isinstance(packet, ChunksTakenBack):
+                return packet
 
             if isinstance(packet, Wakeup):
                 # An external caller poked us awake — typically because a

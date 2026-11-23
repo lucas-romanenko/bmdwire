@@ -96,8 +96,8 @@ def s():
 def _established(s):
     s.connect()
     s.handshake()
-    got = s.dump(OLD, [100, 101, 102])
-    assert [p.sequence_number for p in got] == [100, 101, 102]
+    got = s.dump(OLD, [1, 2, 3])                # a session's dump starts at 1
+    assert [p.sequence_number for p in got] == [1, 2, 3]
     assert s.t.session_id == OLD
     s.flush()                                   # the dump's ACKs
     s.wire.sent.clear()

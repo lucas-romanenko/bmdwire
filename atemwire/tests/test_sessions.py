@@ -143,7 +143,8 @@ def test_in_use_is_max_minus_free_once_the_max_is_known(monkeypatch):
     assert 'in use   5   = max 8 − free 3' in format_result(r)
 
 
-def test_only_free_is_shown_until_the_model_is_measured():
+def test_only_free_is_shown_until_the_model_is_measured(monkeypatch):
+    monkeypatch.setattr(sessions, 'MAX_SESSIONS', {})
     with TableSwitcher(slots=4, taken=1) as sw:
         r = count_sessions(sw.ip)
     assert r['free'] == 3 and r['max'] is None and r['in_use'] is None

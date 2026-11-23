@@ -7,7 +7,7 @@ import struct
 import time
 
 from atemwire._transfer import TransferTask, TransferQueueFlushed
-from atemwire.transport import UdpProtocol, Packet, ConnectionReady, Wakeup
+from atemwire.transport import UdpProtocol, Packet, ChunksTakenBack, ConnectionReady, Wakeup
 from atemwire.messages import (
     ClearStillCommand,
     KEY_FORMAT_BY_PRETTY,
@@ -122,6 +122,15 @@ DRAIN_MAX = 120.0
 # last ORPHAN_IDS transfers asked for are kept; another session's chunks
 # never come here.
 ORPHAN_IDS = 64
+
+
+class _Budget:
+    """What is left of an FTCD budget once the transport took chunks back."""
+
+    def __init__(self, transfer, size, count):
+        self.transfer = transfer
+        self.size = size
+        self.count = count
 
 
 def _first_transfer_id():
@@ -364,6 +373,9 @@ class AtemProtocol:
         self.connected = True
         if isinstance(packet, TransferQueueFlushed):
             self._queue_flushed()
+            return
+        if isinstance(packet, ChunksTakenBack):
+            self._chunks_taken_back(packet)
             return
         try:
             for fieldname, data in self.decode_packet(packet.data):
@@ -1187,6 +1199,10 @@ class AtemProtocol:
             return
 
         chunk_size = self.transfer_budget.size
+        limit = getattr(self.transport, 'max_chunk', None)
+        if limit and limit < chunk_size:
+            # Datagrams that big do not reach this switcher (CHUNK_STEPS).
+            chunk_size = limit
         self.log.debug(f'Queue {self.transfer_budget.count} chunks of {chunk_size}')
         data = memoryview(self.transfer.data)
         for i in range(0, self.transfer_budget.count):
@@ -1221,6 +1237,31 @@ class AtemProtocol:
         # packet from the switcher (queue_trigger), a still took 23 s to
         # upload where ASC takes 0.5 s (docs/MEDIA_LOCK.md).
         self.transport.drain_queue()
+
+    def _chunks_taken_back(self, taken):
+        """Data chunks of our upload that did not get through, taken back by
+        the transport (UdpProtocol.CHUNK_STEPS): the switcher has none of
+        them and still owes us that many of its budget. They go again from
+        where they started, in smaller chunks."""
+        task = self.transfer
+        if task is None or not task.upload or task.tid != taken.transfer:
+            self.log.warning(f'{len(taken.sizes)} data chunk(s) of transfer '
+                             f'{taken.transfer} taken back, which is no longer '
+                             f'in flight: dropped')
+            return
+        back = sum(taken.sizes)
+        # The offset runs past the end after a last, short chunk.
+        task.offset = min(task.offset, len(task.data)) - back
+        # As queue_callback counted them: each chunk with its 8-byte header.
+        task.send_done -= back + 8 * len(taken.sizes)
+        if self.transfer_budget is None:
+            self.transfer_budget = _Budget(task.tid, taken.limit, len(taken.sizes))
+        else:
+            self.transfer_budget.count += len(taken.sizes)
+        self.log.info(f'upload of {task.store}:{task.slot}: {len(taken.sizes)} '
+                      f'chunk(s), {back} bytes, go again in chunks of '
+                      f'{taken.limit} bytes')
+        self._queue_chunks()
 
     def _queue_flushed(self):
         self.log.info('Queue flushed')
