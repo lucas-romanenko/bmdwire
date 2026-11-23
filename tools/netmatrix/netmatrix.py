@@ -81,7 +81,7 @@ PROFILES = {
 QUICK = [('lan', 'connect'), ('rtt200', 'connect'), ('loss5', 'commands'),
          ('vpn', 'labels'), ('mtu1200', 'still_up'), ('loss2', 'still_up'),
          ('reorder', 'macro_up'), ('mtu1280', 'profile_save'), ('lan', 'idle_cut'), ('lan', 'reboot'),
-         ('lan', 'two_clients'), ('lan', 'disconnect')]
+         ('lan', 'two_clients'), ('lan', 'disconnect'), ('lan', 'cable_pull')]
 
 
 class Switcher:
