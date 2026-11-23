@@ -1029,6 +1029,17 @@ class UdpProtocol(BaseProtocol):
         or down to CWND_MIN on a timeout; once per loss (``_recover``)."""
         if self._acked_through is None:
             return
+        first = (self._acked_through + 1) & 0x7FFF
+        pkt = self.retransmission_buffer.get(first)
+        if not self._held and (pkt is None or _ftda(pkt) is None):
+            # Not an upload's chunk: everything from it goes again at once,
+            # as before the window. A download's acknowledgements (FTUA)
+            # resent in a paced pass had the pass cut short by the next
+            # FTUA sent fresh, the rest never resent; the switcher, missing
+            # one, held its window shut (a busy host's still download: 30
+            # timer resends instead of 5, 14 s instead of 10).
+            self._retransmit_from(first, quiet=True)
+            return
         in_recovery = (self._recover is not None
                        and 0 < ((self._recover - self._acked_through) & 0x7FFF)
                        < UdpProtocol.RETRANSMIT_WINDOW)

@@ -268,3 +268,23 @@ def test_a_command_waits_behind_chunks_that_wait(udp, clock):
     before = len(udp.sock.sent)
     udp._send_on_udp_thread(ftua(2))
     assert len(udp.sock.sent) == before and udp._held[-1].data[4:8] == b'FTUA'
+
+
+def test_a_lost_acknowledgement_goes_again_at_once_with_all_after_it(udp, clock):
+    # Not an upload's chunk: no paced pass. A download's FTUAs resent in
+    # one had the pass cut short by the next FTUA sent fresh, the rest
+    # never resent, and the switcher held its window shut (a busy host's
+    # still download, 14 s instead of 10). The window down to 16 by the
+    # timeouts before, 40 FTUAs out.
+    udp._cwnd = 16.0
+    for n in range(40):
+        udp._send_on_udp_thread(ftua(n))
+    first = udp._acked_through + 1
+    udp.sock.sent.clear()
+    clock[0] = udp._resend_due
+    udp._resend_unacked()                        # the timer: all 40 again
+    again = [Packet.from_bytes(r) for r in udp.sock.sent]
+    assert [q.sequence_number for q in again] == list(range(first, first + 40))
+    assert all(q.flags & UdpProtocol.FLAG_RETRANSMISSION for q in again)
+    udp._send_on_udp_thread(ftua(99))            # the next FTUA, fresh
+    assert Packet.from_bytes(udp.sock.sent[-1]).sequence_number == first + 40
