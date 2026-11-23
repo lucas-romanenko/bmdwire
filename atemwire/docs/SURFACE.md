@@ -1007,7 +1007,7 @@ Items 34 to 37 were fixed after 1.8.0 and still apply to it. Item 3 and items 38
 fixed after 1.9.0 and still apply to it. Items 48 to 52 were fixed in 1.13.0 and still apply to 1.12.1 and earlier. Item 53 was fixed
 after 1.14.2 and still applies to 1.11.0 through 1.14.2.
 Items 54 and 55 were fixed in 1.14.4 and still apply to 1.14.3 and earlier.
-Item 56 was fixed after 1.14.4 and still applies to 1.12.0 through 1.14.4.
+Item 56 was fixed in 1.14.5 and still applies to 1.12.0 through 1.14.4.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
@@ -1435,7 +1435,7 @@ Item 56 was fixed after 1.14.4 and still applies to 1.12.0 through 1.14.4.
     `last_rx_monotonic`, and when the UDP thread took the answer before `wait_ready` looked, the
     stall clock restarted and the connect waited one more 5 s tick, each tick the same race
     (bmdwire#89). On Linux 1 in 8 to 1 in 17 such connects took 10 to 20 s in place of 5 (or
-    10 for a lost first hello). *Fixed after 1.14.4:* the transport notes at each tick, before
+    10 for a lost first hello). *Fixed in 1.14.5:* the transport notes at each tick, before
     the re-hello, when it fired and `last_rx_monotonic` then (`UdpProtocol.silence_tick`), and
     `wait_ready` judges each tick since its last look from that, whichever thread runs first.
 
