@@ -108,6 +108,7 @@ from atemwire.messages.audio_legacy import (
     AtemEqBandPropertiesField,
     AtemMasterEqBandPropertiesField,
     AudioInputField,
+    AudioMixerHeadphonePropertiesField,
     AudioMixerMasterPropertiesField,
     AudioMixerMonitorPropertiesField,
     AudioMixerTallyField,
