@@ -1530,7 +1530,7 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     nameless macro as a macro upload starts (pre-erase, mode `0x0300`); an upload that timed out
     or was refused left it there ("Macro 100" on a Constellation HD after the WebATEM #63 bench)
     and its task in the transfer queue. Its timeout, and the macro download's, was the whole
-    transfer's: 10 s, however it was going. *Fixed in 1.15.0 (`COMMIT_M`):*
+    transfer's: 10 s, however it was going. *Fixed in 1.15.0 (`85d2f58`):*
     `upload_macro_bytecode` cancels its own task (`AtemProtocol.cancel_transfer`, which leaves
     every other transfer queued) and, when the slot was empty before, deletes the macro again
     (`MAct` 5); a slot that held one has lost it to the pre-erase, and the error says so. Both
