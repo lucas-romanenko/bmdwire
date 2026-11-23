@@ -506,6 +506,19 @@ class UdpProtocol(BaseProtocol):
     GAP_ASK_AFTER = 0.1
     GAP_ASK_EVERY = 0.25
 
+    # Our hello goes again HELLO_RETRY after it went with no answer, then
+    # every HELLO_RETRY_MAX, until the switcher answers or the silence tick
+    # (``timeout``) starts the handshake over. It went only on that tick,
+    # every 5 s: a hello or its answer lost on a lossy link cost 5 s, two
+    # in a row failed the connect, and after a pulled cable or a reboot the
+    # session came back up to 5 s after the switcher could answer (the
+    # network matrix's idle_cut and reboot: 2 s on average). 1 s is above
+    # any round trip a switcher is used over, so the switcher's answer to
+    # the first is in before the second goes.
+    HELLO_RETRY = 1.0
+    HELLO_RETRY_MAX = 2.0
+    GOODBYES = 3
+
     # A new session's reliable packets are numbered from 1 (_handshake). If
     # packet 1 has not come FIRST_PACKET_WAIT after the handshake while
     # later ones do (the switcher sends it again every ~80 ms), delivery
@@ -698,6 +711,10 @@ class UdpProtocol(BaseProtocol):
         # (GAP_ASK_AFTER), None with no gap; how many times we have asked.
         self._gap_due = None
         self.gaps_asked = 0
+        # When our hello goes again if unanswered (HELLO_RETRY), and how
+        # many times it has.
+        self._hello_due = None
+        self.hellos_again = 0
         # The congestion window (CWND_*): its size, the slow-start
         # threshold, our reliable packets waiting for room in it, the
         # highest sequence sent in the current pass (behind
@@ -861,6 +878,9 @@ class UdpProtocol(BaseProtocol):
             gap = self._check_gap()
             if gap is not None:
                 remaining = max(0.0, min(remaining, gap))
+            hello = self._check_hello()
+            if hello is not None:
+                remaining = max(0.0, min(remaining, hello))
             if self._resend_due is not None:
                 remaining = max(0.0, min(remaining, self._resend_due - time.monotonic()))
             wake = self._wake_due
@@ -932,6 +952,38 @@ class UdpProtocol(BaseProtocol):
                            f'({len(self._parked)} parked behind it)')
             self._gap_due = now + UdpProtocol.GAP_ASK_EVERY
         return max(0.0, self._gap_due - time.monotonic())
+
+    def _hello(self):
+        syn = Packet()
+        syn.flags = UdpProtocol.FLAG_SYN
+        syn.data = [
+            0x01, 0x00,
+            0x00, 0x00,
+            0x00, 0x00,
+            0x00, 0x00,
+        ]
+        return syn
+
+    def _check_hello(self):
+        """While our hello is unanswered, send it again when due
+        (HELLO_RETRY). Seconds until the next, or None when none is due."""
+        if self.state != UdpProtocol.STATE_SYN_SENT or self._hello_due is None:
+            return None
+        if time.monotonic() >= self._hello_due:
+            self._hello_again()
+        return max(0.0, self._hello_due - time.monotonic())
+
+    def _hello_again(self):
+        """The hello went HELLO_RETRY ago (or HELLO_RETRY_MAX, after the
+        first retry) with no answer: send it again, as it was. Not a new
+        handshake: the silence window and the session state stay."""
+        self.log.debug('no answer to our hello: sending it again')
+        try:
+            self._send_packet_low(self._hello())
+        except OSError as e:
+            self.log.debug(f'hello again failed: {e}')
+        self.hellos_again += 1
+        self._hello_due = time.monotonic() + UdpProtocol.HELLO_RETRY_MAX
 
     def _drain_socket(self):
         """Read every datagram waiting (up to DRAIN_MAX), handing packets to
@@ -1167,20 +1219,25 @@ class UdpProtocol(BaseProtocol):
         this BEFORE ``sock.close()``. The goodbye itself releases every
         lock the session holds within ~10 ms (measured the same day).
 
-        Fire-and-forget: one datagram, no wait for the ATEM's reply —
-        we're tearing down regardless, and a lost goodbye is no worse
-        than the old behaviour.
+        Fire-and-forget: GOODBYES datagrams, no wait for the ATEM's reply
+        — we're tearing down regardless.
         """
         if self.state != UdpProtocol.STATE_ESTABLISHED:
             return
-        try:
-            bye = Packet()
-            bye.flags = UdpProtocol.FLAG_SYN
-            bye.label = 'closing'
-            bye.data = [0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-            self._send_packet_low(bye)
-        except Exception:
-            pass
+        # GOODBYES copies: one lost on a lossy link left the session on the
+        # switcher until it reaped it (1 in 3 of five connect/disconnects
+        # at 5 % loss and on a VPN at 1 %, the network matrix's
+        # disconnect). The switcher ignores a goodbye for a session it has
+        # ended.
+        for _ in range(UdpProtocol.GOODBYES):
+            try:
+                bye = Packet()
+                bye.flags = UdpProtocol.FLAG_SYN
+                bye.label = 'closing'
+                bye.data = [0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+                self._send_packet_low(bye)
+            except Exception:
+                pass
         self.state = UdpProtocol.STATE_CLOSED
 
     def _send_packet_low(self, packet):
@@ -1957,15 +2014,8 @@ class UdpProtocol(BaseProtocol):
         self._last_heard = time.monotonic()
 
         # Create first syn packet
-        syn = Packet()
-        syn.flags = UdpProtocol.FLAG_SYN
-        syn.data = [
-            0x01, 0x00,
-            0x00, 0x00,
-            0x00, 0x00,
-            0x00, 0x00,
-        ]
-        self._send_packet(syn)
+        self._hello_due = time.monotonic() + UdpProtocol.HELLO_RETRY
+        self._send_packet(self._hello())
         self.state = UdpProtocol.STATE_SYN_SENT
 
     def receive_packet(self):

@@ -52,7 +52,9 @@ def test_close_session_sends_goodbye_and_closes_state(proto):
 
     proto.close_session()
 
-    assert len(proto.sock.sent) == 1
+    # GOODBYES copies, so one lost on a lossy link does not leave the
+    # session behind (bmdwire, the network matrix's disconnect).
+    assert len(proto.sock.sent) == UdpProtocol.GOODBYES
     pkt = Packet.from_bytes(proto.sock.sent[0][0])
     assert pkt.flags & UdpProtocol.FLAG_SYN
     assert pkt.data[0] == 0x04                      # hello opcode: closing
@@ -70,7 +72,7 @@ def test_close_session_noop_unless_established(proto):
     proto.state = UdpProtocol.STATE_ESTABLISHED
     proto.close_session()
     proto.close_session()
-    assert len(proto.sock.sent) == 1
+    assert len(proto.sock.sent) == UdpProtocol.GOODBYES
 
 
 def test_send_packet_low_drops_unserializable_packet(proto):
