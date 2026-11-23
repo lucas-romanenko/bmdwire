@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 """The legacy (pre-Fairlight) audio mixer: ``AMIP``, ``AMMO``, ``AMmO``,
-``AMLv``.
+``AMHP``, ``AMLv``.
 
 Nothing here comes from a switcher. There is no capture from a legacy unit
 in this repository; the payloads are built from the layouts in
@@ -155,6 +155,7 @@ def test_legacy_build_full_state_shape():
     assert audio['headphones'] == {
         'present': True, 'volume_db': -6.02, 'unmuted': False, 'enabled': True,
         'dim': True, 'dim_level': 50.0, 'solo': True, 'solo_source': 2,
+        'bus': 'monitor',
     }
     assert audio['solo'] == {'any_soloed': True, 'strip_id': '2.0'}
     assert [s['strip_id'] for s in audio['strips']] == ['1.0', '2.0', '2001.0', '1001.0']
@@ -361,3 +362,88 @@ def test_the_mixer_is_logged_at_connect(proto, caplog, fields, level, line):
     assert found == [(level, line)]
     if level == logging.DEBUG:
         assert _legacy_lines(caplog) == []      # a Fairlight switcher logs nothing at INFO
+
+
+# --- Headphones: AMHP / CAMH (bmdwire#51) ------------------------------------
+#
+# Layouts from LibAtem's AudioMixerHeadphoneGetCommand / SetCommand; no
+# legacy switcher has sent one here.
+
+def _amhp(gain=32768, program_out=32768, talkback=32768, sidetone=32768):
+    return struct.pack('>4H', gain, program_out, talkback, sidetone)
+
+
+def test_amhp_parses_and_is_stored_by_name(proto):
+    proto.save_field_data(b'AMHP', _amhp(16384, 65381, 0, 23197))
+    assert 'AMHP' not in proto.mixerstate        # no longer stored raw
+    node = proto.mixerstate['audio-mixer-headphone-properties']
+    assert (node.gain, node.program_out_gain, node.talkback_gain,
+            node.sidetone_gain) == (16384, 65381, 0, 23197)
+
+
+def test_headphones_read_amhp_when_the_unit_sends_it():
+    mx = _legacy_mx()
+    mx['audio-mixer-headphone-properties'] = SimpleNamespace(
+        gain=16384, program_out_gain=65381, talkback_gain=0, sidetone_gain=32768)
+    hp = build_full_state(SimpleNamespace(mixerstate=mx))['audio']['headphones']
+    assert hp == {
+        'present': True, 'volume_db': -6.02, 'unmuted': True, 'bus': 'headphones',
+        'program_out_db': 6.0, 'talkback_db': None, 'sidetone_db': 0.0,
+        # the monitor bus's own keys stay the monitor's
+        'enabled': True, 'dim': True, 'dim_level': 50.0, 'solo': True,
+        'solo_source': 2,
+    }
+
+
+def test_headphones_from_amhp_alone():
+    mx = _legacy_mx()
+    del mx['audio-mixer-monitor-properties']
+    mx['audio-mixer-headphone-properties'] = SimpleNamespace(
+        gain=32768, program_out_gain=32768, talkback_gain=32768, sidetone_gain=32768)
+    hp = build_full_state(SimpleNamespace(mixerstate=mx))['audio']['headphones']
+    assert (hp['present'], hp['bus'], hp['volume_db'], hp['solo']) == \
+        (True, 'headphones', 0.0, False)
+
+
+def test_headphones_without_amhp_are_the_monitor_bus():
+    hp = build_full_state(SimpleNamespace(mixerstate=_legacy_mx()))['audio']['headphones']
+    assert hp['bus'] == 'monitor'
+    assert hp['volume_db'] == -6.02 and hp['unmuted'] is False
+    assert not {'program_out_db', 'talkback_db', 'sidetone_db'} & hp.keys()
+
+
+@pytest.mark.parametrize('kwargs, payload', [
+    ({'gain': 32768}, '010080000000000000000000'),
+    ({'program_out_gain': 65381, 'sidetone_gain': 1}, '0a000000ff65000000010000'),
+    ({'gain': 1, 'program_out_gain': 2, 'talkback_gain': 3, 'sidetone_gain': 4},
+     '0f0000010002000300040000'),
+])
+def test_camh_bytes(kwargs, payload):
+    from atemwire.messages.audio_legacy import AudioHeadphonePropertiesCommand
+    cmd = AudioHeadphonePropertiesCommand(**kwargs)
+    raw = cmd.get_command()
+    assert raw[4:8] == b'CAMH'
+    assert raw[8:].hex() == payload
+
+
+def test_set_audio_headphones_sends_camh():
+    from atemwire import atem
+    from atemwire.messages import audio_legacy
+    sent = []
+    conn = SimpleNamespace(send=sent.append)
+    audio_legacy.set_audio_headphones(conn, talkback_gain=legacy_db_to_volume(-6))
+    assert [c.CODE for c in sent] == ['CAMH']
+    assert sent[0].get_command()[8:].hex() == '0400000000004026' + '00000000'
+    assert 'set_audio_headphones' in atem._OPERATIONS
+
+
+def test_first_amhp_is_logged_raw_and_decoded(proto, caplog):
+    amhp = _amhp(32768, 16384, 0, 65381)
+    with caplog.at_level(logging.INFO, logger='AtemProtocol'):
+        proto.save_field_data(b'AMHP', amhp)
+        proto.save_field_data(b'AMHP', _amhp())
+    assert _legacy_lines(caplog) == [
+        f'legacy-audio: AMHP, 8 bytes: {amhp.hex()} -> gain=32768 '
+        f'program_out_gain=16384 talkback_gain=0 sidetone_gain=65381 '
+        f'gain_db=0.0 program_out_gain_db=-6.02 talkback_gain_db=None '
+        f'sidetone_gain_db=6.0']

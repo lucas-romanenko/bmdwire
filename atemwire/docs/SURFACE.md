@@ -21,8 +21,8 @@ code, the code wins, and the disagreement is listed in §5.3.
 
 | § | contents |
 |---|---|
-| 1 | Commands (writes): 82 wire commands and their operation wrappers, by feature area |
-| 2 | State (reads): 92 parsed packets, how `mixerstate` is keyed, the `build_full_state` snapshot, the read/write cross-reference |
+| 1 | Commands (writes): 83 wire commands and their operation wrappers, by feature area |
+| 2 | State (reads): 93 parsed packets, how `mixerstate` is keyed, the `build_full_state` snapshot, the read/write cross-reference |
 | 3 | Transfers and special operations: stills, macros and bytecode, profiles, image conversion, video modes |
 | 4 | Connection lifecycle: facade, pool, connection, bare protocol, transport, events, confirming a write |
 | 5 | Gaps: known but unimplemented, implemented but unexposed, doc/code mismatches, traps |
@@ -178,13 +178,14 @@ multiply by 100 themselves. The ops below take display units in every case.
 
 ### 1.11 audio-legacy (pre-Fairlight mixer) — `messages/audio_legacy.py`
 
-All four are restored upstream and not re-exported.
+The first four are restored upstream; `CAMH` is new in bmdwire#51. None is re-exported.
 
 | name | opcode | params | notes |
 |---|---|---|---|
 | `AudioInputCommand` | `CAMI` | `source:u16`, `balance?:i16=±10000`, `volume?:u16=0–65381`, `on?:bool`, `afv?:bool` | `on`/`afv` become `mix_option` 0 off / 1 on / 2 AFV (`on` wins). Op `set_audio_input(conn, source, balance, volume, on, afv)` |
 | `AudioMasterPropertiesCommand` | `CAMM` | `volume?:u16=0–65381`, `afv?:bool` | op `set_audio_master` |
 | `AudioMonitorPropertiesCommand` | `CAMm` | `enabled?`, `volume?:u16`, `mute?`, `solo?`, `solo_source?:u16`, `dim?`, `dim_volume?:u16` | op `set_audio_monitor(conn, **props)` |
+| `AudioHeadphonePropertiesCommand` | `CAMH` | `gain?:u16=0–65381`, `program_out_gain?:u16`, `talkback_gain?:u16`, `sidetone_gain?:u16` | mask bits 0–3 in that order; the layout is LibAtem's `AudioMixerHeadphoneSetCommand`, not checked on a switcher. Only for a unit that sends `AMHP` (§2.4). Op `set_audio_headphones(conn, gain, program_out_gain, talkback_gain, sidetone_gain)` |
 | `SendAudioLevelsCommand` | `SALN` | `enable:bool` | opts in to `AMLv`. Op `enable_audio_levels` |
 
 The ops take wire units. Three helpers in the module convert from the units the state shows
@@ -376,30 +377,35 @@ brackets where it matters). "Written by" names the §1 command(s) whose effect l
 | `audio-input` | `AMIP` | `index:u16`, `type:u8 (0 video input, 1 media player, 2 external audio)`, `number:u8`, `plug:u8` (`plug_name()`: 0 Internal, 1 SDI, 2 HDMI, 3 Component, 4 Composite, 5 SVideo, 32 XLR, 64 AES, 128 RCA), `state:u8 (0 Off, 1 On, 2 AFV)`, `volume:u16`, `balance:i16`, `strip_id` (`"<index>.0"`). 16 bytes from ATEM 8.0 firmware, 20 before; the first 16 are read | strip (`"src.0"`) | `CAMI` |
 | `audio-mixer-master-properties` | `AMMO` | `volume:u16`, `afv:bool` | bare | `CAMM` |
 | `audio-mixer-monitor-properties` | `AMmO` | `enabled`, `volume:u16`, `mute`, `solo`, `solo_source:u16`, `dim`, `dim_volume:u16` (a level, 0–100.00 ×100 per LibAtem, not a gain) | bare | `CAMm` |
+| `audio-mixer-headphone-properties` | `AMHP` | `gain`, `program_out_gain`, `talkback_gain`, `sidetone_gain` (u16 legacy volumes). Layout LibAtem's `AudioMixerHeadphoneGetCommand`; which models send it is not known | bare | `CAMH` |
 | `audio-mixer-tally` | `AMTl` | `num`, `tally:{"src.0": bool}` | bare | — |
 | `audio-meter-levels` | `AMLv` | `count`, `master:(lvlL, lvlR, peakL, peakR)`, `monitor:(4)`, `input:{src:int: (4)}`; dB = `20·log10(v / 2^23)` of each u32, and 0 is `-60` | **bare** (one packet carries every input; listen to `change:audio-meter-levels`) | `SALN` opt-in |
 
 **Legacy mixer readers** (`messages/audio_legacy.py`), which `build_full_state` uses on a legacy
 switcher (§2.6): `audio_mixer_type(mx)` gives `'fairlight'` once `FAMP` has arrived, `'legacy'`
 once `AMMO` has, and `'unknown'` before either. `legacy_audio_master`, `legacy_audio_strips`,
-`legacy_audio_headphones` and `legacy_audio_solo` read `AMMO`, `AMIP` and `AMmO` into the shapes
-of `fairlight_master`, `fairlight_strips`, `fairlight_headphones` and `fairlight_solo`, less
+`legacy_audio_headphones` and `legacy_audio_solo` read `AMMO`, `AMIP`, `AMmO` and `AMHP` into the
+shapes of `fairlight_master`, `fairlight_strips`, `fairlight_headphones` and `fairlight_solo`, less
 what the legacy mixer doesn't have (input gain, EQ, dynamics, delay), which is absent rather
 than zero. Volumes are dB by `legacy_volume_to_db` (§1.11), `None` for silence; pan is balance
 / 100 (±100, as the Fairlight strips show it; LibAtem and atem-connection show balance as ±50);
 `mix_type` takes the Fairlight names (`'Off'`, `'On'`, `'AudioFollowVideo'`) while `mix_state`
 keeps the legacy wire value. Strip names: a video input's from `InPr`, `MP<n>` for media player
 source 2000 + n, and `XLR`, `AES`, `RCA`, `Mic1`, `Mic2` for sources 1001, 1101, 1201, 1301,
-1302. Headphones are the monitor bus: `dim_level` is `dim_volume` / 100, not dB. None of this
+1302. Headphones are `AMHP` on a unit that sends it (`bus` `'headphones'`: `volume_db` its gain,
+`unmuted` True, plus `program_out_db`, `talkback_db`, `sidetone_db`) and the monitor bus otherwise
+(`bus` `'monitor'`, as before bmdwire#51; the three mix keys absent). `enabled`, `dim`, `solo` and
+`solo_source` are the monitor bus's either way; `dim_level` is `dim_volume` / 100, not dB. None of this
 has met a legacy switcher; it is built from the packet layouts, which agree with LibAtem's and
 atem-connection's.
 
 **Legacy audio in the log.** So that a log from a legacy switcher can confirm the layouts or
 correct them, `AtemProtocol` logs at INFO (logger `AtemProtocol`), prefixed `legacy-audio:`, the
-first `AMIP` per source and the first `AMMO`, `AMmO` and `AMLv` a connection receives, each as
-its payload in hex and every decoded attribute (with `volume_db` and `plug_name`), and at every
+first `AMIP` per source and the first `AMMO`, `AMmO`, `AMHP` and `AMLv` a connection receives,
+each as its payload in hex and every decoded attribute (with `<field>_db` for each volume and
+`plug_name`), and at every
 connect the mixer the dump showed (`legacy`, or `unknown` when it had neither `FAMP` nor
-`AMMO`). A Fairlight switcher sends none of the four, and its mixer line is DEBUG. A failure to
+`AMMO`). A Fairlight switcher sends none of these, and its mixer line is DEBUG. A failure to
 describe a packet is logged at DEBUG and never reaches the packet loop.
 
 ### 2.5 outputs, devices, system
@@ -488,7 +494,8 @@ audio: {mixer 'fairlight'|'unknown', present, master {…, eq_bands[6]}, strips 
        {mixer 'legacy', present (AMMO and an AMIP), master {present, volume_db, afv},
         strips [ {source, channel -1, subchannel 0, split False, strip_id "src.0", name,
         short_name, mix_type, mix_state (0/1/2), volume_db, pan, soloed, input_type, plug} ],
-        headphones {present, volume_db, unmuted, enabled, dim, dim_level, solo, solo_source},
+        headphones {present, volume_db, unmuted, enabled, dim, dim_level, solo, solo_source, bus,
+        and with AMHP program_out_db, talkback_db, sidetone_db},
         solo {any_soloed, strip_id}}
 videoMode: {format, id, fps}     (a mode with no table entry: format 'mode-<n>', fps the default 25)
 videoModes: [ {id, label} ]      (label 'mode-<n>' for one)
@@ -1445,12 +1452,12 @@ Measured by importing the package, not tallied by hand.
 
 | what | count |
 |---|---|
-| **Commands: `Send` classes (= distinct outgoing opcodes)** | **82** (74 control, 7 lock/file-transfer, 1 `TiRq`) |
-| … by area | upstream keyer 12, fairlight 10, downstream keyer 8, transition 8, switching (M/E + aux) 5, system 5, file-transfer 5, legacy audio 4, FTB 3, macro 3, media 3, streaming 3, input/video 2, lock 2, multiviewer 2, recording 2, supersource 2, camera control 1, color gen 1, hyperdeck 1 |
-| … not re-exported from `atemwire.messages` | 21 (20 of them "restored upstream", unverified on hardware) |
-| Operation functions `op(conn, …)` | 180 |
-| **State: `Recv` classes (= distinct incoming opcodes parsed)** | **92** (4 codes, `AiVM`, `FEna`, `FTDa` and `STAB`, are both a command and a state packet) |
-| … parsed state attributes across them | 526 (public, index attributes included) |
+| **Commands: `Send` classes (= distinct outgoing opcodes)** | **83** (75 control, 7 lock/file-transfer, 1 `TiRq`) |
+| … by area | upstream keyer 12, fairlight 10, downstream keyer 8, transition 8, switching (M/E + aux) 5, system 5, file-transfer 5, legacy audio 5, FTB 3, macro 3, media 3, streaming 3, input/video 2, lock 2, multiviewer 2, recording 2, supersource 2, camera control 1, color gen 1, hyperdeck 1 |
+| … not re-exported from `atemwire.messages` | 22 (20 of them "restored upstream", unverified on hardware) |
+| Operation functions `op(conn, …)` | 181 |
+| **State: `Recv` classes (= distinct incoming opcodes parsed)** | **93** (4 codes, `AiVM`, `FEna`, `FTDa` and `STAB`, are both a command and a state packet) |
+| … parsed state attributes across them | 530 (public, index attributes included) |
 | … known-but-unparsed codes stored raw | 27 |
 | Reader functions `reader(mx, …)` | 95 |
 | **Transfer and special operations** | **10**: 5 multi-packet wire flows (still download, still upload, locked still clear, macro download, macro upload); 3 composite flows built on them (profile save, profile apply, media-pool PNG export); 2 offline codecs (macro bytecode, image/RLE conversion) |

@@ -6,6 +6,7 @@ Legacy audio mixer messages (pre-Fairlight, smaller ATEMs).
 Wire packets (incoming only):
     AMMO — master bus properties (volume + AFV)
     AMmO — monitor bus properties (volume / mute / solo / dim)
+    AMHP — headphone output (gain, program / talkback / sidetone mix)
     AMIP — per-input channel-strip properties
     AMTl — audio mixer tally state (variable-length)
 
@@ -75,6 +76,33 @@ class AudioMixerMonitorPropertiesField(Recv):
 
     def __repr__(self):
         return f'<audio-monitor-properties: volume={self.volume}>'
+
+
+class AudioMixerHeadphonePropertiesField(Recv):
+    """``AMHP`` — the headphone output on legacy audio units that have
+    one. Every field is a legacy volume (see "Units" below). The layout is
+    LibAtem's ``AudioMixerHeadphoneGetCommand``; atem-connection agrees.
+    No switcher has checked it here (bmdwire#51).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      2    u16    Gain
+    2      2    u16    Program out gain
+    4      2    u16    Talkback gain
+    6      2    u16    Sidetone gain
+    ====== ==== ====== ===========
+    """
+    CODE = 'AMHP'
+    PRETTY = 'audio-mixer-headphone-properties'
+
+    gain             = u16(at=0)
+    program_out_gain = u16(at=2)
+    talkback_gain    = u16(at=4)
+    sidetone_gain    = u16(at=6)
+
+    def __repr__(self):
+        return f'<audio-headphone-properties: gain={self.gain}>'
 
 
 class AudioMixerTallyField(Recv):
@@ -316,6 +344,36 @@ class AudioMonitorPropertiesCommand(Send):
                          solo_source=solo_source, dim=dim, dim_volume=dim_volume)
 
 
+class AudioHeadphonePropertiesCommand(Send):
+    """``CAMH`` — headphone output of the legacy audio mixer. The layout is
+    LibAtem's ``AudioMixerHeadphoneSetCommand``; not checked on a switcher
+    (bmdwire#51).
+
+    ====== ==== ====== ===========
+    Offset Size Type   Description
+    ====== ==== ====== ===========
+    0      1    u8     Mask (bit 0 gain, 1 program out, 2 talkback, 3 sidetone)
+    2      2    u16    Gain [0 - 65381]
+    4      2    u16    Program out gain [0 - 65381]
+    6      2    u16    Talkback gain [0 - 65381]
+    8      2    u16    Sidetone gain [0 - 65381]
+    ====== ==== ====== ===========
+    """
+    CODE = 'CAMH'
+    SIZE = 12
+    MASK_AT = 0
+
+    gain             = u16(at=2, mask_bit=0)
+    program_out_gain = u16(at=4, mask_bit=1)
+    talkback_gain    = u16(at=6, mask_bit=2)
+    sidetone_gain    = u16(at=8, mask_bit=3)
+
+    def __init__(self, gain=None, program_out_gain=None, talkback_gain=None,
+                 sidetone_gain=None):
+        super().__init__(gain=gain, program_out_gain=program_out_gain,
+                         talkback_gain=talkback_gain, sidetone_gain=sidetone_gain)
+
+
 class SendAudioLevelsCommand(Send):
     """``SALN`` — opt in to legacy audio level (meter) packets.
 
@@ -346,6 +404,17 @@ def set_audio_master(conn, volume=None, afv=None):
 def set_audio_monitor(conn, **props):
     """Set any of enabled / volume / mute / solo / solo_source / dim / dim_volume."""
     conn.send(AudioMonitorPropertiesCommand(**props))
+
+
+def set_audio_headphones(conn, gain=None, program_out_gain=None,
+                         talkback_gain=None, sidetone_gain=None):
+    """Set any of the headphone output's four gains (wire units, u16;
+    ``legacy_db_to_volume`` converts from dB). Only on a unit that sends
+    ``AMHP``; elsewhere the headphones are the monitor bus
+    (``set_audio_monitor``)."""
+    conn.send(AudioHeadphonePropertiesCommand(
+        gain=gain, program_out_gain=program_out_gain,
+        talkback_gain=talkback_gain, sidetone_gain=sidetone_gain))
 
 
 def enable_audio_levels(conn, enable=True):
@@ -496,28 +565,51 @@ def legacy_audio_strips(mx) -> list:
 
 
 def legacy_audio_headphones(mx) -> dict:
-    """Read the monitor bus (AMmO) where ``fairlight_headphones`` reads
-    FMHP: ``present``, ``volume_db``, ``unmuted``, then the monitor's own
-    ``enabled``, ``dim``, ``dim_level``, ``solo`` and ``solo_source``.
+    """The headphones where ``fairlight_headphones`` reads FMHP:
+    ``present``, ``volume_db``, ``unmuted``, then the monitor bus's own
+    ``enabled``, ``dim``, ``dim_level``, ``solo`` and ``solo_source``, and
+    ``bus``, which says where ``volume_db`` came from.
+
+    On a unit that sends ``AMHP`` (a headphone output), ``bus`` is
+    ``'headphones'``: ``volume_db`` is AMHP's gain, ``unmuted`` is True (the
+    output has no mute), and ``program_out_db``, ``talkback_db`` and
+    ``sidetone_db`` are its mix. Otherwise ``bus`` is ``'monitor'`` and all
+    of it is the monitor bus (AMmO), as before bmdwire#51; the three mix
+    keys are absent. The monitor's ``enabled`` / ``dim`` / ``solo`` keys come
+    from AMmO either way.
 
     ``dim_level`` is the wire value / 100: LibAtem reads it as a level
     0-100.00, atem-connection passes it raw. Neither treats it as a gain,
     so it is not given in dB."""
     node = mx.get('audio-mixer-monitor-properties')
     if node is None:
-        return {'present': False, 'volume_db': 0.0, 'unmuted': True,
-                'enabled': False, 'dim': False, 'dim_level': 0.0,
-                'solo': False, 'solo_source': None}
-    return {
-        'present': True,
-        'volume_db': legacy_volume_to_db(getattr(node, 'volume', 0)),
-        'unmuted': not safe_bool(getattr(node, 'mute', False), False),
-        'enabled': safe_bool(getattr(node, 'enabled', False), False),
-        'dim': safe_bool(getattr(node, 'dim', False), False),
-        'dim_level': round(safe_int(getattr(node, 'dim_volume', 0), 0) / 100.0, 2),
-        'solo': safe_bool(getattr(node, 'solo', False), False),
-        'solo_source': safe_int(getattr(node, 'solo_source', 0), 0),
-    }
+        out = {'present': False, 'volume_db': 0.0, 'unmuted': True,
+               'enabled': False, 'dim': False, 'dim_level': 0.0,
+               'solo': False, 'solo_source': None, 'bus': 'monitor'}
+    else:
+        out = {
+            'present': True,
+            'volume_db': legacy_volume_to_db(getattr(node, 'volume', 0)),
+            'unmuted': not safe_bool(getattr(node, 'mute', False), False),
+            'enabled': safe_bool(getattr(node, 'enabled', False), False),
+            'dim': safe_bool(getattr(node, 'dim', False), False),
+            'dim_level': round(safe_int(getattr(node, 'dim_volume', 0), 0) / 100.0, 2),
+            'solo': safe_bool(getattr(node, 'solo', False), False),
+            'solo_source': safe_int(getattr(node, 'solo_source', 0), 0),
+            'bus': 'monitor',
+        }
+    hp = mx.get('audio-mixer-headphone-properties')
+    if hp is not None:
+        out.update({
+            'present': True,
+            'volume_db': legacy_volume_to_db(getattr(hp, 'gain', 0)),
+            'unmuted': True,
+            'bus': 'headphones',
+            'program_out_db': legacy_volume_to_db(getattr(hp, 'program_out_gain', 0)),
+            'talkback_db': legacy_volume_to_db(getattr(hp, 'talkback_gain', 0)),
+            'sidetone_db': legacy_volume_to_db(getattr(hp, 'sidetone_gain', 0)),
+        })
+    return out
 
 
 def legacy_audio_solo(mx) -> dict:
@@ -534,16 +626,18 @@ def legacy_audio_solo(mx) -> dict:
 # Diagnostics
 # -----------------------------------------------------------------------------
 # No legacy switcher has been on the wire here, so AtemProtocol logs the first
-# AMIP per source and the first AMMO, AMmO and AMLv a connection receives, at
-# INFO, raw and decoded, prefixed "legacy-audio:", and the mixer it found at
-# each connect. A log from a legacy unit is then enough to confirm the layouts
-# above or correct them. Only legacy switchers send these four packets, so a
-# Fairlight one logs none of them (its mixer line is DEBUG).
+# AMIP per source and the first AMMO, AMmO, AMHP and AMLv a connection
+# receives, at INFO, raw and decoded, prefixed "legacy-audio:", and the mixer
+# it found at each connect. A log from a legacy unit is then enough to confirm
+# the layouts above or correct them, and to show whether it sends AMHP at all.
+# Only legacy switchers send these packets, so a Fairlight one logs none of
+# them (its mixer line is DEBUG).
 # =============================================================================
 
 LEGACY_AUDIO_DIAGNOSTIC_KEYS = frozenset({
     'audio-input', 'audio-mixer-master-properties',
-    'audio-mixer-monitor-properties', 'audio-meter-levels',
+    'audio-mixer-monitor-properties', 'audio-mixer-headphone-properties',
+    'audio-meter-levels',
 })
 
 
@@ -563,8 +657,9 @@ def legacy_audio_diagnostic(contents) -> str:
     name. AMLv levels are rounded to 0.1 dB."""
     values = {k: _diagnostic_value(v) for k, v in vars(contents).items()
               if k not in ('raw', 'strip_id')}
-    if 'volume' in values:
-        values['volume_db'] = legacy_volume_to_db(values['volume'])
+    for k in ('volume', 'gain', 'program_out_gain', 'talkback_gain', 'sidetone_gain'):
+        if k in values:
+            values[k + '_db'] = legacy_volume_to_db(values[k])
     if 'plug' in values:
         values['plug_name'] = _PLUG_NAMES.get(values['plug'], 'Analog')
     raw = bytes(getattr(contents, 'raw', b''))
