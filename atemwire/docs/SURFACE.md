@@ -1492,7 +1492,7 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     Constellation's Time packet every 40 ms for every switcher's. The switcher behind WebATEM #63
     (an ATEM Mini Pro over a ZeroTier VPN at MTU 1,280) sends less often: the chunks never went
     again smaller and its uploads hung as in 1.14.6, with the lock and the transfer lane held
-    meanwhile. *Fixed in 1.14.9 (`COMMIT_R`):* a resend of the stuck chunk counts towards
+    meanwhile. *Fixed in 1.14.9 (`4ba9d8c`):* a resend of the stuck chunk counts towards
     `TOO_BIG_AFTER` only if the switcher was heard between it and the one before, and the
     switcher must have been heard within `RESEND_MAX` (as 1.14.7). With the cable out nothing
     is heard and no resend counts (item 60 stays fixed); a switcher heard every 0.5 s gets its
