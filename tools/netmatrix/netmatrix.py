@@ -294,7 +294,7 @@ def path_multiview(sw, cap):
 
 
 STILL = {}
-STILL_SEEDS = {'still_up': (1,), 'still_down': (2,), 'cable_pull': (3,), 'reboot': (4, 5),
+STILL_SEEDS = {'still_up': (1,), 'still_down': (2,), 'pooled_download': (2,), 'cable_pull': (3,), 'reboot': (4, 5),
                'two_clients': (10, 11)}
 
 
@@ -486,6 +486,33 @@ def path_profile_restore(sw, cap):
                                                            'restored' if macro_ok else 'NOT restored')
 
 
+def path_pooled_download(sw, cap):
+    """A still downloaded through the pool with the defaults, as
+    ATEM(ip).download_still and the profile save's media capture do it."""
+    from atemwire import ATEM
+    from atemwire.imaging import rle_decode
+    p = protocol(sw)
+    try:
+        if not connected(p, cap):
+            return False, 'no connect'
+        data = _still(2)
+        if not upload_still(p, 4, data, cap * 3):
+            return None, 'setup upload failed'
+    finally:
+        close(p)
+    with pooled_on(sw):
+        with ATEM(sw.host) as atem:
+            if not atem.connected:
+                return False, 'no connect'
+            sw.mark()
+            try:
+                back = atem._conn.download_still(4)
+            except Exception as e:
+                return False, repr(e)[:120]
+    ok = hashlib.md5(back).digest() == hashlib.md5(rle_decode(data)).digest()
+    return ok, 'downloaded frame identical' if ok else 'downloaded frame differs'
+
+
 def path_cable_pull(sw, cap):
     """The cable out for 3 s in the middle of a still upload: it must go on
     and finish, data intact."""
@@ -616,6 +643,7 @@ PATHS = {
     'still_down': (path_still_down, 180),
     'macro_up': (path_macro_up, 60),
     'macro_fail_cleanup': (path_macro_fail_cleanup, 30),
+    'pooled_download': (path_pooled_download, 400),
     'profile_save': (path_profile_save, 120),
     'profile_restore': (path_profile_restore, 240),
     'cable_pull': (path_cable_pull, 180),
