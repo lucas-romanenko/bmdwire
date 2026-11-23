@@ -646,12 +646,29 @@ class UdpProtocol(BaseProtocol):
         try:
             self._udp_thread_loop()
         except Exception as e:
-            self.log.error(f"UDP thread exiting: {e!r}")
+            if self.state == UdpProtocol.STATE_CLOSED and self._closed_socket(e):
+                # Our own goodbye then sock.close(): the thread meets the
+                # closed socket. The end it was meant to have; it was an
+                # ERROR line for every session closed (WebATEM's uploader,
+                # atemwire.sessions).
+                self.log.debug(f"UDP thread ending on the closed socket: {e!r}")
+            else:
+                self.log.error(f"UDP thread exiting: {e!r}")
         finally:
             try:
                 self.thread_recv_queue.put(None)
             except Exception:
                 pass
+
+    def _closed_socket(self, e):
+        """Whether ``e`` is what the UDP thread gets from a socket closed
+        under it: EBADF on POSIX, WSAENOTSOCK (10038) on Windows, or the
+        ValueError select() raises for a file descriptor of -1."""
+        if isinstance(e, ValueError):
+            return self.sock.fileno() == -1
+        return isinstance(e, OSError) and (
+            e.errno in (errno.EBADF, errno.ENOTSOCK, 10038)
+            or getattr(e, 'winerror', None) == 10038)
 
     def _udp_thread_loop(self):
         # Non-blocking for the drain: select() says when to read, and a
@@ -1403,6 +1420,19 @@ class UdpProtocol(BaseProtocol):
 
         if response_code == 0x02:
             self.state = UdpProtocol.STATE_ESTABLISHED
+            # The switcher numbers a new session's reliable packets from 1
+            # (the first reliable packet after the handshake was seq 1, 1,394
+            # bytes, on 10 of 10 connects to two Constellation HD units,
+            # 2026-11-23). So the ACK and the delivery cursor start there,
+            # instead of at whatever arrives first: a lost first packet
+            # stalls the ACK at 0 and is sent again, like any other.
+            # Taking the first arrival as the start acknowledged a lost
+            # seq 1 for good, and its fields (VidM, the video mode) never
+            # came (bmdwire#13). The dump-without-video-mode re-handshake
+            # stays as the fallback.
+            self.ack_number = 0
+            self._rx_established = True
+            self._deliver_next = 1
 
         # Got a valid 2nd handshake packet, send back the third one
         response = Packet()

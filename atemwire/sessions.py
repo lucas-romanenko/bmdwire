@@ -12,7 +12,7 @@ protocol goodbye. ``free`` is how many it got, and is what it shows.
 ``in_use`` (the model's maximum minus ``free``) is derived, not reported,
 and only given once the maximum for that model has been measured: run this
 on that model with nothing else connected, when ``free`` is the maximum,
-and record it in ``MAX_SESSIONS`` (empty: none is measured yet).
+and record it in ``MAX_SESSIONS``.
 
 Sessions already open are never touched. While the count runs (well under
 a second on a healthy link) the table is full, so anyone else connecting
@@ -39,8 +39,11 @@ from atemwire.protocol import AtemProtocol
 from atemwire.transport import UdpProtocol
 
 # Sessions each model allows at most, measured with nothing else connected
-# (the ``free`` of a count then). Empty until measured: never guessed.
-MAX_SESSIONS = {}
+# (the ``free`` of a count then). Only measured models: never guessed.
+MAX_SESSIONS = {
+    # An idle unit: free 5, then "no room", four runs of four (2026-11-23).
+    'ATEM 1 M/E Constellation HD': 5,
+}
 
 # A switcher that never says "no room" is not filled past this.
 DEFAULT_LIMIT = 16
@@ -261,10 +264,12 @@ def main(argv=None):
     if args.limit < 1:
         ap.error('--limit must be at least 1')
 
-    # The count's own 0x03 and every session's buffer notice are expected
-    # here, not news.
+    # The count's own 0x03, every session's buffer notice, and the silence
+    # timeout of a session the switcher never answered (how the count
+    # stops when it stops answering) are expected here, not news: the
+    # result says what happened.
     for name in ('UdpTransport', 'AtemProtocol'):
-        logging.getLogger(name).setLevel(logging.ERROR)
+        logging.getLogger(name).setLevel(logging.CRITICAL)
     if not args.json:
         print(f'{args.ip}: counting free sessions. {WARNING}', file=sys.stderr)
     r = count_sessions(args.ip, port=args.port, limit=args.limit,
