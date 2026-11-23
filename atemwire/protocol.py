@@ -1089,6 +1089,30 @@ class AtemProtocol:
         self._yielding.clear()
         self._own_release.clear()
 
+    def cancel_transfer(self, task):
+        """Drop one transfer, ``task``, whose caller gave up on it: off the
+        queue if it is waiting, or, if it is the one running, dropped with
+        its chunks not yet handed to the transport and its store lock
+        given back. Every other transfer queued carries on, unlike
+        ``abort_transfers``. Nothing is sent to the switcher for the
+        transfer itself: the protocol has no cancel. False if ``task`` was
+        neither (it finished or was dropped already)."""
+        queue = self.transfer_queue.get(task.store) or []
+        if self.transfer is not task:
+            if task in queue:
+                queue.remove(task)
+                return True
+            return False
+        if queue and queue[0] is task:
+            self.transfer_queue[task.store] = queue[1:]
+        self.transfer_requested = False
+        self._try_again_due = None
+        self.transfer_buffer = []
+        self.transfer_buffer_bytes = 0
+        self.log.info(f'transfer of {task.store}:{task.slot} cancelled by its caller')
+        self._release_then_continue(task.store)
+        return True
+
     def abort_transfers(self):
         """Best-effort reset of the transfer state machine, for callers that
         time out waiting on a queued transfer. Without this, an unanswered

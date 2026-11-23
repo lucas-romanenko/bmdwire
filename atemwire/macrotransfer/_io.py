@@ -59,7 +59,8 @@ def download_macro_bytecode(
     immediately after FTSU, no FTDa).
 
     :raises RuntimeError: protocol not connected.
-    :raises TimeoutError: transfer didn't complete within ``timeout``.
+    :raises TimeoutError: nothing of the transfer arrived for ``timeout``
+        seconds (1.14.7 and earlier: the whole download's limit).
     """
     if protocol is None or not protocol.connected:
         raise RuntimeError("protocol not connected")
@@ -70,7 +71,11 @@ def download_macro_bytecode(
         if store == MACRO_STORE and slot_idx == slot:
             done.append(data)
 
+    moved = [time.monotonic()]
+
     def _on_progress(store, slot_idx, fraction):
+        if store == MACRO_STORE and slot_idx == slot:
+            moved[0] = time.monotonic()
         if progress_callback is not None and store == MACRO_STORE and slot_idx == slot:
             try:
                 # Historical callback shape was (bytes_so_far, chunks) —
@@ -84,8 +89,8 @@ def download_macro_bytecode(
     prog_id = protocol.on('transfer-progress', _on_progress)
     try:
         protocol.download(MACRO_STORE, slot)
-        deadline = time.monotonic() + timeout
-        while not done and time.monotonic() < deadline:
+        moved[0] = time.monotonic()
+        while not done and time.monotonic() - moved[0] < timeout:
             protocol.loop()
         if not done:
             try:
@@ -154,16 +159,26 @@ def upload_macro_bytecode(
     :param description: description (utf-8, truncated to 127 bytes + NUL).
     :param bytecode: the encoded ops payload from
         ``encode_macro_bytecode``.
-    :param timeout: max wait for the upload-done callback.
+    :param timeout: seconds without progress (no chunk sent or
+        acknowledged, no answer) before it gives up; a slow link takes as
+        long as it needs. 1.14.7 and earlier: the whole upload's limit.
+
+    A failed upload (timeout, error, or the connection lost) is cancelled
+    on our side, and a slot that was empty before is emptied again: the
+    switcher makes the slot a nameless macro as the upload starts (it
+    pre-erases), and a failed upload used to leave that behind ("Macro
+    100" on a Constellation HD after the WebATEM #63 bench). A slot that
+    held a macro has lost it either way; the error says so.
 
     :raises RuntimeError: protocol not connected or ATEM error.
-    :raises TimeoutError: upload didn't complete within ``timeout``.
+    :raises TimeoutError: no progress for ``timeout`` seconds.
     """
     if protocol is None or not protocol.connected:
         raise RuntimeError("protocol not connected")
 
     done = threading.Event()
     result = {'error': None}
+    was_used = _macro_slot_used(protocol, slot)
 
     def _on_done(store, slt):
         if store == MACRO_STORE and slt == slot:
@@ -178,20 +193,88 @@ def upload_macro_bytecode(
 
     done_id = protocol.on('upload-done', _on_done)
     err_id = protocol.on('file-transfer-error', _on_error)
+    task = None
+    ok = False
     try:
         protocol.upload(MACRO_STORE, slot, bytecode,
                         compress=False,
                         name=name, description=description)
-        if not done.wait(timeout):
+        queue = getattr(protocol, 'transfer_queue', {}).get(MACRO_STORE) or []
+        task = queue[-1] if queue else None
+        if not _wait_with_progress(protocol, done, task, timeout):
             raise TimeoutError(
-                f"upload slot={slot}: no upload-done within {timeout}s")
+                f"upload slot={slot}: no progress for {timeout}s"
+                + _lost_note(was_used, slot))
         if result['error'] is not None:
             err = result['error']
             status = getattr(err, 'status', '?')
             transfer = getattr(err, 'transfer', '?')
             raise RuntimeError(
                 f"ATEM rejected macro upload (transfer={transfer}, "
-                f"status={status})")
+                f"status={status})" + _lost_note(was_used, slot))
+        ok = True
     finally:
         protocol.off('upload-done', done_id)
         protocol.off('file-transfer-error', err_id)
+        if not ok:
+            _clean_up_failed_upload(protocol, task, slot, was_used)
+
+
+def _macro_slot_used(protocol, slot):
+    """Whether ``slot`` held a macro before (True/False), or None when the
+    state doesn't say."""
+    try:
+        node = (protocol.mixerstate.get('macro-properties') or {}).get(slot)
+    except Exception:
+        return None
+    return None if node is None else bool(node.is_used)
+
+
+def _lost_note(was_used, slot):
+    if was_used:
+        return (f"; slot {slot} held a macro, which the switcher erased as "
+                f"the upload started")
+    return ''
+
+
+def _progress_mark(protocol, task):
+    """What changes while an upload gets anywhere: our bytes queued for
+    the wire and our packets the switcher has acknowledged."""
+    tr = getattr(protocol, 'transport', None)
+    return (getattr(task, 'send_done', None), getattr(task, 'offset', None),
+            getattr(tr, '_acked_through', None))
+
+
+def _wait_with_progress(protocol, done, task, timeout, poll=0.05):
+    """Wait for ``done`` while the upload makes progress: False once
+    nothing has moved for ``timeout`` seconds, or the session is gone."""
+    mark = _progress_mark(protocol, task)
+    last = time.monotonic()
+    while not done.wait(poll):
+        now = time.monotonic()
+        m = _progress_mark(protocol, task)
+        if m != mark:
+            mark, last = m, now
+        elif now - last >= timeout:
+            return False
+    return True
+
+
+def _clean_up_failed_upload(protocol, task, slot, was_used):
+    """Take a failed macro upload off the queue (ours only), and delete
+    the nameless macro it left in a slot that was empty."""
+    try:
+        cancel = getattr(protocol, 'cancel_transfer', None)
+        if task is not None and cancel is not None:
+            cancel(task)
+    except Exception:
+        logger.debug('cancelling the failed macro upload', exc_info=True)
+    if was_used is False and getattr(protocol, 'connected', False):
+        try:
+            from atemwire.messages.macros import MacroActionCommand
+            protocol.send_commands([MacroActionCommand(
+                index=slot, action=MacroActionCommand.ACTION_DELETE)])
+            logger.info(f'macro upload to slot {slot} failed: emptied the '
+                        f'slot again (it was empty before)')
+        except Exception:
+            logger.debug('deleting the failed macro upload', exc_info=True)
