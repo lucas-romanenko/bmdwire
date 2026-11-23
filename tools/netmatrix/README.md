@@ -24,7 +24,10 @@ keeps the runs, `--log x.log` the client's debug log.
   every 16 packets or 10 ms, a Time packet every 40 ms, a state dump in
   1,394-byte packets, five sessions, store locks, upload budgets of 768
   chunks, downloads with a 150-chunk window, macros, reboots. Its docstring
-  says what each behaviour is based on.
+  says what each behaviour is based on. Its state is `initial-dump.bin`, a
+  1 M/E Constellation HD's (bmdctl's synthetic dump, every command checked
+  against atemwire's parsers), and its macro `macro-sample.bin` (bmdctl's
+  fixtures, from a Constellation HD).
 - `netlink.py`: the network, a UDP relay in the fake's process. Each way:
   delay, jitter (in order, or reordering), loss, a rate with a short queue,
   a largest datagram (bigger ones dropped silently, as on a VPN), and a
@@ -43,6 +46,8 @@ keeps the runs, `--log x.log` the client's debug log.
 | still_down | the same, downloaded | identical to what went up |
 | macro_up | a 4 KB macro | read back identical, named |
 | macro_fail_cleanup | a macro upload into an empty slot that can't finish | slot empty again |
+| profile_save | `ATEM(ip)` and `Profile.from_atem`, as WebATEM's save | XML has the labels and the macro's ops |
+| profile_restore | a saved profile, labels changed, macro moved to an empty slot, applied | the switcher has both |
 | cable_pull | cable out 3 s mid-upload | finishes, MD5 at the switcher |
 | idle_cut | cable out 8 s on an idle connection | state back |
 | reboot | switcher reboots mid-upload | reconnects, next upload OK |
@@ -63,6 +68,7 @@ Round trip = twice the one-way delay.
 | reorder | 40 ms ± 10 ms, packets overtake |
 | bw1, bw5, bw10 | 20 ms, 1/5/10 Mbit/s, a 30-60 packet queue |
 | mtu1400 ... mtu576 | 20 ms; towards the switcher, datagrams over that path MTU dropped |
+| mtu1280, mtu1280v6 | a ZeroTier-like VPN (interface MTU 1,280) carrying IPv4 or IPv6 |
 | vpn | 40 ms, 1 % loss, path MTU 1,200 towards the switcher |
 | slowsite | 30 ms, 1 % loss, 3 Mbit/s, a 40-packet queue |
 | busyhost | 0.25 ms ± 0.35, a busy thread in the client's process |

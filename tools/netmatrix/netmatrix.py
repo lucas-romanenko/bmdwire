@@ -60,6 +60,10 @@ PROFILES = {
     'bw5':          both(delay=20 * MS, rate=5 * MBIT, queue=40),
     'bw10':         both(delay=20 * MS, rate=10 * MBIT, queue=60),
     'mtu1400':      {'up': _p(delay=20 * MS, max_dgram=1400 - 28), 'down': _p(delay=20 * MS)},
+    # A ZeroTier-like VPN: interface MTU 1,280. Carrying IPv4 the UDP
+    # payload can be 1,252 bytes; over IPv6 (40-byte header) 1,232.
+    'mtu1280':      {'up': _p(delay=20 * MS, max_dgram=1280 - 28), 'down': _p(delay=20 * MS)},
+    'mtu1280v6':    {'up': _p(delay=20 * MS, max_dgram=1280 - 48), 'down': _p(delay=20 * MS)},
     'mtu1200':      {'up': _p(delay=20 * MS, max_dgram=1200 - 28), 'down': _p(delay=20 * MS)},
     'mtu1000':      {'up': _p(delay=20 * MS, max_dgram=1000 - 28), 'down': _p(delay=20 * MS)},
     'mtu576':       {'up': _p(delay=20 * MS, max_dgram=576 - 28), 'down': _p(delay=20 * MS)},
@@ -76,7 +80,7 @@ PROFILES = {
 # minute. A fix adds the cell that showed its bug.
 QUICK = [('lan', 'connect'), ('rtt200', 'connect'), ('loss5', 'commands'),
          ('vpn', 'labels'), ('mtu1200', 'still_up'), ('loss2', 'still_up'),
-         ('reorder', 'macro_up'), ('lan', 'idle_cut'), ('lan', 'reboot'),
+         ('reorder', 'macro_up'), ('mtu1280', 'profile_save'), ('lan', 'idle_cut'), ('lan', 'reboot'),
          ('lan', 'two_clients'), ('lan', 'disconnect')]
 
 
@@ -400,6 +404,75 @@ def sw_macros(sw):
     return {int(k): v for k, v in sw.stats().get('macros', {}).items()}
 
 
+class pooled_on:
+    """The pool (ATEM(ip), what WebATEM's profile save and load use)
+    connects to port 9910; point it at the fake's port while in use."""
+
+    def __init__(self, sw):
+        self.sw = sw
+
+    def __enter__(self):
+        from atemwire import connection
+        self.orig = connection.AtemProtocol
+        orig, port = self.orig, self.sw.port
+        connection.AtemProtocol = lambda ip, **kw: orig(ip, port, **kw)
+        return self
+
+    def __exit__(self, *exc):
+        from atemwire import connection
+        from atemwire.pool import ATEMInstanceManager as M
+        connection.AtemProtocol = self.orig
+        # No grace period: the next run's fake is on another port, and a
+        # pooled session kept for 127.0.0.1 would be joined instead.
+        with M._instance_lock:
+            gone = list(M._instances.values())
+            M._instances.clear()
+        for inst in gone:
+            try:
+                inst['connection'].disconnect()
+            except Exception:
+                pass
+
+
+def path_profile_save(sw, cap):
+    """A profile save as WebATEM's does it: ATEM(ip), Profile.from_atem
+    (which downloads every macro), the XML."""
+    from atemwire import ATEM, Profile
+    from atemwire.profile import SaveOptions
+    with pooled_on(sw):
+        sw.mark()
+        with ATEM(sw.host) as atem:
+            if not atem.connected:
+                return False, 'no connect'
+            xml = Profile.from_atem(atem, SaveOptions()).to_xml()
+    ok = ('FlyKeyRunToInfinity' in xml and 'longName="Camera 1"' in xml)
+    return ok, ('XML with the inputs and the macro\'s ops' if ok else 'XML without the macro\'s ops or the labels')
+
+
+def path_profile_restore(sw, cap):
+    """Save a profile, change its labels and move its macro to an empty
+    slot, restore it: the switcher has the new labels and the macro."""
+    from atemwire import ATEM, Profile
+    from atemwire.profile import SaveOptions
+    with pooled_on(sw):
+        with ATEM(sw.host) as atem:
+            if not atem.connected:
+                return False, 'no connect'
+            xml = Profile.from_atem(atem, SaveOptions()).to_xml()
+        xml = xml.replace('longName="Camera ', 'longName="Restored ')
+        xml = xml.replace('<Macro index="0" name="Macro one"', '<Macro index="70" name="Restored"')
+        sw.mark()
+        with ATEM(sw.host) as atem:
+            if not atem.connected:
+                return False, 'no connect'
+            Profile.from_xml(xml).apply(atem)
+    st = sw.stats()
+    labels_ok = st.get('labels', {}).get('1', [''])[0] == 'Restored 1'
+    macro_ok = st.get('macros', {}).get('70') == 'Restored'
+    return labels_ok and macro_ok, 'labels %s, macro 70 %s' % ('restored' if labels_ok else 'NOT restored',
+                                                           'restored' if macro_ok else 'NOT restored')
+
+
 def path_cable_pull(sw, cap):
     """The cable out for 3 s in the middle of a still upload: it must go on
     and finish, data intact."""
@@ -530,6 +603,8 @@ PATHS = {
     'still_down': (path_still_down, 180),
     'macro_up': (path_macro_up, 60),
     'macro_fail_cleanup': (path_macro_fail_cleanup, 30),
+    'profile_save': (path_profile_save, 120),
+    'profile_restore': (path_profile_restore, 240),
     'cable_pull': (path_cable_pull, 180),
     'idle_cut': (path_idle_cut, 60),
     'reboot': (path_reboot, 180),

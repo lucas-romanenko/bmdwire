@@ -101,6 +101,37 @@ def rle_decode(data):
     return bytes(out)
 
 
+def sample_macro():
+    """A real macro's bytecode (bmdctl's internal/fixtures/macro, from a
+    Constellation HD), so a profile save decodes it."""
+    try:
+        return open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'macro-sample.bin'), 'rb').read()
+    except OSError:
+        return bytes(232)
+
+
+def base_dump():
+    """The state of a 1 M/E Constellation HD (topology, buses, keyers,
+    transitions, audio, multiviewer...): bmdctl's synthetic initial dump
+    (internal/fixtures/dump, each command checked against atemwire's
+    parsers), without its InCm. What the fake changes (labels, routes,
+    the media pool, macros) follows it in the dump and wins."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'initial-dump.bin')
+    try:
+        raw = open(path, 'rb').read()
+    except OSError:
+        return []
+    out, i = [], 0
+    while i + 8 <= len(raw):
+        ln = struct.unpack('>H', raw[i:i + 2])[0]
+        if ln < 8:
+            break
+        if raw[i + 4:i + 8] != b'InCm':
+            out.append(raw[i:i + ln])
+        i += ln
+    return out
+
+
 class Session:
     def __init__(self, addr):
         self.addr = addr
@@ -138,7 +169,8 @@ class Fake:
                       'client_dropped_ooo': 0, 'client_dup': 0, 'resent': 0, 'rtx_requests': 0,
                       'uploads': [], 'downloads': 0, 'ftde': {}, 'commands': {}}
         self.inputs = inputs
-        self.macros = {0: (b'Macro one', bytes(range(232)))}     # slot -> (name, bytecode)
+        self.macros = {0: (b'Macro one', sample_macro())}          # slot -> (name, bytecode)
+        self.base_dump = base_dump()
         self.stills = {}                                         # slot -> (md5, rle bytes)
         self._power_on()
 
@@ -283,10 +315,10 @@ class Fake:
     def dump(self, s):
         """The state dump, packed as the units pack it."""
         mode = 16 if self.width > 1920 else 10
-        cmds = [cmd(b'_ver', struct.pack('>HH', 2, 30)),
-                cmd(b'_pin', b'ATEM Fake'.ljust(44, b'\0')),
-                cmd(b'VidM', bytes([mode, 0, 0, 0])),
-                cmd(b'_mpl', bytes([20, 0, 100, 0]))]
+        cmds = list(self.base_dump)
+        cmds += [cmd(b'_ver', struct.pack('>HH', 2, 30)),
+                 cmd(b'VidM', bytes([mode, 0, 0, 0])),
+                 cmd(b'_mpl', bytes([20, 0, 100, 0]))]
         cmds += [inpr(i, *self.labels[i]) for i in sorted(self.labels)]
         cmds += [cmd(b'PrgI', struct.pack('>BxH', 0, self.program)),
                  cmd(b'PrvI', struct.pack('>BxH4x', 0, self.preview))]
@@ -600,6 +632,7 @@ def main(argv=None):
                         out['link'] = {'up': relay.up.stats, 'down': relay.down.stats}
                     out['macros'] = {k: v[0].decode('latin-1') for k, v in fake.macros.items()}
                     out['stills'] = sorted(fake.stills)
+                    out['labels'] = {k: list(v) for k, v in fake.labels.items()}
                     out['sessions_now'] = len(fake.established())
                     print('stats ' + json.dumps(out), flush=True)
                 elif parts[0] == 'quit':
