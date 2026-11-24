@@ -1530,35 +1530,52 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     nameless macro as a macro upload starts (pre-erase, mode `0x0300`); an upload that timed out
     or was refused left it there ("Macro 100" on a Constellation HD after the WebATEM #63 bench)
     and its task in the transfer queue. Its timeout, and the macro download's, was the whole
-    transfer's: 10 s, however it was going. *Fixed in 1.15.0 (`85d2f58`):*
+    transfer's: 10 s, however it was going. *Fixed in 1.15.0 (`4319420`):*
     `upload_macro_bytecode` cancels its own task (`AtemProtocol.cancel_transfer`, which leaves
     every other transfer queued) and, when the slot was empty before, deletes the macro again
     (`MAct` 5); a slot that held one has lost it to the pre-erase, and the error says so. Both
     timeouts are now seconds without progress. The network matrix's `macro_fail_cleanup`.
     Whether a real switcher's transfer engine takes the next upload at once after an abandoned
     one is for the bench.
-63. **A packet of commands too big for the path blocks the session** (1.0). Commands go out
+67. **An upload's budget goes out in one burst whatever the path** (1.0). Each budget of 768
+    chunks (about 1 MB) went back to back in 35 ms, as ATEM Software Control does on a LAN. Where
+    the path is narrower, a short queue on the way dropped most of each burst, and the resend sent
+    at most `RETRANSMIT_MAX_BURST` (128) and waited out the timer for each next lot: 1 Mbit/s never
+    finished a 1080p still, 5 Mbit/s took 52 s, a slow site (3 Mbit/s, 60 ms, 1 % loss) 84 s.
+    *Fixed in 1.15.0 (`961d328`, `ce78339`):* data chunks go out as a congestion window lets them
+    (`CWND_START` 768, one budget, so a good link sends as before; one more per chunk acknowledged;
+    halved when the round trip grows with a loss, `CWND_MIN` 16 when the resend timer fires). Other
+    packets (commands, a download's FTUAs) never wait for the window, and one of them lost goes
+    again at once. 1 Mbit/s 90 s, 5 Mbit/s 18 s, a slow site 36 s (the network matrix).
+68. **A packet of commands too big for the path blocks the session** (1.0). Commands go out
     several to a packet, up to 1,300 bytes of them (`send_commands`; a profile restore, 20
     labels). Over a path that drops datagrams that big the packet never got through, and the
     switcher, which takes our packets in order only, took nothing after it: 20 labels at a path
     MTU of 576 never arrived, and a profile restore over a VPN at MTU 1,200 restored nothing and
     sat out its macro upload's timeout. Item 58's take-back covered data chunks only. *Fixed in
-    1.15.0 (`fd7b5d6`):* a stuck command packet of two or more commands, bigger than the next
+    1.15.0 (`f202911`):* a stuck command packet of two or more commands, bigger than the next
     `CHUNK_STEPS` size, the switcher heard all along, is taken back with everything after it and
     its commands go again split into packets of at most that size plus
     `UdpProtocol.COMMAND_ROOM` (12) bytes, in order; chunks of an upload among them go back to it.
     From then on every command packet to that switcher is split to fit as it is sent. The
     network matrix's `labels` at `mtu576` and `profile_restore` at `vpn`.
-64. **A lost hello costs 5 s, a lost goodbye leaves a session behind** (1.0). Our hello went
+69. **A lost hello costs 5 s, a lost goodbye leaves a session behind** (1.0). Our hello went
     only on the silence tick, every 5 s: a hello or its answer lost on a lossy link cost 5 s, two
     in a row failed a connect, and after a pulled cable or a reboot the session came back up to
     5 s after the switcher could answer (an 8 s cut: back after 10.0 s, once 15.2 s at 5 % loss).
     The goodbye was one datagram: lost, it left the session on the switcher until it reaped it,
     against its five (1 in 3 of five connect/disconnects at 5 % loss). *Fixed in 1.15.0
-    (`9575bfc`):* an unanswered hello goes again after `UdpProtocol.HELLO_RETRY` (1 s), then
+    (`e9e1b07`):* an unanswered hello goes again after `UdpProtocol.HELLO_RETRY` (1 s), then
     every `HELLO_RETRY_MAX` (2 s), the same hello, the silence window unmoved; the goodbye goes
     `UdpProtocol.GOODBYES` (3) times. An 8 s cut: back after 8.5 s. The network matrix's
     `idle_cut` and `disconnect`.
+70. **Downloads on a pooled connection give up after a fixed total** (1.0). `download_still`
+    (30 s), `download_macro` (10 s) and the profile save's media capture (30 s a slot) took
+    `timeout` for the whole download, however it was going: a 1080p still over 1 Mbit/s (130 s)
+    or a slow site (45 s) never made it. *Fixed in 1.15.0 (`18cb580`):* `timeout` alone is now
+    seconds with nothing arriving (waiting for the lock counts as nothing), as the uploads'
+    are; with `stall_timeout` as well, that is the no-data limit and `timeout` the cap, as
+    before. The network matrix's `pooled_download`.
 
 ## Counts
 

@@ -65,3 +65,35 @@ def test_a_switcher_answering_busy_is_named():
     p.transfer = types.SimpleNamespace(store=0, slot=1, try_again=7)
     with pytest.raises(TimeoutError, match='answered busy .try again. 7 times'):
         ATEMConnection.download_still(_conn(p), 1, timeout=5.0, stall_timeout=0.2)
+
+
+# --- timeout alone is no-progress too (the network matrix's still_down) ------
+
+def test_timeout_alone_is_time_without_data_not_the_whole_download():
+    # 1.14.8: ``timeout`` alone capped the whole download (30 s by
+    # default), and a 1080p still over 1 Mbit/s (130 s) or a slow site
+    # (45 s) never made it. A download that keeps moving now takes as long
+    # as the link needs.
+    p = _Trickle(every=0.05, ticks=12, finish=True)       # 0.6 s in all
+    data = ATEMConnection.download_still(_conn(p), 1, timeout=0.3)
+    assert data == b'FRAME'
+
+
+def test_timeout_alone_still_gives_up_when_nothing_arrives():
+    p = _Trickle(every=0.05, ticks=2, finish=False)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match=r'stalled \(no data for 0.3s\)'):
+        ATEMConnection.download_still(_conn(p), 1, timeout=0.3)
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_macro_download_is_no_progress_too():
+    p = _Trickle(every=0.05, ticks=12, finish=False)
+    done = threading.Event()
+
+    def finish():
+        time.sleep(0.65)
+        p._raise('download-done', 0xFFFF, 3, b'MACRO')
+        done.set()
+    threading.Thread(target=finish, daemon=True).start()
+    assert ATEMConnection.download_macro(_conn(p), 3, timeout=0.3) == b'MACRO'

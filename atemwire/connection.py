@@ -299,11 +299,14 @@ class ATEMConnection:
         normal packet loop. Returns RLE-decoded frame bytes ready for
         ``atemwire.imaging.atem_to_rgb``. See ``_download_transfer``.
 
-        ``stall_timeout``: give up once this long passes with no data
-        arriving (waiting for the lock counts as no data), while ``timeout``
-        caps the whole download. A 4K still is 12 MB or more on the wire and
-        an 8K one four times that, so one fixed timeout is either too short
-        for them or far too long to notice a transfer that stopped."""
+        ``timeout``: give up once this long passes with no data arriving
+        (waiting for the lock counts as no data); a download that keeps
+        moving takes as long as the link needs. With ``stall_timeout`` as
+        well, that is the no-data limit and ``timeout`` caps the whole
+        download. 1.14.8 and earlier: ``timeout`` alone capped the whole
+        download, and a 1080p still over 1 Mbit/s (130 s) or a slow site
+        (45 s) never made 30 s. A 4K still is 12 MB or more on the wire and
+        an 8K one four times that."""
         return self._download_transfer(
             0, slot, timeout=timeout, progress_callback=progress_callback,
             stall_timeout=stall_timeout)
@@ -400,7 +403,8 @@ class ATEMConnection:
         FTDa). Parse with ``atemwire.macrotransfer.decode_macro_bytecode``.
         Bare-protocol callers (dev tools with no worker thread) should use
         ``atemwire.macrotransfer.download_macro_bytecode`` instead, which
-        pumps the loop itself."""
+        pumps the loop itself. ``timeout`` is seconds with nothing arriving
+        (1.14.8 and earlier: the whole download's)."""
         return self._download_transfer(0xFFFF, slot, timeout=timeout)
 
     def _download_transfer(self, store: int, index: int, *, timeout: float,
@@ -423,6 +427,11 @@ class ATEMConnection:
         aborting the transfer so the connection's transfer lane can't stay
         wedged for later callers).
         """
+        if stall_timeout is None:
+            # ``timeout`` alone: seconds with nothing arriving, no cap on
+            # the whole (every timeout here is no-progress, as the
+            # uploads' are).
+            stall_timeout, timeout = timeout, None
         # is_ready, not is_connected: a transfer started during a transport
         # re-handshake queued its lock and transfer requests into the
         # session being replaced and waited out its whole timeout, blaming
@@ -481,7 +490,7 @@ class ATEMConnection:
             lost_id = protocol.on('disconnected', _on_lost)
             try:
                 protocol.download(store, index)
-                deadline = time.monotonic() + timeout
+                deadline = None if timeout is None else time.monotonic() + timeout
                 stalled = False
                 def _heard():
                     # The protocol's own clock as well: progress events need
@@ -494,13 +503,13 @@ class ATEMConnection:
                 while True:
                     now = time.monotonic()
                     _heard()
-                    wait_until = deadline
-                    if stall_timeout is not None:
-                        wait_until = min(deadline, last_data[0] + stall_timeout)
+                    wait_until = last_data[0] + stall_timeout
+                    if deadline is not None:
+                        wait_until = min(deadline, wait_until)
                     if done.wait(max(0.0, wait_until - now)):
                         break
                     now = time.monotonic()
-                    if now >= deadline:
+                    if deadline is not None and now >= deadline:
                         break
                     if (stall_timeout is not None
                             and now - _heard() >= stall_timeout):
