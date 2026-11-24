@@ -848,7 +848,8 @@ callback is logged and swallowed.
 | `upload-progress` | `(store, slot, percent, done, total)` | upload chunks; can exceed 100 |
 | `download-done` | `(store, slot, data)` | `FTDC` on a download |
 | `upload-done` | `(store, slot)` | `FTDC` on an upload |
-| `file-transfer-error` | `(FileTransferErrorField)` | fatal `FTDE` only |
+| `upload-retrying` | `(store, slot, attempt, retries)` | an upload with no progress for `UPLOAD_STALL` (6 s) starts again from the beginning in a new session, attempt `attempt` of `retries` (§5.4 item 62) |
+| `file-transfer-error` | `(FileTransferErrorField)`, or a namespace `(transfer, status='stalled', message, store, slot)` | fatal `FTDE`; since 1.15.0 also an upload given up after `UPLOAD_RETRIES` fresh starts, `message` naming the phase it stalled in (§5.4 item 62) |
 | `clear-dispatched` | `(store, slot)` | locked clear sent (local, not a switcher confirmation) |
 
 `LKOB`, `FTCD`, `FTDa`, `FTDE`, `FTDC` and `*XFC` produce **no** `change` events. `LKST`
@@ -1492,11 +1493,39 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     Constellation's Time packet every 40 ms for every switcher's. The switcher behind WebATEM #63
     (an ATEM Mini Pro over a ZeroTier VPN at MTU 1,280) sends less often: the chunks never went
     again smaller and its uploads hung as in 1.14.6, with the lock and the transfer lane held
-    meanwhile. *Fixed in 1.14.9 (`4ba9d8c`):* a resend of the stuck chunk counts towards
+    meanwhile. *Fixed in 1.15.0 (`4ba9d8c`):* a resend of the stuck chunk counts towards
     `TOO_BIG_AFTER` only if the switcher was heard between it and the one before, and the
     switcher must have been heard within `RESEND_MAX` (as 1.14.7). With the cable out nothing
     is heard and no resend counts (item 60 stays fixed); a switcher heard every 0.5 s gets its
     chunks taken back as before 1.14.8. `UdpProtocol.HEARD_GAP` is gone.
+62. **An upload the switcher stops granting budgets to waits for ever** (1.0). After a dropout
+    mid-upload a Constellation HD can stop sending `FTCD` for good while acknowledging everything
+    (hardware bench, 2026-11-24); a same-session re-lock after giving the lock back mid-transfer is
+    acknowledged and never granted. Nothing timed the upload, so it never finished and never
+    failed. *Fixed in 1.15.0 (`d19c1cd`, `174840f`, `5587e15`, `e151696`):* an upload is done only on
+    the switcher's `FTDC`. `loop()` checks the wall clock every 0.5 s: `UPLOAD_STALL` (6 s) with no
+    progress in any phase (its lock, the transfer's start, budgets, chunks acknowledged) says
+    goodbye, opens a new session and starts the upload again from its lock with a new transfer id
+    (`upload-retrying`), `UPLOAD_RETRIES` (2) times at most, then gives it up with
+    `file-transfer-error` status `stalled`. While another client holds the lock it waits up to
+    `LOCK_WAIT_MAX` (60 s). Uploads in hand when a session ends or is replaced are carried over and
+    start again once the new one is ready; they used to vanish. Chunks taken back are handed to the
+    send queue `QUEUE_PORTION` (512) at a time: three budgets (2,304) overflowed its 1,024.
+63. **A UDP thread that ends strands whoever pumps** (1.0). An exception out of the UDP thread
+    (seen on macOS) ended it, and every `loop()` after that blocked for ever on the receive queue.
+    *Fixed in 1.15.0 (`61d596b`):* `loop()` returns None every 0.1 s once the thread is gone.
+64. **A packet the switcher sent and we lost is never asked for** (1.0). We only waited for its
+    timer (about 80 ms) to send it again; its own request (flag 0x08, the sequence it lacks in
+    bytes 6-7) was answered but only partly used. *Fixed in 1.15.0 (`9824cab`):* a gap in what we
+    receive is asked for after `GAP_ASK_AFTER` (0.1 s) and again every `GAP_ASK_EVERY` (0.25 s);
+    a request from the switcher for sequence N counts as an acknowledgement through N-1. On
+    hardware it asks for the first packet it lacks and keeps those after it (bench 2026-11-24).
+65. **The take-back waits on our timer while the switcher asks** (1.14.7). *Fixed in 1.15.0
+    (`e4119f7`):* the switcher asking again for a stuck chunk counts towards `TOO_BIG_AFTER`
+    (at most once per `RESEND_MIN`), so a path MTU of 1,280 is found as fast as its requests come
+    (a macro at MTU 1,280: 10 s to about 1 s offline). When a smaller packet follows the stuck
+    chunk, so that taking back would send sequence numbers again that the switcher may hold, it
+    starts a new session instead.
 
 ## Counts
 
