@@ -13,6 +13,9 @@ One direction is a ``Path``:
   datagrams still leave in the order they came (jitter as a queue makes
   it); with ``reorder`` True each is held on its own, so they overtake
   each other (netem's jitter).
+- ``late`` (0..1) and ``late_by`` (seconds): each datagram held back
+  that much longer with that chance, so the ones after it overtake it
+  (occasional reordering, as over Wi-Fi or two paths).
 - ``loss`` (0..1): each datagram dropped with that chance.
 - ``rate`` (bits/s) and ``queue`` (datagrams): a bottleneck. Datagrams go
   through it one at a time at ``rate``; one arriving with ``queue``
@@ -47,10 +50,12 @@ def quiet_on_windows(sock):
 
 class Path:
     def __init__(self, delay=0.0, jitter=0.0, reorder=False, loss=0.0,
-                 rate=0, queue=1000, max_dgram=0, seed=1):
+                 rate=0, queue=1000, max_dgram=0, seed=1, late=0.0, late_by=0.0):
         self.delay = delay
         self.jitter = jitter
         self.reorder = reorder
+        self.late = late
+        self.late_by = late_by
         self.loss = loss
         self.rate = rate
         self.queue = queue
@@ -91,6 +96,13 @@ class Path:
         t += self.delay
         if self.jitter:
             t += self.rng.uniform(-self.jitter, self.jitter)
+        if self.late and self.rng.random() < self.late:
+            # Held back on its own (another path, a retry on Wi-Fi): the
+            # ones after it overtake it.
+            t += self.late_by
+            self.stats['reordered'] += 1
+            self.stats['out'] += 1
+            return max(t, now)
         if not self.reorder:
             t = max(t, self._last_out)
         elif t < self._last_out:

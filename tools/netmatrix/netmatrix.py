@@ -55,7 +55,13 @@ PROFILES = {
     'loss2':        both(delay=20 * MS, loss=0.02),
     'loss5':        both(delay=20 * MS, loss=0.05),
     'jitter20':     both(delay=40 * MS, jitter=20 * MS),
-    'reorder':      both(delay=40 * MS, jitter=10 * MS, reorder=True),
+    # Occasional reordering: 1 % of datagrams 5 ms late, overtaken.
+    'reorder':      both(delay=40 * MS, late=0.01, late_by=5 * MS),
+    # netem's jitter without a rate: every datagram held on its own, so
+    # nearly all of a burst arrives out of order (97 % here). The switcher
+    # takes ours in order only: no client gets an upload through this,
+    # ATEM Software Control included; it is here to show it.
+    'reorderjit':   both(delay=40 * MS, jitter=10 * MS, reorder=True),
     'bw1':          both(delay=20 * MS, rate=1 * MBIT, queue=30),
     'bw5':          both(delay=20 * MS, rate=5 * MBIT, queue=40),
     'bw10':         both(delay=20 * MS, rate=10 * MBIT, queue=60),
