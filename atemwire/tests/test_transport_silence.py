@@ -176,4 +176,5 @@ def test_the_replaced_session_is_said_goodbye_first(transport, switcher):
             seen.append((data[12], pkt.session))
             if data[12] == 0x01:
                 break
-    assert seen[:2] == [(0x04, 0x8001), (0x01, 0x1337)]
+    goodbyes = UdpProtocol.GOODBYES
+    assert seen[:goodbyes + 1] == [(0x04, 0x8001)] * goodbyes + [(0x01, 0x1337)]

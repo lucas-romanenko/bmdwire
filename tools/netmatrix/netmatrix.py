@@ -73,6 +73,12 @@ PROFILES = {
     'mtu1200':      {'up': _p(delay=20 * MS, max_dgram=1200 - 28), 'down': _p(delay=20 * MS)},
     'mtu1000':      {'up': _p(delay=20 * MS, max_dgram=1000 - 28), 'down': _p(delay=20 * MS)},
     'mtu576':       {'up': _p(delay=20 * MS, max_dgram=576 - 28), 'down': _p(delay=20 * MS)},
+    # Tim's link (WebATEM #63): ZeroTier at MTU 1,280, 80 ms, to a
+    # switcher that sends its own packets less often than a
+    # Constellation's every 40 ms (here every 0.5 s; an ATEM Mini Pro's
+    # rate is not known).
+    'zerotier':     {'up': _p(delay=40 * MS, max_dgram=1280 - 28), 'down': _p(delay=40 * MS),
+                     'fake': {'tick': 0.5}, 'rtx': True},
     'vpn':          {'up': _p(delay=40 * MS, loss=0.01, max_dgram=1200 - 28),
                      'down': _p(delay=40 * MS, loss=0.01)},
     # A slow site: a few Mbit/s, 60 ms, 1 % loss, a short queue.
@@ -640,7 +646,10 @@ def run_one(profile_name, path_name, cap=None):
         getattr(transport, '_CHUNK_LIMITS', {}).clear()
     except ImportError:
         pass
-    sw = Switcher(prof)
+    fake = dict(prof.get('fake', {}))
+    if prof.get('rtx'):
+        fake['rtx_request'] = True
+    sw = Switcher(prof, fake)
     stop = threading.Event()
     busy = [threading.Thread(target=busy_thread, args=(stop,), daemon=True) for _ in range(prof.get('busy', 0))]
     old = sys.getswitchinterval()
