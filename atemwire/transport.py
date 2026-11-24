@@ -1153,6 +1153,8 @@ class UdpProtocol(BaseProtocol):
                     # dropout); taken as acknowledged, so nothing it has is
                     # sent again or taken back (TOO_BIG_AFTER).
                     self._on_ack(have, ack_only=False)
+            if self._asked_again_for_stuck(asked):
+                return True                      # taken back, or a new session asked for
             self._retransmit_from(asked)
 
         new_sequence_number = packet.sequence_number
@@ -1451,6 +1453,30 @@ class UdpProtocol(BaseProtocol):
         self._backoff = min(self._backoff * 2, 64)
         self._resend_due = time.monotonic() + self.resend_after()
 
+    def _asked_again_for_stuck(self, asked):
+        """The switcher asks again for the first packet it lacks: proof
+        that it hears us and still has not got that one. For a data chunk,
+        that counts towards TOO_BIG_AFTER as a resend it answered would
+        (at most once per RESEND_MIN): a switcher that asks finds the
+        smaller size as fast as its requests come, not at our backed-off
+        timer (an ATEM Mini Pro and a Constellation both ask). True when
+        the chunks were taken back."""
+        if self._acked_through is None or asked != ((self._acked_through + 1) & 0x7FFF):
+            return False
+        pkt = self.retransmission_buffer.get(asked)
+        if pkt is None or _ftda(pkt) is None:
+            return False
+        now = time.monotonic()
+        if asked != self._stuck_seq:
+            self._stuck_seq, self._stuck_count = asked, 1
+            self._stuck_resent_at = now
+            return False
+        if now - self._stuck_resent_at < UdpProtocol.RESEND_MIN:
+            return False
+        self._stuck_count += 1
+        self._stuck_resent_at = now
+        return self._stuck_count > UdpProtocol.TOO_BIG_AFTER and self._take_back_chunks(asked)
+
     def _take_back_chunks(self, first):
         """The data chunk at ``first`` was sent TOO_BIG_AFTER times more and
         never acknowledged, while the switcher goes on sending: take it and
@@ -1470,6 +1496,24 @@ class UdpProtocol(BaseProtocol):
             return False
         limit = smaller[0]
         last = self.local_sequence_number
+        # A packet after the stuck one small enough to have got through may
+        # be with the switcher already: the units keep what comes after a
+        # gap (the hardware bench, 2026-11-24). Its sequence number cannot
+        # be used again for other data; a new session starts the numbers
+        # afresh, the upload carried over to it at the size learnt here.
+        seq = (first + 1) & 0x7FFF
+        while seq != ((last + 1) & 0x7FFF):
+            q = self.retransmission_buffer.get(seq)
+            if q is not None and q.data is not None and len(q.data) + 12 <= limit + 24:
+                self.max_chunk = _CHUNK_LIMITS[self.ip] = limit
+                self._stuck_seq, self._stuck_count = None, 0
+                self.log.warning(
+                    f"{self.ip}: no data chunk of {size} bytes got through, and "
+                    f"smaller packets after it may have: a new session, the "
+                    f"upload again in chunks of {limit} bytes")
+                self.reconnect(f'chunks of {size} bytes too big for the path')
+                return True
+            seq = (seq + 1) & 0x7FFF
         taken = []
         seq = first
         while True:

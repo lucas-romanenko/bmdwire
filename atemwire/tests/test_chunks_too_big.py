@@ -158,18 +158,49 @@ def test_the_steps_go_down_to_the_smallest(udp, clock, limits):
     assert taken_back(udp) == [], 'nothing smaller to try'
 
 
-def test_other_packets_among_them_go_again_now_in_order(udp, clock):
+def test_a_small_packet_after_the_stuck_chunks_means_a_new_session(udp, clock):
+    # The lock release after the chunks is small enough to have got
+    # through, and the units keep what comes after a gap (the hardware
+    # bench, 2026-11-24): its sequence number cannot be used again for
+    # other data. A new session, the size learnt kept.
     a_stuck_upload(udp, clock, chunks=3)
-    release = reliable(LockCommand(0, False).get_command())
-    udp._send_packet_low(release)
-    udp.sock.sent.clear()
+    udp._send_packet_low(reliable(LockCommand(0, False).get_command()))
+    asked = []
+    udp.reconnect = asked.append
     timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
+    assert taken_back(udp) == [], 'nothing taken back under the same numbers'
+    assert asked and 'too big' in asked[0]
+    assert udp.max_chunk == 1224
+
+
+def request(udp, seq):
+    pkt = Packet()
+    pkt.flags = UdpProtocol.FLAG_REQUEST_RETRANSMISSION
+    pkt.session = udp.session_id
+    pkt.retransmission_request = seq
+    raw = pkt.to_bytes()
+    udp.sock.recvfrom = lambda n: (raw, ('127.0.0.1', 9910))
+    udp._receive_packet_low()
+
+
+def test_the_switcher_asking_again_for_the_stuck_chunk_finds_the_size_fast(udp, clock):
+    # A switcher that asks (a Mini Pro, a Constellation): its requests for
+    # the chunk it lacks count as resends it answered, without waiting for
+    # our backed-off timer (macro upload over a 1,280 VPN: 10 s before).
+    a_stuck_upload(udp, clock)
+    for _ in range(UdpProtocol.TOO_BIG_AFTER + 1):
+        clock[0] += 0.1
+        request(udp, 2)
     [taken] = taken_back(udp)
-    assert taken.sizes == [1392] * 3
-    resent = [q for q in (Packet.from_bytes(r) for r in udp.sock.sent)
-              if q.flags & UdpProtocol.FLAG_RELIABLE]     # not our ACKs
-    assert [(q.sequence_number, bytes(q.data)[4:8]) for q in resent][-1] == (2, b'LOCK')
-    assert not resent[-1].flags & UdpProtocol.FLAG_RETRANSMISSION
+    assert taken.limit == 1224 and clock[0] - 100.0 < 1.0
+
+
+def test_requests_closer_than_resend_min_count_once(udp, clock):
+    a_stuck_upload(udp, clock)
+    for _ in range(10):
+        clock[0] += UdpProtocol.RESEND_MIN / 4
+        request(udp, 2)
+    assert taken_back(udp) == []
 
 
 # --- the protocol: the chunks go again, smaller ---------------------------
