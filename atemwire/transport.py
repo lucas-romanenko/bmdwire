@@ -604,6 +604,9 @@ class UdpProtocol(BaseProtocol):
         # When the stuck packet last went again (TOO_BIG_AFTER counts a
         # resend only if the switcher was heard since).
         self._stuck_resent_at = 0.0
+        # Why the protocol asked for a new session (reconnect), until the
+        # UDP thread starts one.
+        self._reconnect_asked = None
         # When the open gap in the switcher's packets is next asked for
         # (GAP_ASK_AFTER), None with no gap; how many times we have asked.
         self._gap_due = None
@@ -736,8 +739,13 @@ class UdpProtocol(BaseProtocol):
             # Measured from _last_heard, not from select()'s last return:
             # our own sends and dropped datagrams wake select() too.
             remaining = self.timeout - (time.monotonic() - self._last_heard)
-            if remaining <= 0:
-                self.log.error("Timeout reading from ATEM")
+            asked = self._reconnect_asked
+            if asked or remaining <= 0:
+                if asked:
+                    self._reconnect_asked = None
+                    self.log.warning(f"{self.ip}: a new session asked for ({asked})")
+                else:
+                    self.log.error("Timeout reading from ATEM")
                 # Before the re-hello: the switcher may answer it at once,
                 # and that answer moves last_rx_monotonic, maybe before
                 # whoever waits on the connect has looked (bmdwire#89).
@@ -786,6 +794,20 @@ class UdpProtocol(BaseProtocol):
                 else:
                     self.thread_recv_queue.put(None)
                     raise RuntimeError("Unexpected result from select()")
+
+    def reconnect(self, why=''):
+        """End this session and start a new one, on the UDP thread, as the
+        silence tick does: goodbye, a new hello, and the end-of-stream
+        marker for the protocol (which carries its uploads over to the new
+        session). For an upload the switcher no longer answers in this
+        session: only a goodbye frees what an abandoned transfer holds
+        (its lock, its transfer engine); asked for again in the same
+        session, the lock got no answer (the hardware bench, 2026-11-24)."""
+        self._reconnect_asked = why or 'asked'
+        try:
+            self.thread_queue.put(None)              # wake select()
+        except Exception:
+            pass
 
     def _check_gap(self):
         """Ask for the first missing packet of an open gap when due

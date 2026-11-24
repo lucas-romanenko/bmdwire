@@ -129,6 +129,10 @@ DRAIN_MAX = 120.0
 # was asked for and never granted, and nothing watched that. UPLOAD_STALL
 # is above the ~4 s a chunk too big for the path takes to be found
 # (TOO_BIG_AFTER), during which nothing moves either.
+# _queue_chunks hands chunks to the transport this many at a time (its
+# send queue holds 1,024).
+QUEUE_PORTION = 512
+
 UPLOAD_STALL = 6.0
 UPLOAD_RETRIES = 2
 LOCK_WAIT_MAX = 60.0
@@ -355,6 +359,9 @@ class AtemProtocol:
         self._upload_mark = None
         self._upload_mark_at = None
         self._grants = 0
+        self._stall_checked = 0.0
+        # Uploads of a session lost or replaced, for the next one.
+        self._carried_uploads = []
 
     def connect(self):
         self.log.debug('Starting connection')
@@ -363,12 +370,27 @@ class AtemProtocol:
     def loop(self):
         self.log.debug('Waiting for data packet...')
         packet = self.transport.receive_packet()
+        now = time.monotonic()
+        if now - self._stall_checked >= 0.5:
+            # UPLOAD_STALL on the wall clock, whatever arrives (the switcher
+            # sends something at least every second while a session lives,
+            # and a dead UDP thread returns None every 0.1 s).
+            self._stall_checked = now
+            try:
+                self._service_upload_stall()
+            except Exception:
+                self.log.exception('upload stall check')
         if packet is None:
             # Disconnected from hardware
             if self.connected:
                 self._raise('disconnected')
                 self.mixerstate = {}
                 self.initialized = False
+                # Uploads are carried over to the next session and started
+                # again there from the beginning (UPLOAD_STALL still counts
+                # for them, then file-transfer-error): a session lost or
+                # replaced mid-upload used to drop them without a word.
+                self._carry_uploads_over()
                 # A transfer in flight when the session died is gone. The
                 # transport auto-reconnects (same worker survives), and the
                 # NEW session must not inherit ghost lane state — a stale
@@ -386,6 +408,7 @@ class AtemProtocol:
             self._log_audio_mixer()
             self._log_topology()
             self._raise('connected')
+            self._requeue_carried_uploads()
             return
         if isinstance(packet, Wakeup):
             # Caller-side wake-up to drain a pending outbound command — the
@@ -606,17 +629,6 @@ class AtemProtocol:
             # release is stored in mixerstate['lock-state'] and the
             # 'change:lock-state' event fires, exactly as upstream does.
         elif key == 'file-transfer-continue-data':
-            if self._grant_is_repeat(contents):
-                # The chunks of the last budget have not all left this
-                # process: the switcher cannot have them, so this is that
-                # budget again, not a new one. Counted twice, we sent it
-                # chunks it never granted (the hardware bench: three
-                # grants of 768 for one transfer 42 ms apart before a
-                # dropout, after which it granted nothing more).
-                self.log.info(f'transfer {contents.transfer}: a budget of '
-                              f'{contents.count} again before the last one was '
-                              f'sent: the same budget, not counted twice')
-                return
             self._grants += 1
             self.transfer_budget = contents
             old = self.transfer_budget.size
@@ -1107,6 +1119,7 @@ class AtemProtocol:
         self._try_again_due = None
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
+        self._carried_uploads = []                  # given up on: not carried either
         if drain:
             now = time.monotonic()
             self._draining = {'tid': t.tid, 'store': t.store,
@@ -1267,6 +1280,12 @@ class AtemProtocol:
             packet.flags = UdpProtocol.FLAG_RELIABLE
             packet.data = cmd.get_command()
             self.transport.queue_packet(packet)
+            if len(getattr(self.transport, 'send_queue', ())) >= QUEUE_PORTION:
+                # The send queue holds 1,024: more than that at once (chunks
+                # taken back from three budgets in flight, 2,304 of them)
+                # overflowed it, dropping the oldest, and the still was cut
+                # short (offline, a switcher granting budgets back to back).
+                self.transport.drain_queue()
         # The whole budget at once, back to back, as ATEM Software Control
         # sends it: the budget (FTCD) is the switcher's flow control, 768
         # chunks of a 1080p still at a time on a Constellation, and it
@@ -1368,58 +1387,58 @@ class AtemProtocol:
                 return  # the store's release broadcast continues the queue
         self._transfer_trigger(store)
 
-    def _grant_is_repeat(self, grant):
-        """Whether an FTCD repeats the last budget of the upload running:
-        the same transfer, and chunks of the last budget still waiting to
-        leave this process (queued, or held by the congestion window)."""
-        t = self.transfer
-        if t is None or not t.upload or getattr(grant, 'transfer', None) != t.tid:
-            return False
-        if self.transfer_budget is not None:
-            return False
-        tr = self.transport
-        try:
-            queued = list(getattr(getattr(tr, 'thread_queue', None), 'queue', ()))
-            waiting = (len(getattr(tr, 'send_queue', ()) or ())
-                       + sum(1 for item in queued if item is not None)   # not wake-ups
-                       + len(getattr(tr, '_held', ()) or ()))
-        except Exception:
-            return False
-        return waiting > 0
-
     def _upload_in_hand(self):
-        """The upload being worked on: the transfer running, or the first
-        upload waiting in a queue (for its lock or its start)."""
+        """The upload being worked on: the transfer running, the first
+        upload waiting in a queue (for its lock or its start), or one
+        carried over from a session lost, waiting for the next."""
         t = self.transfer
         if t is not None:
-            return t if t.upload else None
+            return t if getattr(t, 'upload', False) and getattr(t, 'data', None) is not None else None
         for store, queue in self.transfer_queue.items():
-            if queue and queue[0].upload and not queue[0].clear:
+            if queue and getattr(queue[0], 'upload', False) and not getattr(queue[0], 'clear', False):
                 return queue[0]
-        return None
+        return self._carried_uploads[0] if self._carried_uploads else None
+
+    def _upload_progress_mark(self, t):
+        """What counts as progress for ``t`` in the phase it is in. Our own
+        packets acknowledged count only once its data is going: while it
+        waits for a session or a lock, the requests we send for them are
+        acknowledged and answer nothing (the hardware bench: a lock asked
+        for again, acknowledged, never granted)."""
+        carried = t in self._carried_uploads
+        held = bool(self.locks.get(t.store))
+        started = self.transfer is t and self.transfer_requested
+        mark = (id(t), carried, bool(self.initialized), held, self.transfer is t, started, t.tid)
+        if started:
+            mark += (getattr(self.transport, '_acked_through', None), t.offset, self._grants)
+        return mark
 
     def _service_upload_stall(self):
         """UPLOAD_STALL: an upload that has made no progress for that long
         in any phase, the switcher not having said it is done, is started
-        again, UPLOAD_RETRIES times at most, then failed."""
+        again in a new session, UPLOAD_RETRIES times at most, then failed."""
         t = self._upload_in_hand()
         if t is None:
             self._upload_mark = None
             return
-        tr = self.transport
-        mark = (id(t), bool(self.locks.get(t.store)), self.transfer is t, self.transfer_requested,
-                t.tid, getattr(tr, '_acked_through', None), t.offset, self._grants)
+        mark = self._upload_progress_mark(t)
         now = time.monotonic()
         if mark != self._upload_mark:
             self._upload_mark, self._upload_mark_at = mark, now
+            self._lock_wait_since = None
         limit = UPLOAD_STALL
         if not self.locks.get(t.store) and t.store in self._foreign_held:
-            limit = LOCK_WAIT_MAX                # another client's turn, said so
+            # Another client's turn, the switcher says: longer, not for ever,
+            # counted from when the wait began.
+            if getattr(self, '_lock_wait_since', None) is None:
+                self._lock_wait_since = self._upload_mark_at
+            limit = LOCK_WAIT_MAX
         if now - self._upload_mark_at < limit:
             self._wake_at(min(self._upload_mark_at + limit, now + 1.0))
             return
         self._upload_mark = None
-        phase = ('waiting for its lock' if not self.locks.get(t.store) and self.transfer is not t
+        phase = ('waiting for a new session' if t in self._carried_uploads
+                 else 'waiting for its lock' if not self.locks.get(t.store) and self.transfer is not t
                  else 'waiting for the switcher to start it' if not self.transfer_requested
                  else f'{t.offset} of {len(t.data)} bytes cut')
         attempt = getattr(t, 'stall_retries', 0) + 1
@@ -1434,15 +1453,57 @@ class AtemProtocol:
         t.stall_retries = attempt
         self.log.warning(
             f'upload to {t.store}:{t.slot}: no progress for {limit:.0f} s ({phase}) '
-            f'and not confirmed: starting it again from the beginning '
-            f'(retry {attempt} of {UPLOAD_RETRIES})')
+            f'and not confirmed: starting it again from the beginning in a new '
+            f'session (retry {attempt} of {UPLOAD_RETRIES})')
         self._raise('upload-retrying', t.store, t.slot, attempt, UPLOAD_RETRIES)
-        self._start_upload_again(t)
+        reconnect = getattr(self.transport, 'reconnect', None)
+        if reconnect is not None:
+            # Only a goodbye frees what the abandoned transfer holds; the
+            # protocol carries the upload over to the new session.
+            reconnect(f'upload to {t.store}:{t.slot} stalled ({phase})')
+        else:
+            self._start_upload_again(t)
         self._wake_at(time.monotonic() + 1.0)
+
+    def _carry_uploads_over(self):
+        """Before the lane is reset for a new session: every upload, the
+        one running and those queued, kept for the next session, from the
+        beginning."""
+        tasks = []
+        if self.transfer is not None and self.transfer.upload and not self.transfer.clear:
+            tasks.append(self.transfer)
+        for queue in self.transfer_queue.values():
+            tasks.extend(q for q in queue if q.upload and not q.clear and q not in tasks)
+        for q in tasks:
+            q.tid = None
+            q.offset = 0
+            q.send_done = 0
+            q.metadata_sent = False
+            if q not in self._carried_uploads:
+                self._carried_uploads.append(q)
+        if tasks:
+            self.log.warning(f'session ended with {len(tasks)} upload(s) not confirmed: '
+                             f'they go again from the beginning in the next session')
+
+    def _requeue_carried_uploads(self):
+        """A new session is ready: the uploads carried over go back in
+        their queues, in order, and are asked for."""
+        carried, self._carried_uploads = self._carried_uploads, []
+        stores = []
+        for q in carried:
+            self.transfer_queue.setdefault(q.store, []).append(q)
+            if q.store not in stores:
+                stores.append(q.store)
+        for store in stores:
+            self._transfer_trigger(store)
+        if carried:
+            self._upload_mark = None
+            self._wake_at(time.monotonic() + 1.0)
 
     def _start_upload_again(self, t):
         """The same task, still first in its queue, asked for again from
-        its lock: the lane cleared, a lock we hold given back."""
+        its lock in this session (a transport without reconnect): the lane
+        cleared, a lock we hold given back."""
         store = t.store
         self.transfer_requested = False
         self.transfer_budget = None
@@ -1463,6 +1524,8 @@ class AtemProtocol:
         queue = self.transfer_queue.get(store) or []
         if t in queue:
             queue.remove(t)
+        if t in self._carried_uploads:
+            self._carried_uploads.remove(t)
         self.transfer_requested = False
         self.transfer_budget = None
         self.transfer_buffer = []

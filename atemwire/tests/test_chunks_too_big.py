@@ -416,3 +416,33 @@ def test_chunks_too_big_on_a_lan_are_still_taken_back(udp, clock):
     timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
     [taken] = taken_back(udp)
     assert taken.limit == 1224
+
+
+def test_more_chunks_taken_back_than_the_send_queue_holds_all_go_again():
+    # Three budgets of 768 in flight when the take-back came (a switcher
+    # granting them back to back): 2,304 chunks to send again, more than
+    # the transport's send queue (1,024) holds. Queued at once, the oldest
+    # were dropped and the still came out short.
+    p = AtemProtocol(ip='127.0.0.1')
+    p.transport.sock.close()
+    p.send_commands = lambda commands: None
+    sent = []
+    p.transport._send_packet = lambda pkt: sent.append(bytes(pkt.data))
+    p.initialized = p.connected = True
+    try:
+        data = bytes((i * 7) % 251 for i in range(1392 * 2304))
+        p.upload(0, 0, data, compress=False)
+        p.save_field_data(b'LKOB', struct.pack('>Hxx', 0))
+        for _ in range(3):
+            p.save_field_data(b'FTCD', struct.pack('>H4xHH2x', p.transfer.tid, 1396, 768))
+        assert len(sent) == 2304
+        sizes = [len(c) - 12 for c in sent]
+        p.transport.max_chunk = 1224
+        p._chunks_taken_back(ChunksTakenBack(p.transfer.tid, sizes, 1224))
+        again = b''.join(c[12:] for c in sent[2304:])
+        # As many chunks as the budget owed (2,304), now of 1,224 bytes, in
+        # order from where the first one started; the rest with the next.
+        assert len(again) == 2304 * 1224
+        assert again == data[:len(again)], 'none of them lost to the queue'
+    finally:
+        p.transport.thread_queue.close()

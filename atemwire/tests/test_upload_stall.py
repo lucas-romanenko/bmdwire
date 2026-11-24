@@ -47,8 +47,11 @@ def proto(clock):
     p.locks = {0: True}
     p._upload_mark = p._upload_mark_at = None
     p._grants = 4
-    p.transport = types.SimpleNamespace(_acked_through=50, local_sequence_number=50, wakes=[])
+    p.transport = types.SimpleNamespace(_acked_through=50, local_sequence_number=50, wakes=[], reconnects=[])
     p.transport.wake_at = p.transport.wakes.append
+    p.transport.reconnect = p.transport.reconnects.append
+    p.initialized = True
+    p._carried_uploads = []
     p.log = types.SimpleNamespace(warning=lambda *a: None, error=lambda *a: None,
                                   info=lambda *a: None, debug=lambda *a: None)
     p.events = []
@@ -71,18 +74,18 @@ def stall(proto, clock, seconds):
     proto._service_upload_stall()
 
 
-def test_no_progress_for_upload_stall_starts_it_again(proto, clock):
+def test_no_progress_for_upload_stall_starts_it_again_in_a_new_session(proto, clock):
     stall(proto, clock, P.UPLOAD_STALL - 0.01)
-    assert proto.released == [] and proto.transport.wakes, 'waits, and wakes to look again'
+    assert proto.transport.reconnects == [] and proto.transport.wakes, 'waits, and wakes to look again'
     clock[0] += 0.01
     proto._service_upload_stall()
-    assert proto.released == [0], 'its lock given back, the same task asked for again'
-    assert not proto.transfer_requested and proto.transfer_budget is None
+    [why] = proto.transport.reconnects
+    assert 'stalled' in why and '4000 of 10000 bytes cut' in why
     assert ('upload-retrying', 0, 3, 1, P.UPLOAD_RETRIES) in proto.events
-    assert proto.transfer_queue[0] == [proto.transfer], 'still first in the queue'
+    assert proto.released == [], 'not the same session: there the lock got no answer'
 
 
-def test_whatever_moves_is_progress(proto, clock):
+def test_whatever_moves_while_its_data_goes_is_progress(proto, clock):
     proto._service_upload_stall()
     for step in range(10):
         clock[0] += P.UPLOAD_STALL - 1
@@ -90,32 +93,33 @@ def test_whatever_moves_is_progress(proto, clock):
          lambda: setattr(proto.transfer, 'offset', proto.transfer.offset + 1396),
          lambda: setattr(proto, '_grants', proto._grants + 1)][step % 3]()
         proto._service_upload_stall()
-    assert proto.released == [] and proto.failed == []
+    assert proto.transport.reconnects == [] and proto.failed == []
+
+
+def test_our_requests_acknowledged_while_it_waits_for_its_lock_are_not_progress(proto, clock):
+    # The hardware bench, 15:00 to 15:55: started again, the lock asked for
+    # and acknowledged, never granted; the acknowledgements kept the stall
+    # timer from ever running out, no second retry, no error.
+    proto.transfer = None
+    proto.locks = {0: False}
+    proto.transfer_requested = False
+    proto._service_upload_stall()
+    for _ in range(int(P.UPLOAD_STALL)):
+        clock[0] += 1
+        proto.transport._acked_through += 1      # our lock request, again
+        proto._service_upload_stall()
+    assert len(proto.transport.reconnects) == 1
+    assert 'waiting for its lock' in proto.transport.reconnects[0]
 
 
 def test_after_upload_retries_it_fails_with_the_reason(proto, clock):
     for _ in range(P.UPLOAD_RETRIES):
         stall(proto, clock, P.UPLOAD_STALL)
-        proto.transfer_requested = True            # asked for again
     stall(proto, clock, P.UPLOAD_STALL)
-    assert len(proto.released) == P.UPLOAD_RETRIES + 1, 'and its lock given back at the end'
+    assert len(proto.transport.reconnects) == P.UPLOAD_RETRIES
     [failed] = proto.failed
     assert failed.status == 'stalled' and failed.transfer == 7 and 'fresh starts' in failed.message
     assert proto.transfer_queue[0] == [], 'off its queue'
-
-
-def test_a_fresh_start_never_granted_its_lock_is_retried_then_failed(proto, clock):
-    # The bench, 15:00 and 15:20: started again, the lock asked for and
-    # never granted, nothing more for 114 s, no error.
-    proto.transfer = None                          # given back, waiting again
-    proto.locks = {0: False}
-    proto.transfer_requested = False
-    for _ in range(P.UPLOAD_RETRIES):
-        stall(proto, clock, P.UPLOAD_STALL)
-    assert proto.triggered == [0] * P.UPLOAD_RETRIES, 'asked for again'
-    stall(proto, clock, P.UPLOAD_STALL)
-    [failed] = proto.failed
-    assert 'waiting for its lock' in failed.message
 
 
 def test_the_lock_held_by_another_client_waits_longer_but_not_for_ever(proto, clock):
@@ -124,13 +128,37 @@ def test_the_lock_held_by_another_client_waits_longer_but_not_for_ever(proto, cl
     proto.transfer_requested = False
     proto._foreign_held = {0}
     stall(proto, clock, P.UPLOAD_STALL * 5)
-    assert proto.triggered == [] and proto.failed == []
+    assert proto.transport.reconnects == [] and proto.failed == []
     clock[0] += P.LOCK_WAIT_MAX
     proto._service_upload_stall()
-    assert proto.triggered == [0]
+    assert len(proto.transport.reconnects) == 1
+
+
+def test_uploads_are_carried_over_a_lost_session_and_asked_for_again(proto, clock):
+    proto.transfer.metadata_sent = True
+    other = TransferTask(0, 4, upload=True)
+    proto.transfer_queue[0].append(other)
+    proto._carry_uploads_over()
+    assert proto._carried_uploads == [proto.transfer, other]
+    assert proto.transfer.offset == 0 and proto.transfer.tid is None and not proto.transfer.metadata_sent
+    proto.transfer_queue = {}                    # the lane reset
+    proto.transfer = None
+    proto._requeue_carried_uploads()
+    assert [t.slot for t in proto.transfer_queue[0]] == [3, 4] and proto.triggered == [0]
+
+
+def test_a_session_that_never_comes_back_fails_the_upload_in_the_end(proto, clock):
+    proto._carry_uploads_over()
+    proto.transfer_queue = {}
+    proto.transfer = None
+    proto.initialized = False
+    for _ in range(P.UPLOAD_RETRIES + 1):
+        stall(proto, clock, P.UPLOAD_STALL)
+    [failed] = proto.failed
+    assert 'waiting for a new session' in failed.message and proto._carried_uploads == []
 
 
 def test_a_download_is_left_to_its_caller(proto, clock):
     proto.transfer.upload = False
     stall(proto, clock, P.UPLOAD_STALL * 5)
-    assert proto.released == [] and proto.failed == []
+    assert proto.transport.reconnects == [] and proto.failed == []
