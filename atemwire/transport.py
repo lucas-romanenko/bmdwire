@@ -1737,8 +1737,11 @@ class UdpProtocol(BaseProtocol):
         # gap (the hardware bench, 2026-11-24). Its sequence number cannot
         # be used again for other data; a new session starts the numbers
         # afresh, the upload carried over to it at the size learnt here.
+        # Only for a data chunk: a new session would lose a stuck command
+        # packet's commands (nothing carries them over), so those are split
+        # and sent again in this one.
         seq = (first + 1) & 0x7FFF
-        while seq != ((last + 1) & 0x7FFF):
+        while chunk is not None and seq != ((last + 1) & 0x7FFF):
             q = self.retransmission_buffer.get(seq)
             if q is not None and q.data is not None and len(q.data) + 12 <= limit + 24:
                 self.max_chunk = _CHUNK_LIMITS[self.ip] = limit
