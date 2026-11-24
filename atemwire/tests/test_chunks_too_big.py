@@ -158,18 +158,49 @@ def test_the_steps_go_down_to_the_smallest(udp, clock, limits):
     assert taken_back(udp) == [], 'nothing smaller to try'
 
 
-def test_other_packets_among_them_go_again_now_in_order(udp, clock):
+def test_a_small_packet_after_the_stuck_chunks_means_a_new_session(udp, clock):
+    # The lock release after the chunks is small enough to have got
+    # through, and the units keep what comes after a gap (the hardware
+    # bench, 2026-11-24): its sequence number cannot be used again for
+    # other data. A new session, the size learnt kept.
     a_stuck_upload(udp, clock, chunks=3)
-    release = reliable(LockCommand(0, False).get_command())
-    udp._send_packet_low(release)
-    udp.sock.sent.clear()
+    udp._send_packet_low(reliable(LockCommand(0, False).get_command()))
+    asked = []
+    udp.reconnect = asked.append
     timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
+    assert taken_back(udp) == [], 'nothing taken back under the same numbers'
+    assert asked and 'too big' in asked[0]
+    assert udp.max_chunk == 1224
+
+
+def request(udp, seq):
+    pkt = Packet()
+    pkt.flags = UdpProtocol.FLAG_REQUEST_RETRANSMISSION
+    pkt.session = udp.session_id
+    pkt.retransmission_request = seq
+    raw = pkt.to_bytes()
+    udp.sock.recvfrom = lambda n: (raw, ('127.0.0.1', 9910))
+    udp._receive_packet_low()
+
+
+def test_the_switcher_asking_again_for_the_stuck_chunk_finds_the_size_fast(udp, clock):
+    # A switcher that asks (a Mini Pro, a Constellation): its requests for
+    # the chunk it lacks count as resends it answered, without waiting for
+    # our backed-off timer (macro upload over a 1,280 VPN: 10 s before).
+    a_stuck_upload(udp, clock)
+    for _ in range(UdpProtocol.TOO_BIG_AFTER + 1):
+        clock[0] += 0.1
+        request(udp, 2)
     [taken] = taken_back(udp)
-    assert taken.sizes == [1392] * 3
-    resent = [q for q in (Packet.from_bytes(r) for r in udp.sock.sent)
-              if q.flags & UdpProtocol.FLAG_RELIABLE]     # not our ACKs
-    assert [(q.sequence_number, bytes(q.data)[4:8]) for q in resent][-1] == (2, b'LOCK')
-    assert not resent[-1].flags & UdpProtocol.FLAG_RETRANSMISSION
+    assert taken.limit == 1224 and clock[0] - 100.0 < 1.0
+
+
+def test_requests_closer_than_resend_min_count_once(udp, clock):
+    a_stuck_upload(udp, clock)
+    for _ in range(10):
+        clock[0] += UdpProtocol.RESEND_MIN / 4
+        request(udp, 2)
+    assert taken_back(udp) == []
 
 
 # --- the protocol: the chunks go again, smaller ---------------------------
@@ -365,28 +396,49 @@ def test_chunks_stuck_while_the_cable_is_out_are_not_taken_back(udp, clock):
     # with the cable). The still arrived with an MD5 that did not match.
     a_stuck_upload_on_a_lan(udp, clock)
     out = clock[0]
-    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1, answering=False)
-    assert clock[0] - out < UdpProtocol.RESEND_MAX, 'the case 1.14.7 got wrong'
-    assert taken_back(udp) == []
-    # The cable back in: the switcher is heard again at once, and the
-    # chunks still not acknowledged at the next resends are resent, not
-    # taken back: they were stuck across the silence.
+    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 3, answering=False)
+    assert clock[0] - out < 3.0
+    assert taken_back(udp) == [], 'resends nobody heard an answer to do not count'
+    # The cable back in: heard again, and the next resend reaches the
+    # switcher, which acknowledges it (it had the chunk, or has it now).
     heard_until(udp, clock, out + 3.0)
-    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 2)
+    timer_fires(udp, clock, 1)
+    udp._on_ack(11, ack_only=True)
     assert taken_back(udp) == []
     assert udp.max_chunk is None
     assert udp.local_sequence_number == 11, 'no sequence number used twice'
 
 
-def test_a_short_gap_in_what_the_switcher_sends_is_a_link_down(udp, clock):
-    # Heard at the moment of the decision is not enough: a gap of more
-    # than HEARD_GAP since the chunk got stuck rules a take-back out.
+def test_resends_into_silence_do_not_count_towards_too_big(udp, clock):
+    # Out for a while, then heard: only the resends after which the
+    # switcher was heard count, so a few more are needed after the cut.
     a_stuck_upload_on_a_lan(udp, clock)
-    timer_fires(udp, clock, 1)
-    clock[0] += UdpProtocol.HEARD_GAP + 0.05     # quiet, then heard again
-    time_packet(udp)
-    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
+    timer_fires(udp, clock, 6, answering=False)
+    timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER - 1)
     assert taken_back(udp) == []
+    timer_fires(udp, clock, 1)
+    [taken] = taken_back(udp)
+    assert taken.limit == 1224
+
+
+def test_a_switcher_that_sends_every_half_second_is_heard(udp, clock):
+    # WebATEM #63 on 2.6.9 (bmdwire 1.14.8): over a VPN at MTU 1,280 the
+    # upload hung again. 1.14.8 wanted no gap over 0.25 s in what the
+    # switcher sends, taking a Constellation's Time packet every 40 ms for
+    # every switcher's; Tim's sends less often, so the chunks never went
+    # again smaller. Heard between our resends is what counts.
+    a_stuck_upload(udp, clock)
+    for _ in range(UdpProtocol.TOO_BIG_AFTER + 1):
+        due = udp._resend_due
+        while clock[0] + 0.5 <= due:
+            clock[0] += 0.5
+            time_packet(udp)
+        clock[0] = due + 0.5                     # heard just after each resend
+        time_packet(udp)
+        clock[0] = max(clock[0], udp._resend_due or clock[0])
+        udp._resend_unacked()
+    [taken] = taken_back(udp)
+    assert taken.limit == 1224
 
 
 def test_chunks_too_big_on_a_lan_are_still_taken_back(udp, clock):
@@ -395,3 +447,33 @@ def test_chunks_too_big_on_a_lan_are_still_taken_back(udp, clock):
     timer_fires(udp, clock, UdpProtocol.TOO_BIG_AFTER + 1)
     [taken] = taken_back(udp)
     assert taken.limit == 1224
+
+
+def test_more_chunks_taken_back_than_the_send_queue_holds_all_go_again():
+    # Three budgets of 768 in flight when the take-back came (a switcher
+    # granting them back to back): 2,304 chunks to send again, more than
+    # the transport's send queue (1,024) holds. Queued at once, the oldest
+    # were dropped and the still came out short.
+    p = AtemProtocol(ip='127.0.0.1')
+    p.transport.sock.close()
+    p.send_commands = lambda commands: None
+    sent = []
+    p.transport._send_packet = lambda pkt: sent.append(bytes(pkt.data))
+    p.initialized = p.connected = True
+    try:
+        data = bytes((i * 7) % 251 for i in range(1392 * 2304))
+        p.upload(0, 0, data, compress=False)
+        p.save_field_data(b'LKOB', struct.pack('>Hxx', 0))
+        for _ in range(3):
+            p.save_field_data(b'FTCD', struct.pack('>H4xHH2x', p.transfer.tid, 1396, 768))
+        assert len(sent) == 2304
+        sizes = [len(c) - 12 for c in sent]
+        p.transport.max_chunk = 1224
+        p._chunks_taken_back(ChunksTakenBack(p.transfer.tid, sizes, 1224))
+        again = b''.join(c[12:] for c in sent[2304:])
+        # As many chunks as the budget owed (2,304), now of 1,224 bytes, in
+        # order from where the first one started; the rest with the next.
+        assert len(again) == 2304 * 1224
+        assert again == data[:len(again)], 'none of them lost to the queue'
+    finally:
+        p.transport.thread_queue.close()
