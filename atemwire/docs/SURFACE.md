@@ -1526,6 +1526,17 @@ Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
     (a macro at MTU 1,280: 10 s to about 1 s offline). When a smaller packet follows the stuck
     chunk, so that taking back would send sequence numbers again that the switcher may hold, it
     starts a new session instead.
+66. **A failed macro upload leaves a nameless macro** (1.0). The switcher makes the slot a
+    nameless macro as a macro upload starts (pre-erase, mode `0x0300`); an upload that timed out
+    or was refused left it there ("Macro 100" on a Constellation HD after the WebATEM #63 bench)
+    and its task in the transfer queue. Its timeout, and the macro download's, was the whole
+    transfer's: 10 s, however it was going. *Fixed in 1.15.0 (`85d2f58`):*
+    `upload_macro_bytecode` cancels its own task (`AtemProtocol.cancel_transfer`, which leaves
+    every other transfer queued) and, when the slot was empty before, deletes the macro again
+    (`MAct` 5); a slot that held one has lost it to the pre-erase, and the error says so. Both
+    timeouts are now seconds without progress. The network matrix's `macro_fail_cleanup`.
+    Whether a real switcher's transfer engine takes the next upload at once after an abandoned
+    one is for the bench.
 
 ## Counts
 
