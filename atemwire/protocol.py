@@ -5,6 +5,7 @@ import collections
 import random
 import struct
 import time
+import types
 
 from atemwire._transfer import TransferTask, TransferQueueFlushed
 from atemwire.transport import UdpProtocol, Packet, ChunksTakenBack, ConnectionReady, Wakeup
@@ -113,18 +114,19 @@ TRY_AGAIN_ATTEMPTS = 20
 DRAIN_STALL = 5.0
 DRAIN_MAX = 120.0
 
-# An upload that has sent every chunk of its budget, all of them
-# acknowledged and nothing of ours outstanding, waits GRANT_WAIT for the
-# next budget (FTCD) at most, then starts again from the beginning under a
-# new transfer, its lock given back and asked for again; GRANT_RESTARTS
-# times at most. On a LAN the next budget comes within milliseconds of the
-# last chunk. A Constellation HD stopped granting for good after the cable
-# was out for 3 s mid-upload, everything acknowledged on both sides (the
-# hardware bench, 2026-11-24: the still sat at 47 % until the caller gave
-# up); the cause on the switcher is not known, a fresh transfer is what
-# gets it moving.
-GRANT_WAIT = 2.0
-GRANT_RESTARTS = 2
+# An upload is done only when the switcher says so (FTDC). Without that,
+# one that has made no progress for UPLOAD_STALL (no packet of ours newly
+# acknowledged, no chunk cut, no budget granted) is started again from the
+# beginning under a new transfer, its lock given back and asked for again,
+# UPLOAD_RETRIES times at most ('upload-retrying', with the attempt), then
+# failed ('file-transfer-error', status 'stalled'). The hardware bench,
+# 2026-11-24 (Constellation HD, fw 2.30): after the cable was out for 3 s
+# mid-upload everything was acknowledged on both sides and the switcher
+# never granted the next budget; the still sat at 47 % until the caller
+# gave up. UPLOAD_STALL is above the ~4 s a chunk too big for the path
+# takes to be found (TOO_BIG_AFTER), during which nothing moves either.
+UPLOAD_STALL = 6.0
+UPLOAD_RETRIES = 3
 
 # Chunks of a download this session asked for but no longer follows (its
 # caller gave up, it was retried under a new id, a drain ended before the
@@ -344,7 +346,10 @@ class AtemProtocol:
         self._orphans = set()
         self.transfer_packets = 0
         self.transfer_budget = []
-        self._grant_idle_since = None
+        # UPLOAD_STALL: what progress looked like, since when; budgets got.
+        self._upload_mark = None
+        self._upload_mark_at = None
+        self._grants = 0
 
     def connect(self):
         self.log.debug('Starting connection')
@@ -596,7 +601,7 @@ class AtemProtocol:
             # release is stored in mixerstate['lock-state'] and the
             # 'change:lock-state' event fires, exactly as upstream does.
         elif key == 'file-transfer-continue-data':
-            self._grant_idle_since = None
+            self._grants += 1
             self.transfer_budget = contents
             old = self.transfer_budget.size
             self.transfer_budget.size = self.transfer_budget.size // 8 * 8
@@ -1239,8 +1244,6 @@ class AtemProtocol:
             if self.transfer_budget.count == 0:
                 self.log.debug('Transfer budget ran out')
                 self.transfer_budget = None
-                self._grant_idle_since = None
-                self._wake_at(time.monotonic() + GRANT_WAIT / 4)
 
             cmd = TransferDataCommand(self.transfer.tid, bytes(chunk))
             packet = Packet()
@@ -1348,43 +1351,43 @@ class AtemProtocol:
                 return  # the store's release broadcast continues the queue
         self._transfer_trigger(store)
 
-    def _service_grant_wait(self):
-        """GRANT_WAIT: an upload waiting for its next budget, everything
-        of ours acknowledged, is started again when none comes."""
+    def _service_upload_stall(self):
+        """UPLOAD_STALL: an upload in flight that has made no progress for
+        that long, the switcher not having said it is done, is started
+        again, UPLOAD_RETRIES times at most, then failed."""
         t = self.transfer
-        if (t is None or not t.upload or self.transfer_budget is not None
-                or not t.metadata_sent or t.data is None or t.offset >= len(t.data)
-                or not self.locks.get(t.store)):
-            self._grant_idle_since = None
+        if t is None or not t.upload or not self.transfer_requested:
+            self._upload_mark = None
             return
         tr = self.transport
-        outstanding = (getattr(tr, '_acked_through', None) != getattr(tr, 'local_sequence_number', None)
-                       or len(getattr(tr, 'send_queue', ())) > 0
-                       or len(getattr(tr, '_held', ())) > 0)
+        mark = (t.tid, getattr(tr, '_acked_through', None), t.offset, self._grants)
         now = time.monotonic()
-        if outstanding:
-            self._grant_idle_since = None
-            self._wake_at(now + GRANT_WAIT / 4)
+        if mark != self._upload_mark:
+            self._upload_mark, self._upload_mark_at = mark, now
+        if now - self._upload_mark_at < UPLOAD_STALL:
+            self._wake_at(min(self._upload_mark_at + UPLOAD_STALL, now + 1.0))
             return
-        if self._grant_idle_since is None:
-            self._grant_idle_since = now
-        if now - self._grant_idle_since < GRANT_WAIT:
-            self._wake_at(self._grant_idle_since + GRANT_WAIT)
+        self._upload_mark = None
+        attempt = getattr(t, 'stall_retries', 0) + 1
+        if attempt > UPLOAD_RETRIES:
+            self.log.error(
+                f'upload to {t.store}:{t.slot} failed: no progress for '
+                f'{UPLOAD_STALL:.0f} s, {UPLOAD_RETRIES} times, and the switcher '
+                f'never said it was done; nothing on it was changed by this upload')
+            self._fail_transfer(types.SimpleNamespace(
+                transfer=t.tid, status='stalled',
+                message=f'no progress for {UPLOAD_STALL:.0f} s, {UPLOAD_RETRIES} attempts'))
             return
-        self._grant_idle_since = None
-        restarts = getattr(t, 'grant_restarts', 0)
-        if restarts >= GRANT_RESTARTS:
-            return
-        t.grant_restarts = restarts + 1
+        t.stall_retries = attempt
         self.log.warning(
-            f'upload to {t.store}:{t.slot}: no next budget from the switcher '
-            f'{GRANT_WAIT:.0f} s after everything was acknowledged '
-            f'({t.offset} of {len(t.data)} bytes): starting it again '
-            f'({t.grant_restarts} of {GRANT_RESTARTS})')
-        self._raise('upload-restarted', t.store, t.slot)
-        # Its lock given back, the same task (still first in the queue) is
+            f'upload to {t.store}:{t.slot}: no progress for {UPLOAD_STALL:.0f} s '
+            f'and not confirmed ({t.offset} of {len(t.data)} bytes cut): starting '
+            f'it again from the beginning (retry {attempt} of {UPLOAD_RETRIES})')
+        self._raise('upload-retrying', t.store, t.slot, attempt, UPLOAD_RETRIES)
+        # Its lock given back, the same task (still first in its queue) is
         # requested again: a new transfer, from the first byte.
         self.transfer_requested = False
+        self.transfer_budget = None
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
         self._release_then_continue(t.store)
@@ -1431,7 +1434,7 @@ class AtemProtocol:
         work, so the trigger runs once per turn, not once per tick."""
         now = time.monotonic()
         self._service_drain()
-        self._service_grant_wait()
+        self._service_upload_stall()
         if (self._try_again_due is not None and now >= self._try_again_due
                 and self.transfer is not None):
             self._try_again_due = None
@@ -1572,6 +1575,9 @@ class AtemProtocol:
             self.log.info('Requesting download of {}:{}'.format(next.store, next.slot))
         self.transfer_requested = True
         self._transfer_last_data = None
+        if self.transfer.upload:
+            self._upload_mark = None
+            self._wake_at(time.monotonic() + 1.0)
         if not self._asked_tids or self._asked_tids[-1] != self.transfer.tid:
             self._asked_tids.append(self.transfer.tid)
         self._orphans.discard(self.transfer.tid)
