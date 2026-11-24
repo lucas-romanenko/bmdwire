@@ -9,9 +9,15 @@ Transport, per session
   answers "no room" (0x03);
 - its reliable packets resent, every one not yet ACKed, every 80 ms (the
   captures: resends on the frame tick, 77-81 ms);
-- our packets taken strictly in order: one out of order is dropped and
-  never asked for again (330k packets of Constellation captures, no
-  retransmission request), unless ``rtx_request`` (a Mini Pro asks);
+- our packets delivered in order; one that comes after a gap is kept
+  (``park_ooo``) and the first missing one asked for with a
+  retransmission request (``rtx_request``, flag 0x08, from-seq in bytes
+  6-7), again after 80 ms. Source: the hardware bench, 2026-11-24
+  (Constellation HD fw 2.30): after a 3 s dropout it asked "from 2053,
+  2069, 2197, 2213" and, sent only 128 again, acknowledged everything up
+  to 2,820, so it had kept the rest; an ATEM Mini Pro asks too (WebATEM
+  #63's log). This fake used to drop them and never ask, from clean-LAN
+  captures in which nothing was ever lost, which was wrong;
 - ACKed cumulatively every 16 packets or 10 ms;
 - a reliable Time packet every 40 ms; a session silent for ``reap`` s
   is dropped.
@@ -33,6 +39,25 @@ Media
 - downloads (FTSU): FTDa chunks of 1,396, at most 150 not yet FTUA'd;
 - MAct 5 deletes a macro, CSTL clears a still.
 
+Hardware behaviours, off unless asked for (the ``hwcut`` profile turns
+them on); each one seen on the hardware bench of 2026-11-24
+(Constellation HD fw 2.30, both units; traces in the job's
+results/bench-1425-traced.md and bench-1500-d19c1cd.md):
+- ``grant_stall_after``: after the client was silent that long mid-upload
+  no budget comes again for that transfer (13:00-15:55, not every run);
+- ``relock_never``: that transfer stays open, and a lock asked for while
+  it is open is acknowledged and never granted, until its session ends
+  (15:00, 15:20, 15:55; HANDOVER §2.4: a session asking again for a lock
+  it holds gets no answer, a lock given back mid-transfer does not free
+  the engine);
+- ``lkst_while_stuck``: what LKST says meanwhile (0: free, so the client
+  asks again and again, each request acknowledged);
+- ``grant_repeats``: budgets come back to back, 40 ms apart (three of 768
+  for one transfer at 42 ms, 14:25; ASC captures, MEDIA_LOCK.md: ~9 per
+  still, the next ~5 ms after the last chunk);
+- ``tick``: how often it sends when idle (0.5 s: WebATEM #63's Mini Pro
+  behind a VPN, ~10 packets per 5 s; a Constellation: 40 ms).
+
 Faults, from the control channel (stdin lines, see ``Control``):
 ``reboot S`` (silent S seconds, then up with every session, lock and
 transfer gone and the media pool empty; macros kept), ``cut S`` / ``cut
@@ -52,6 +77,11 @@ import threading
 import time
 
 CHUNK = 1396
+# FTCD's undecoded fields as two Constellation HDs sent them in all 8
+# budgets of the 2026-11-24 bench (4 transfers, 2 units, 2 slots; Protocol.md
+# "Unreliable networks"): the same in every budget, meaning unknown.
+FTCD_AT_2 = bytes.fromhex('0d000000')
+FTCD_AT_10 = bytes.fromhex('4a02')
 TICK = 0.04
 RESEND_EVERY = 0.08
 FTUA_WINDOW = 150
@@ -146,20 +176,48 @@ class Session:
         self.last_heard = time.monotonic()
         self.rtx_asked = None
         self.rtx_at = 0.0
+        self.parked = {}                # our packets that came after a gap
 
 
 class Fake:
     def __init__(self, sock, *, max_sessions=5, dump_kb=200, budget=768, prep=(0.13, 0.4),
-                 rtx_request=False, reap=5.0, inputs=20, seed=1, width=1920, height=1080,
-                 tick=TICK):
+                 rtx_request=True, reap=5.0, inputs=20, seed=1, width=1920, height=1080,
+                 tick=TICK, ack_dups=True, timer_resend=True, grant_stall_after=0.0,
+                 relock_never=False, grant_repeats=0, lkst_while_stuck=0, park_ooo=True):
+        # grant_repeats: each budget announced that many times more, 40 ms
+        # apart, as the bench's traces showed (three FTCDs of 768 for one
+        # transfer, 42 ms apart). Each one counts: the units took every
+        # chunk sent after them, and clean uploads finish.
+        # relock_never: a client whose upload stalled (grant_stall_after)
+        # never gets the store's lock again, as the hardware bench's first
+        # fresh start did not (2026-11-24, 15:00 and 15:20).
+        # grant_stall_after > 0: an upload whose client was silent that
+        # long stops getting budgets (FTCD) for good, as a Constellation HD
+        # did after a 3 s cut on the hardware bench (2026-11-24); its lock
+        # given back frees the engine for a new transfer.
+        # timer_resend False: it sends again what is unacknowledged only
+        # when the client asks (a retransmission request), not every 80 ms
+        # (the hardware bench, 2026-11-24: after a 3 s cut with nothing of
+        # ours outstanding, the lost budget grant never came again).
         self.sock = sock
         self.max_sessions = max_sessions
         self.dump_kb = dump_kb
         self.budget = budget
         self.prep = prep
         self.rtx_request = rtx_request
+        self.park_ooo = park_ooo
         self.reap = reap
         self.tick = tick
+        self.ack_dups = ack_dups
+        self.timer_resend = timer_resend
+        self.grant_stall_after = grant_stall_after
+        self.relock_never = relock_never
+        self.grant_repeats = grant_repeats
+        # What the lock-state packet says each second while a stuck transfer
+        # blocks the lock (relock_never): 0 free (the client asks again),
+        # 1 in use.
+        self.lkst_while_stuck = lkst_while_stuck
+        self.stalled_sessions = set()
         self.width, self.height = width, height
         self.rng = random.Random(seed)
         self.lock = threading.Lock()
@@ -228,8 +286,10 @@ class Fake:
         elif moved:
             s.next_resend = time.monotonic() + RESEND_EVERY
 
-    def resend(self, s):
+    def resend(self, s, start=None):
         for q in sorted(s.sent, key=lambda q: (q - s.acked) & 0x7fff):
+            if start is not None and ((q - start) & 0x7fff) >= 0x4000:
+                continue
             raw = bytearray(s.sent[q])
             raw[0] |= 0x04 << 3
             self.raw_send(s, bytes(raw))
@@ -270,7 +330,14 @@ class Fake:
         s = self.sessions.get(addr)
         if s is None:
             return
-        s.last_heard = time.monotonic()
+        now = time.monotonic()
+        t = self.transfer
+        if (self.grant_stall_after and t is not None and t.get('up') and t['s'] is s
+                and now - s.last_heard > self.grant_stall_after):
+            t['stalled'] = True
+            self.stalled_sessions.add(s.addr)
+            self.stats['grant_stalls'] = self.stats.get('grant_stalls', 0) + 1
+        s.last_heard = now
         if s.sid is None:
             if flags & 0x10:
                 s.sid = self.next_sid
@@ -283,24 +350,26 @@ class Fake:
             return
         if flags & 0x10:
             self.on_ack(s, hdr[2])
-        if flags & 0x08 and not flags & 0x01:
-            # The client asks for ours from hdr[3] on.
-            pass
+        if flags & 0x08:
+            # The client asks for ours from hdr[3] on: everything not yet
+            # acknowledged from there goes again.
+            self.stats['asked_to_resend'] = self.stats.get('asked_to_resend', 0) + 1
+            self.resend(s, start=hdr[3])
         if flags & 0x01:
             seq = hdr[5]
             if s.client_seq is None or seq == (s.client_seq + 1) & 0x7fff:
                 s.client_seq = seq
-                i = 12
-                while i + 8 <= len(data):
-                    ln = struct.unpack('>H', data[i:i + 2])[0]
-                    if ln < 8:
-                        break
-                    self.command(s, data[i + 4:i + 8], data[i + 8:i + ln])
-                    if s.addr not in self.sessions:
+                if not self._run_commands(s, data):
+                    return
+                while self.park_ooo and ((s.client_seq + 1) & 0x7fff) in s.parked:
+                    # The gap filled: what came after it, in order.
+                    s.client_seq = (s.client_seq + 1) & 0x7fff
+                    if not self._run_commands(s, s.parked.pop(s.client_seq)):
                         return
-                    i += ln
             elif ((seq - s.client_seq) & 0x7fff) < 0x4000:
                 self.stats['client_dropped_ooo'] += 1
+                if self.park_ooo and len(s.parked) < 4096:
+                    s.parked[seq] = bytes(data)
                 want = (s.client_seq + 1) & 0x7fff
                 now = time.monotonic()
                 if self.rtx_request and (s.rtx_asked != want or now - s.rtx_at > 0.08):
@@ -309,11 +378,28 @@ class Fake:
                     self.raw_send(s, struct.pack('>HHHHHH', (0x08 << 11) | 12, s.sid, 0, want, 0, 0))
             else:
                 self.stats['client_dup'] += 1
+                if not self.ack_dups:
+                    # A packet it has already: no ACK for it (the hardware
+                    # bench, 2026-11-24: after a 3 s cut on a clean path
+                    # nothing more was acknowledged).
+                    return
             s.unacked_client += 1
             if s.unacked_client >= 16:
                 self.send_ack(s)
             elif s.ack_timer is None:
                 s.ack_timer = time.monotonic() + 0.01
+
+    def _run_commands(self, s, data):
+        i = 12
+        while i + 8 <= len(data):
+            ln = struct.unpack('>H', data[i:i + 2])[0]
+            if ln < 8:
+                break
+            self.command(s, data[i + 4:i + 8], data[i + 8:i + ln])
+            if s.addr not in self.sessions:
+                return False
+            i += ln
+        return True
 
     def dump(self, s):
         """The state dump, packed as the units pack it."""
@@ -385,6 +471,11 @@ class Fake:
         if name in (b'PLCK', b'LOCK'):
             store = struct.unpack('>H', body[:2])[0]
             on = 1 if name == b'PLCK' else body[2]
+            if on and self.relock_never and self._stuck_open():
+                # Acknowledged (the transport did), never answered: an old
+                # transfer it never finished is still open.
+                self.stats['relock_ignored'] = self.stats.get('relock_ignored', 0) + 1
+                return
             if on:
                 h = self.holder.get(store)
                 if h is None:
@@ -392,7 +483,8 @@ class Fake:
                 elif h is not s and s not in self.waiters.setdefault(store, []):
                     self.waiters[store].append(s)
             elif self.holder.get(store) is s:
-                if self.transfer is not None and self.transfer['s'] is s and self.transfer.get('store') == store:
+                if (self.transfer is not None and self.transfer['s'] is s and self.transfer.get('store') == store
+                        and not (self.relock_never and self.transfer.get('stalled'))):
                     self.transfer = None
                 self.release(store)
         elif name == b'CPgI':
@@ -486,16 +578,29 @@ class Fake:
                 self.stills.pop(slot, None)
                 self.broadcast(mpfe(slot, False))
 
+    def _stuck_open(self):
+        t = self.transfer
+        return t is not None and t.get('up') and t.get('stalled')
+
     def later(self, dt, fn):
         self._tn += 1
         heapq.heappush(self.timers, (time.monotonic() + max(0.0, dt), self._tn, fn))
 
     def ftcd(self):
         t = self.transfer
-        if t is None or not t.get('up') or t['done'] or t['got'] >= t['len']:
+        if t is None or not t.get('up') or t['done'] or t['got'] >= t['len'] or t.get('stalled'):
             return
-        t['left'] = self.budget
-        self.send_reliable(t['s'], cmd(b'FTCD', struct.pack('>H4xHH2x', t['tid'], CHUNK, self.budget)))
+        t['left'] = max(t['left'], 0) + self.budget
+        self.send_reliable(t['s'], cmd(b'FTCD', struct.pack('>H4sHH2s', t['tid'], FTCD_AT_2, CHUNK, self.budget, FTCD_AT_10)))
+        for k in range(1, self.grant_repeats + 1):
+            self.later(0.04 * k, lambda tid=t['tid']: self._grant_again(tid))
+
+    def _grant_again(self, tid):
+        t = self.transfer
+        if t is None or not t.get('up') or t['tid'] != tid or t['done'] or t.get('stalled'):
+            return
+        t['left'] += self.budget
+        self.send_reliable(t['s'], cmd(b'FTCD', struct.pack('>H4sHH2s', t['tid'], FTCD_AT_2, CHUNK, self.budget, FTCD_AT_10)))
 
     def maybe_done(self):
         t = self.transfer
@@ -569,12 +674,15 @@ class Fake:
             for s in list(self.sessions.values()):
                 if s.ack_timer and now >= s.ack_timer:
                     self.send_ack(s)
-                if s.next_resend and now >= s.next_resend and s.sent:
+                if self.timer_resend and s.next_resend and now >= s.next_resend and s.sent:
                     self.resend(s)
                 if s.sid is not None and now - s.last_heard > self.reap:
                     self.end_session(s, 'reaped')
             if now >= self.next_tick:
                 self.next_tick = now + self.tick
+                if self.relock_never and self._stuck_open() and int(now / 1.0) != getattr(self, '_lk_sec', None):
+                    self._lk_sec = int(now / 1.0)
+                    self.lkst_pending.append(struct.pack('>HBB', 0, self.lkst_while_stuck, 0xff))
                 lk = b''.join(cmd(b'LKST', x) for x in self.lkst_pending)
                 self.lkst_pending = []
                 for s in self.established():

@@ -79,6 +79,13 @@ PROFILES = {
     # rate is not known).
     'zerotier':     {'up': _p(delay=40 * MS, max_dgram=1280 - 28), 'down': _p(delay=40 * MS),
                      'fake': {'tick': 0.5}, 'rtx': True},
+    # A LAN to a switcher behaving as the Constellation HD units did on the
+    # hardware bench (2026-11-24): after a dropout no budget comes again,
+    # the stuck transfer blocks the lock until a new session, budgets back
+    # to back. With cable_pull / reboot / idle_cut it is the regression
+    # case for bmdwire#100.
+    'hwcut':        dict(both(delay=0.2 * MS), fake={'grant_stall_after': 1.0, 'relock_never': True,
+                                                     'grant_repeats': 2, 'lkst_while_stuck': 0}),
     'vpn':          {'up': _p(delay=40 * MS, loss=0.01, max_dgram=1200 - 28),
                      'down': _p(delay=40 * MS, loss=0.01)},
     # A slow site: a few Mbit/s, 60 ms, 1 % loss, a short queue.
@@ -94,7 +101,8 @@ QUICK = [('lan', 'connect'), ('rtt200', 'connect'), ('loss5', 'commands'),
          ('vpn', 'labels'), ('mtu1200', 'still_up'), ('loss2', 'still_up'),
          ('reorder', 'macro_up'), ('mtu1280', 'profile_save'), ('lan', 'idle_cut'), ('lan', 'reboot'),
          ('lan', 'two_clients'), ('lan', 'disconnect'), ('lan', 'cable_pull'),
-         ('lan', 'macro_fail_cleanup'), ('mtu576', 'labels'), ('vpn', 'profile_restore')]
+         ('lan', 'macro_fail_cleanup'), ('mtu576', 'labels'), ('vpn', 'profile_restore'),
+         ('hwcut', 'cable_pull'), ('zerotier', 'still_up')]
 
 
 class Switcher:
