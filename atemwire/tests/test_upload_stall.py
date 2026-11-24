@@ -10,7 +10,10 @@ caller gave up. With no packet of ours newly acknowledged, no chunk cut
 and no budget granted for UPLOAD_STALL, and no word from the switcher
 that it is done, the upload now starts again from the beginning under a
 new transfer, UPLOAD_RETRIES times at most ('upload-retrying'), then fails
-('file-transfer-error', status 'stalled').
+('file-transfer-error', status 'stalled'). In every phase: the bench's
+first fresh start asked for the lock and was never granted it, and
+nothing watched that; only while the switcher says another client holds
+the lock is the limit longer (LOCK_WAIT_MAX).
 """
 import types
 
@@ -52,8 +55,13 @@ def proto(clock):
     p._raise = lambda *a: p.events.append(a)
     p.released = []
     p._release_then_continue = lambda store, request_next=True: p.released.append(store)
+    p._foreign_held = set()
+    p._lock_requested = {}
+    p._try_again_due = None
+    p.triggered = []
+    p._transfer_trigger = lambda store, retry=False: p.triggered.append(store)
     p.failed = []
-    p._fail_transfer = lambda contents: p.failed.append(contents)
+    p._raise = lambda *a: (p.events.append(a), a[0] == 'file-transfer-error' and p.failed.append(a[1]))
     return p
 
 
@@ -90,16 +98,36 @@ def test_after_upload_retries_it_fails_with_the_reason(proto, clock):
         stall(proto, clock, P.UPLOAD_STALL)
         proto.transfer_requested = True            # asked for again
     stall(proto, clock, P.UPLOAD_STALL)
-    assert len(proto.released) == P.UPLOAD_RETRIES
+    assert len(proto.released) == P.UPLOAD_RETRIES + 1, 'and its lock given back at the end'
     [failed] = proto.failed
-    assert failed.status == 'stalled' and failed.transfer == 7
+    assert failed.status == 'stalled' and failed.transfer == 7 and 'fresh starts' in failed.message
+    assert proto.transfer_queue[0] == [], 'off its queue'
 
 
-def test_not_yet_asked_for_is_not_a_stall(proto, clock):
-    # Waiting for the lock (another client's turn): the lock dance's job.
+def test_a_fresh_start_never_granted_its_lock_is_retried_then_failed(proto, clock):
+    # The bench, 15:00 and 15:20: started again, the lock asked for and
+    # never granted, nothing more for 114 s, no error.
+    proto.transfer = None                          # given back, waiting again
+    proto.locks = {0: False}
     proto.transfer_requested = False
+    for _ in range(P.UPLOAD_RETRIES):
+        stall(proto, clock, P.UPLOAD_STALL)
+    assert proto.triggered == [0] * P.UPLOAD_RETRIES, 'asked for again'
+    stall(proto, clock, P.UPLOAD_STALL)
+    [failed] = proto.failed
+    assert 'waiting for its lock' in failed.message
+
+
+def test_the_lock_held_by_another_client_waits_longer_but_not_for_ever(proto, clock):
+    proto.transfer = None
+    proto.locks = {0: False}
+    proto.transfer_requested = False
+    proto._foreign_held = {0}
     stall(proto, clock, P.UPLOAD_STALL * 5)
-    assert proto.released == [] and proto.failed == []
+    assert proto.triggered == [] and proto.failed == []
+    clock[0] += P.LOCK_WAIT_MAX
+    proto._service_upload_stall()
+    assert proto.triggered == [0]
 
 
 def test_a_download_is_left_to_its_caller(proto, clock):

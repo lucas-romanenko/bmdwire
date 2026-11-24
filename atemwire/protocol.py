@@ -115,18 +115,23 @@ DRAIN_STALL = 5.0
 DRAIN_MAX = 120.0
 
 # An upload is done only when the switcher says so (FTDC). Without that,
-# one that has made no progress for UPLOAD_STALL (no packet of ours newly
-# acknowledged, no chunk cut, no budget granted) is started again from the
-# beginning under a new transfer, its lock given back and asked for again,
-# UPLOAD_RETRIES times at most ('upload-retrying', with the attempt), then
-# failed ('file-transfer-error', status 'stalled'). The hardware bench,
-# 2026-11-24 (Constellation HD, fw 2.30): after the cable was out for 3 s
-# mid-upload everything was acknowledged on both sides and the switcher
-# never granted the next budget; the still sat at 47 % until the caller
-# gave up. UPLOAD_STALL is above the ~4 s a chunk too big for the path
-# takes to be found (TOO_BIG_AFTER), during which nothing moves either.
+# one that has made no progress for UPLOAD_STALL in any phase (its lock
+# not granted, its transfer not started, no packet of ours newly
+# acknowledged, no chunk cut, no budget granted) is started again from
+# the beginning under a new transfer, its lock given back and asked for
+# again, UPLOAD_RETRIES times at most ('upload-retrying'), then failed
+# ('file-transfer-error', status 'stalled'). While the switcher says
+# another client holds the store's lock the limit is LOCK_WAIT_MAX
+# instead. The hardware bench, 2026-11-24 (Constellation HD, fw 2.30):
+# after the cable was out for 3 s mid-upload everything was acknowledged
+# on both sides and the switcher never granted the next budget; the still
+# sat at 47 % until the caller gave up; and once started again, the lock
+# was asked for and never granted, and nothing watched that. UPLOAD_STALL
+# is above the ~4 s a chunk too big for the path takes to be found
+# (TOO_BIG_AFTER), during which nothing moves either.
 UPLOAD_STALL = 6.0
-UPLOAD_RETRIES = 3
+UPLOAD_RETRIES = 2
+LOCK_WAIT_MAX = 60.0
 
 # Chunks of a download this session asked for but no longer follows (its
 # caller gave up, it was retried under a new id, a drain ended before the
@@ -601,6 +606,17 @@ class AtemProtocol:
             # release is stored in mixerstate['lock-state'] and the
             # 'change:lock-state' event fires, exactly as upstream does.
         elif key == 'file-transfer-continue-data':
+            if self._grant_is_repeat(contents):
+                # The chunks of the last budget have not all left this
+                # process: the switcher cannot have them, so this is that
+                # budget again, not a new one. Counted twice, we sent it
+                # chunks it never granted (the hardware bench: three
+                # grants of 768 for one transfer 42 ms apart before a
+                # dropout, after which it granted nothing more).
+                self.log.info(f'transfer {contents.transfer}: a budget of '
+                              f'{contents.count} again before the last one was '
+                              f'sent: the same budget, not counted twice')
+                return
             self._grants += 1
             self.transfer_budget = contents
             old = self.transfer_budget.size
@@ -1199,6 +1215,7 @@ class AtemProtocol:
         else:
             self.transfer_queue[store].append(task)
             self._transfer_trigger(store)
+            self._wake_at(time.monotonic() + 1.0)          # UPLOAD_STALL
 
     def _queue_chunks(self):
         # Can't transfer without a chunk size
@@ -1351,46 +1368,115 @@ class AtemProtocol:
                 return  # the store's release broadcast continues the queue
         self._transfer_trigger(store)
 
-    def _service_upload_stall(self):
-        """UPLOAD_STALL: an upload in flight that has made no progress for
-        that long, the switcher not having said it is done, is started
-        again, UPLOAD_RETRIES times at most, then failed."""
+    def _grant_is_repeat(self, grant):
+        """Whether an FTCD repeats the last budget of the upload running:
+        the same transfer, and chunks of the last budget still waiting to
+        leave this process (queued, or held by the congestion window)."""
         t = self.transfer
-        if t is None or not t.upload or not self.transfer_requested:
+        if t is None or not t.upload or getattr(grant, 'transfer', None) != t.tid:
+            return False
+        if self.transfer_budget is not None:
+            return False
+        tr = self.transport
+        try:
+            queued = list(getattr(getattr(tr, 'thread_queue', None), 'queue', ()))
+            waiting = (len(getattr(tr, 'send_queue', ()) or ())
+                       + sum(1 for item in queued if item is not None)   # not wake-ups
+                       + len(getattr(tr, '_held', ()) or ()))
+        except Exception:
+            return False
+        return waiting > 0
+
+    def _upload_in_hand(self):
+        """The upload being worked on: the transfer running, or the first
+        upload waiting in a queue (for its lock or its start)."""
+        t = self.transfer
+        if t is not None:
+            return t if t.upload else None
+        for store, queue in self.transfer_queue.items():
+            if queue and queue[0].upload and not queue[0].clear:
+                return queue[0]
+        return None
+
+    def _service_upload_stall(self):
+        """UPLOAD_STALL: an upload that has made no progress for that long
+        in any phase, the switcher not having said it is done, is started
+        again, UPLOAD_RETRIES times at most, then failed."""
+        t = self._upload_in_hand()
+        if t is None:
             self._upload_mark = None
             return
         tr = self.transport
-        mark = (t.tid, getattr(tr, '_acked_through', None), t.offset, self._grants)
+        mark = (id(t), bool(self.locks.get(t.store)), self.transfer is t, self.transfer_requested,
+                t.tid, getattr(tr, '_acked_through', None), t.offset, self._grants)
         now = time.monotonic()
         if mark != self._upload_mark:
             self._upload_mark, self._upload_mark_at = mark, now
-        if now - self._upload_mark_at < UPLOAD_STALL:
-            self._wake_at(min(self._upload_mark_at + UPLOAD_STALL, now + 1.0))
+        limit = UPLOAD_STALL
+        if not self.locks.get(t.store) and t.store in self._foreign_held:
+            limit = LOCK_WAIT_MAX                # another client's turn, said so
+        if now - self._upload_mark_at < limit:
+            self._wake_at(min(self._upload_mark_at + limit, now + 1.0))
             return
         self._upload_mark = None
+        phase = ('waiting for its lock' if not self.locks.get(t.store) and self.transfer is not t
+                 else 'waiting for the switcher to start it' if not self.transfer_requested
+                 else f'{t.offset} of {len(t.data)} bytes cut')
         attempt = getattr(t, 'stall_retries', 0) + 1
         if attempt > UPLOAD_RETRIES:
             self.log.error(
                 f'upload to {t.store}:{t.slot} failed: no progress for '
-                f'{UPLOAD_STALL:.0f} s, {UPLOAD_RETRIES} times, and the switcher '
-                f'never said it was done; nothing on it was changed by this upload')
-            self._fail_transfer(types.SimpleNamespace(
-                transfer=t.tid, status='stalled',
-                message=f'no progress for {UPLOAD_STALL:.0f} s, {UPLOAD_RETRIES} attempts'))
+                f'{limit:.0f} s ({phase}), after {UPLOAD_RETRIES} fresh starts, and the '
+                f'switcher never said it was done')
+            self._give_up_upload(t, f'no progress for {limit:.0f} s ({phase}) after '
+                                    f'{UPLOAD_RETRIES} fresh starts')
             return
         t.stall_retries = attempt
         self.log.warning(
-            f'upload to {t.store}:{t.slot}: no progress for {UPLOAD_STALL:.0f} s '
-            f'and not confirmed ({t.offset} of {len(t.data)} bytes cut): starting '
-            f'it again from the beginning (retry {attempt} of {UPLOAD_RETRIES})')
+            f'upload to {t.store}:{t.slot}: no progress for {limit:.0f} s ({phase}) '
+            f'and not confirmed: starting it again from the beginning '
+            f'(retry {attempt} of {UPLOAD_RETRIES})')
         self._raise('upload-retrying', t.store, t.slot, attempt, UPLOAD_RETRIES)
-        # Its lock given back, the same task (still first in its queue) is
-        # requested again: a new transfer, from the first byte.
+        self._start_upload_again(t)
+        self._wake_at(time.monotonic() + 1.0)
+
+    def _start_upload_again(self, t):
+        """The same task, still first in its queue, asked for again from
+        its lock: the lane cleared, a lock we hold given back."""
+        store = t.store
         self.transfer_requested = False
         self.transfer_budget = None
         self.transfer_buffer = []
         self.transfer_buffer_bytes = 0
-        self._release_then_continue(t.store)
+        self._try_again_due = None
+        self._lock_requested.pop(store, None)
+        if self.locks.get(store):
+            self._release_then_continue(store)
+        else:
+            self.transfer = None
+            self._transfer_trigger(store)
+
+    def _give_up_upload(self, t, why):
+        """Drop ``t`` from its queue, its lock given back, and say why
+        (file-transfer-error, status 'stalled')."""
+        store = t.store
+        queue = self.transfer_queue.get(store) or []
+        if t in queue:
+            queue.remove(t)
+        self.transfer_requested = False
+        self.transfer_budget = None
+        self.transfer_buffer = []
+        self.transfer_buffer_bytes = 0
+        self._try_again_due = None
+        self._lock_requested.pop(store, None)
+        if self.locks.get(store):
+            self._release_then_continue(store)
+        else:
+            self.transfer = None
+            if queue:
+                self._transfer_trigger(store)
+        self._raise('file-transfer-error', types.SimpleNamespace(
+            transfer=t.tid, status='stalled', message=why, store=store, slot=t.slot))
 
     def _can_wake(self):
         return hasattr(self.transport, 'wake_at')
