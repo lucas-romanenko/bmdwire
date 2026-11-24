@@ -22,8 +22,6 @@ def test_cell(profile, path):
     r = netmatrix.run_one(profile, path)
     assert r['ok'] is not False, r
     assert r['ok'] is True, 'void run: %s' % r['what']
-    lossy = any(netmatrix.PROFILES[profile].get(way, {}).get('loss') for way in ('up', 'down'))
-    if not lossy:
-        # On a lossy link the one goodbye 1.14.8 sends can be lost, and the
-        # session stays until the switcher reaps it.
-        assert not r['ghosts'], 'sessions left on the switcher: %s' % r['ghosts']
+    # Every session ends: the goodbye goes three times (bmdwire#103), so
+    # one lost on a lossy link no longer leaves it to the switcher's reaper.
+    assert not r['ghosts'], 'sessions left on the switcher: %s' % r['ghosts']
