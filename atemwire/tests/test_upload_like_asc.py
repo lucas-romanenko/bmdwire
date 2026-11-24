@@ -263,7 +263,8 @@ def test_the_yield_wakes_the_protocol(proto, clock):
     woken = []
     proto.transport.wake_at = woken.append
     _first_of_two_done(proto, _upload)
-    assert woken == [clock.t + LOCK_QUIET]
+    # The last: the budget's end has its own (GRANT_WAIT) before it.
+    assert woken[-1] == clock.t + LOCK_QUIET
     lkst(proto, 0, False)
     assert woken[-1] == clock.t + LOCK_COURTESY
 

@@ -113,6 +113,19 @@ TRY_AGAIN_ATTEMPTS = 20
 DRAIN_STALL = 5.0
 DRAIN_MAX = 120.0
 
+# An upload that has sent every chunk of its budget, all of them
+# acknowledged and nothing of ours outstanding, waits GRANT_WAIT for the
+# next budget (FTCD) at most, then starts again from the beginning under a
+# new transfer, its lock given back and asked for again; GRANT_RESTARTS
+# times at most. On a LAN the next budget comes within milliseconds of the
+# last chunk. A Constellation HD stopped granting for good after the cable
+# was out for 3 s mid-upload, everything acknowledged on both sides (the
+# hardware bench, 2026-11-24: the still sat at 47 % until the caller gave
+# up); the cause on the switcher is not known, a fresh transfer is what
+# gets it moving.
+GRANT_WAIT = 2.0
+GRANT_RESTARTS = 2
+
 # Chunks of a download this session asked for but no longer follows (its
 # caller gave up, it was retried under a new id, a drain ended before the
 # switcher started it) are acknowledged all the same, to their end: a chunk
@@ -331,6 +344,7 @@ class AtemProtocol:
         self._orphans = set()
         self.transfer_packets = 0
         self.transfer_budget = []
+        self._grant_idle_since = None
 
     def connect(self):
         self.log.debug('Starting connection')
@@ -582,6 +596,7 @@ class AtemProtocol:
             # release is stored in mixerstate['lock-state'] and the
             # 'change:lock-state' event fires, exactly as upstream does.
         elif key == 'file-transfer-continue-data':
+            self._grant_idle_since = None
             self.transfer_budget = contents
             old = self.transfer_budget.size
             self.transfer_budget.size = self.transfer_budget.size // 8 * 8
@@ -1224,6 +1239,8 @@ class AtemProtocol:
             if self.transfer_budget.count == 0:
                 self.log.debug('Transfer budget ran out')
                 self.transfer_budget = None
+                self._grant_idle_since = None
+                self._wake_at(time.monotonic() + GRANT_WAIT / 4)
 
             cmd = TransferDataCommand(self.transfer.tid, bytes(chunk))
             packet = Packet()
@@ -1331,6 +1348,47 @@ class AtemProtocol:
                 return  # the store's release broadcast continues the queue
         self._transfer_trigger(store)
 
+    def _service_grant_wait(self):
+        """GRANT_WAIT: an upload waiting for its next budget, everything
+        of ours acknowledged, is started again when none comes."""
+        t = self.transfer
+        if (t is None or not t.upload or self.transfer_budget is not None
+                or not t.metadata_sent or t.data is None or t.offset >= len(t.data)
+                or not self.locks.get(t.store)):
+            self._grant_idle_since = None
+            return
+        tr = self.transport
+        outstanding = (getattr(tr, '_acked_through', None) != getattr(tr, 'local_sequence_number', None)
+                       or len(getattr(tr, 'send_queue', ())) > 0
+                       or len(getattr(tr, '_held', ())) > 0)
+        now = time.monotonic()
+        if outstanding:
+            self._grant_idle_since = None
+            self._wake_at(now + GRANT_WAIT / 4)
+            return
+        if self._grant_idle_since is None:
+            self._grant_idle_since = now
+        if now - self._grant_idle_since < GRANT_WAIT:
+            self._wake_at(self._grant_idle_since + GRANT_WAIT)
+            return
+        self._grant_idle_since = None
+        restarts = getattr(t, 'grant_restarts', 0)
+        if restarts >= GRANT_RESTARTS:
+            return
+        t.grant_restarts = restarts + 1
+        self.log.warning(
+            f'upload to {t.store}:{t.slot}: no next budget from the switcher '
+            f'{GRANT_WAIT:.0f} s after everything was acknowledged '
+            f'({t.offset} of {len(t.data)} bytes): starting it again '
+            f'({t.grant_restarts} of {GRANT_RESTARTS})')
+        self._raise('upload-restarted', t.store, t.slot)
+        # Its lock given back, the same task (still first in the queue) is
+        # requested again: a new transfer, from the first byte.
+        self.transfer_requested = False
+        self.transfer_buffer = []
+        self.transfer_buffer_bytes = 0
+        self._release_then_continue(t.store)
+
     def _can_wake(self):
         return hasattr(self.transport, 'wake_at')
 
@@ -1373,6 +1431,7 @@ class AtemProtocol:
         work, so the trigger runs once per turn, not once per tick."""
         now = time.monotonic()
         self._service_drain()
+        self._service_grant_wait()
         if (self._try_again_due is not None and now >= self._try_again_due
                 and self.transfer is not None):
             self._try_again_due = None
