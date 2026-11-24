@@ -1021,6 +1021,8 @@ Item 56 was fixed in 1.14.5 and still applies to 1.12.0 through 1.14.4.
 Item 57 was fixed in 1.14.6 and still applies to 1.6.0 through 1.14.5.
 Items 17, 58 and 59 were fixed in 1.14.7 and still apply to 1.14.6 and earlier.
 Item 60 was fixed in 1.14.8 and still applies to 1.14.7.
+Items 61 to 70 were fixed in 1.15.0: item 61 applies to 1.14.8 only, item 65 to 1.14.7 and 1.14.8,
+the others to 1.14.8 and earlier.
 
 1. **Profile video mode does not round-trip at fractional rates** (1.2.0). Save writes
    `get_label()` (`1080p59.94`); apply only knows `1080p5994`-style names, so it skips the mode as
