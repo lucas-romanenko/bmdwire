@@ -10,7 +10,7 @@ import struct
 import sys
 import threading
 import time
-from queue import Queue
+from queue import Empty, Queue
 
 from atemwire._socketqueue import SocketQueue
 from atemwire._transfer import TransferQueueFlushed
@@ -429,6 +429,12 @@ class UdpProtocol(BaseProtocol):
     # as long as it is heard within RESEND_MAX, the timer's longest wait.
     CHUNK_STEPS = (1224, 952, 504)
     TOO_BIG_AFTER = 3
+
+    # receive_packet looks every DEAD_THREAD_CHECK whether the UDP thread
+    # is still there, and with it gone hands back None, DEAD_THREAD_PAUSE
+    # apart, so a caller's own deadline always holds (_receive_packet).
+    DEAD_THREAD_CHECK = 0.5
+    DEAD_THREAD_PAUSE = 0.1
 
     # A new session's reliable packets are numbered from 1 (_handshake). If
     # packet 1 has not come FIRST_PACKET_WAIT after the handshake while
@@ -983,7 +989,19 @@ class UdpProtocol(BaseProtocol):
                 packet_log.info(f"session_id ← None (post-handshake; will be set from next RX)")
 
     def _receive_packet(self):
-        return self.thread_recv_queue.get()
+        """The next item from the UDP thread. If that thread has ended and
+        nothing is left, None (the end-of-stream marker) every time, a
+        little apart (DEAD_THREAD_PAUSE), instead of waiting for ever: the
+        thread puts one None as it ends, and the first loop() takes it;
+        every loop() after that blocked for good, deadlines and all (a
+        bench whose own code ended the thread mid-upload, 2026-11-24)."""
+        while True:
+            try:
+                return self.thread_recv_queue.get(timeout=UdpProtocol.DEAD_THREAD_CHECK)
+            except Empty:
+                if not self.thread.is_alive():
+                    time.sleep(UdpProtocol.DEAD_THREAD_PAUSE)
+                    return None
 
     def _receive_packet_low(self):
         try:
